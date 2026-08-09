@@ -53,20 +53,28 @@ interface LecturerAssessmentWorkspaceProps {
 }
 
 const DEFAULT_ASSESSMENTS: AssessmentDef[] = [
-  { id: 'cat1', kind: 'CAT1', name: 'CAT 1', maxMarks: 10, published: false },
-  { id: 'cat2', kind: 'CAT2', name: 'CAT 2', maxMarks: 10, published: false },
-  { id: 'assignment', kind: 'Assignment', name: 'Assignment', maxMarks: 10, published: false },
-  { id: 'final', kind: 'FinalExam', name: 'Final Exam', maxMarks: 70, published: false },
+  { id: 'cat1', kind: 'CAT1', name: 'CAT 1', maxMarks: AGGREGATE_CAT_MAX, published: false },
+  { id: 'cat2', kind: 'CAT2', name: 'CAT 2', maxMarks: AGGREGATE_CAT_MAX, published: false },
+  { id: 'assignment', kind: 'Assignment', name: 'Assignment', maxMarks: AGGREGATE_CAT_MAX, published: false },
+  { id: 'final', kind: 'FinalExam', name: 'Final Exam', maxMarks: AGGREGATE_EXAM_MAX, published: false },
 ];
 
 const KIND_OPTIONS: Array<{ kind: AssessmentKind; label: string; defaultMax: number }> = [
-  { kind: 'CAT1', label: 'CAT 1', defaultMax: 10 },
-  { kind: 'CAT2', label: 'CAT 2', defaultMax: 10 },
-  { kind: 'Assignment', label: 'Assignment', defaultMax: 10 },
-  { kind: 'FinalExam', label: 'Final Exam', defaultMax: 70 },
+  { kind: 'CAT1', label: 'CAT 1', defaultMax: AGGREGATE_CAT_MAX },
+  { kind: 'CAT2', label: 'CAT 2', defaultMax: AGGREGATE_CAT_MAX },
+  { kind: 'Assignment', label: 'Assignment', defaultMax: AGGREGATE_CAT_MAX },
+  { kind: 'FinalExam', label: 'Final Exam', defaultMax: AGGREGATE_EXAM_MAX },
 ];
 
 const MARK_FIELDS: MarkField[] = ['cat1', 'cat2', 'assignment', 'exam'];
+
+function getDefaultMaxForKind(kind: AssessmentKind, existingAssessments: AssessmentDef[]): number {
+  const configured = existingAssessments.find((item) => item.kind === kind);
+  if (configured && Number.isFinite(configured.maxMarks) && configured.maxMarks > 0) {
+    return configured.maxMarks;
+  }
+  return kind === 'FinalExam' ? AGGREGATE_EXAM_MAX : AGGREGATE_CAT_MAX;
+}
 
 function letterGrade(total: number): string {
   if (total >= 70) return 'A';
@@ -85,12 +93,18 @@ function marksKey(lecturerId: string, subject: string) {
 }
 
 function loadAssessments(lecturerId: string, subject: string): AssessmentDef[] {
-  if (!subject) return DEFAULT_ASSESSMENTS;
+  if (!subject) return DEFAULT_ASSESSMENTS.map((item) => ({ ...item }));
   try {
     const raw = localStorage.getItem(assessmentsKey(lecturerId, subject));
     if (!raw) return DEFAULT_ASSESSMENTS.map((item) => ({ ...item }));
     const parsed = JSON.parse(raw) as AssessmentDef[];
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : DEFAULT_ASSESSMENTS.map((item) => ({ ...item }));
+    const configured = Array.isArray(parsed) ? parsed : [];
+    const merged = DEFAULT_ASSESSMENTS.map((item) => {
+      const existing = configured.find((candidate) => candidate.kind === item.kind);
+      return { ...item, ...(existing || {}) };
+    });
+    const extras = configured.filter((item) => !DEFAULT_ASSESSMENTS.some((defaultItem) => defaultItem.kind === item.kind));
+    return [...merged, ...extras];
   } catch {
     return DEFAULT_ASSESSMENTS.map((item) => ({ ...item }));
   }
@@ -178,6 +192,13 @@ export default function LecturerAssessmentWorkspace({
     () => students.filter((student) => student.enrolledUnits.includes(selectedSubject)),
     [students, selectedSubject],
   );
+  const visibleMarkFields = useMemo(() => {
+    const configuredKinds = new Set(assessments.map((assessment) => assessment.kind));
+    return MARK_FIELDS.filter((field) => {
+      const kind = field === 'cat1' ? 'CAT1' : field === 'cat2' ? 'CAT2' : field === 'assignment' ? 'Assignment' : 'FinalExam';
+      return configuredKinds.has(kind as AssessmentKind);
+    });
+  }, [assessments]);
 
   const filteredStudents = useMemo(() => {
     const term = searchQuery.trim().toLowerCase();
@@ -294,7 +315,8 @@ export default function LecturerAssessmentWorkspace({
     const option = KIND_OPTIONS.find((item) => item.kind === newKind);
     const name = newName.trim() || option?.label || newKind;
     const kindCap = newKind === 'FinalExam' ? AGGREGATE_EXAM_MAX : AGGREGATE_CAT_MAX;
-    const maxMarks = Math.max(1, Math.min(kindCap, Number(newMax) || option?.defaultMax || 10));
+    const defaultMax = getDefaultMaxForKind(newKind, assessments);
+    const maxMarks = Math.max(1, Math.min(kindCap, Number(newMax) || defaultMax));
     if (assessments.some((item) => item.kind === newKind)) {
       showWarning('Assessment exists', `${option?.label || newKind} is already configured for this module.`);
       return;
@@ -318,17 +340,15 @@ export default function LecturerAssessmentWorkspace({
   const reportRows = () => subjectStudents.map((student) => {
     const marks = resolveBreakdown(student);
     const total = sumValidMarks(marks, assessments);
-    return [
+    const row = [
       student.admissionNo,
       student.name,
-      String(Number.isFinite(marks.cat1) ? marks.cat1 : ''),
-      String(Number.isFinite(marks.cat2) ? marks.cat2 : ''),
-      String(Number.isFinite(marks.assignment) ? marks.assignment : ''),
-      String(Number.isFinite(marks.exam) ? marks.exam : ''),
+      ...visibleMarkFields.map((field) => String(Number.isFinite(marks[field]) ? marks[field] : '')),
       String(total),
       letterGrade(total),
       student.grades[selectedSubject] ? 'Graded' : 'Pending',
     ];
+    return row;
   });
 
   const exportExcel = () => {
@@ -337,7 +357,7 @@ export default function LecturerAssessmentWorkspace({
       return;
     }
     const rows = [
-      ['Admission Number', 'Student Name', 'CAT 1', 'CAT 2', 'Assignment', 'Final Exam', 'Total', 'Grade', 'Status'],
+      ['Admission Number', 'Student Name', ...visibleMarkFields.map((field) => ({ cat1: 'CAT 1', cat2: 'CAT 2', assignment: 'Assignment', exam: 'Final Exam' }[field] || field)), 'Total', 'Grade', 'Status'],
       ...reportRows(),
     ];
     const tsv = rows.map((row) => row.map((cell) => String(cell).replace(/\t|\r?\n/g, ' ')).join('\t')).join('\n');
@@ -367,7 +387,8 @@ export default function LecturerAssessmentWorkspace({
       return;
     }
 
-    reportWindow.document.write(`<!doctype html><html><head><title>${escapeHtml(selectedSubject)} Grade Sheet</title><style>body{font-family:Arial,sans-serif;color:#172033;margin:32px}h1{font-size:20px;margin:0 0 4px}p{color:#526176;margin:0 0 20px}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:left}th{background:#eff6ff;font-weight:700}@media print{body{margin:16px}}</style></head><body><h1>${escapeHtml(selectedMeta ? `${selectedMeta.code} – ${selectedMeta.title}` : selectedSubject)} Grade Sheet</h1><p>Generated ${new Date().toLocaleString()}</p><table><thead><tr><th>Admission Number</th><th>Student Name</th><th>CAT 1</th><th>CAT 2</th><th>Assignment</th><th>Final Exam</th><th>Total</th><th>Grade</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></body></html>`);
+    const headerCells = ['Admission Number', 'Student Name', ...visibleMarkFields.map((field) => ({ cat1: 'CAT 1', cat2: 'CAT 2', assignment: 'Assignment', exam: 'Final Exam' }[field] || field)), 'Total', 'Grade', 'Status'];
+    reportWindow.document.write(`<!doctype html><html><head><title>${escapeHtml(selectedSubject)} Grade Sheet</title><style>body{font-family:Arial,sans-serif;color:#172033;margin:32px}h1{font-size:20px;margin:0 0 4px}p{color:#526176;margin:0 0 20px}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:left}th{background:#eff6ff;font-weight:700}@media print{body{margin:16px}}</style></head><body><h1>${escapeHtml(selectedMeta ? `${selectedMeta.code} – ${selectedMeta.title}` : selectedSubject)} Grade Sheet</h1><p>Generated ${new Date().toLocaleString()}</p><table><thead><tr>${headerCells.map((cell) => `<th>${escapeHtml(cell)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></body></html>`);
     reportWindow.document.close();
     reportWindow.focus();
     reportWindow.print();
@@ -567,7 +588,7 @@ export default function LecturerAssessmentWorkspace({
         <div className="flex flex-col gap-2 rounded-lg border border-slate-100 bg-slate-50 p-3 sm:flex-row sm:items-end">
           <div className="flex-1">
             <label className="text-[11px] font-semibold text-slate-600">Type</label>
-            <select value={newKind} onChange={(event) => { const kind = event.target.value as AssessmentKind; setNewKind(kind); setNewMax(KIND_OPTIONS.find((item) => item.kind === kind)?.defaultMax || 10); }} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs">
+            <select value={newKind} onChange={(event) => { const kind = event.target.value as AssessmentKind; setNewKind(kind); setNewMax(getDefaultMaxForKind(kind, assessments)); }} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs">
               {KIND_OPTIONS.map((option) => <option key={option.kind} value={option.kind}>{option.label}</option>)}
             </select>
           </div>
@@ -623,10 +644,9 @@ export default function LecturerAssessmentWorkspace({
                 <tr>
                   <th className="px-3 py-2.5">Admission Number</th>
                   <th className="px-3 py-2.5">Student Name</th>
-                  <th className="px-3 py-2.5 text-center">CAT 1</th>
-                  <th className="px-3 py-2.5 text-center">CAT 2</th>
-                  <th className="px-3 py-2.5 text-center">Assignment</th>
-                  <th className="px-3 py-2.5 text-center">Final Exam</th>
+                  {visibleMarkFields.map((field) => (
+                    <th key={field} className="px-3 py-2.5 text-center">{({ cat1: 'CAT 1', cat2: 'CAT 2', assignment: 'Assignment', exam: 'Final Exam' } as Record<MarkField, string>)[field]}</th>
+                  ))}
                   <th className="px-3 py-2.5 text-center">Total</th>
                   <th className="px-3 py-2.5 text-center">Grade</th>
                   <th className="px-3 py-2.5 text-center">Status</th>
@@ -644,7 +664,7 @@ export default function LecturerAssessmentWorkspace({
                     <tr key={student.id} className="border-b border-slate-100 last:border-0">
                       <td className="px-3 py-2.5 font-mono font-semibold text-slate-800">{student.admissionNo}</td>
                       <td className="px-3 py-2.5 font-medium text-slate-800">{student.name}</td>
-                      {MARK_FIELDS.map((field) => {
+                      {visibleMarkFields.map((field) => {
                         const max = maxMarksForField(assessments, field);
                         const displayValue = Number.isFinite(marks[field]) ? marks[field] : '';
                         return (

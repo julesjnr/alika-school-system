@@ -30,10 +30,10 @@ const FIELD_KIND: Record<MarkField, string> = {
 };
 
 const DEFAULT_FIELD_MAX: Record<MarkField, number> = {
-  cat1: 10,
-  cat2: 10,
-  assignment: 10,
-  exam: 70,
+  cat1: AGGREGATE_CAT_MAX,
+  cat2: AGGREGATE_CAT_MAX,
+  assignment: AGGREGATE_CAT_MAX,
+  exam: AGGREGATE_EXAM_MAX,
 };
 
 export function maxMarksForField(
