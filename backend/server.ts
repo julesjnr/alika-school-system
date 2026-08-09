@@ -11,6 +11,12 @@ import { createCorsMiddleware } from "./src/cors.ts";
 import { db } from "./src/db/index.ts";
 import { runMigrations } from "./src/db/migrate.ts";
 import {
+  clientSafeDbError,
+  resolveStudentSortField,
+  resolveStudentSortOrder,
+  toIlikeContainsPattern,
+} from "./src/db/sqlSafety.ts";
+import {
   systemState,
   students,
   studentEnrollments,
@@ -49,7 +55,7 @@ import {
   syllabusTopics,
   classAttendanceSessions,
 } from "./src/db/schema.ts";
-import { eq, notInArray, and, or, desc, asc, count, ilike, inArray, sql } from "drizzle-orm";
+import { eq, notInArray, and, or, desc, asc, count, inArray, sql } from "drizzle-orm";
 import { supabase } from "./src/db/supabaseClient.ts";
 import {
   hashPassword,
@@ -1610,7 +1616,7 @@ app.get("/api/postgres/status", async (req, res) => {
     res.json({
       success: false,
       status: "error",
-      error: err.message,
+      error: clientSafeDbError("PostgreSQL connection attempt failed."),
       message: "PostgreSQL connection attempt failed. Ensure database proxy is running and credentials are valid."
     });
   }
@@ -2018,7 +2024,7 @@ app.post("/api/auth/login", async (req: any, res: any) => {
     });
   } catch (err: any) {
     console.error("Login endpoint error:", err);
-    res.status(500).json({ success: false, error: err.message || "Authentication failed." });
+    res.status(500).json({ success: false, error: clientSafeDbError("Authentication failed.", err) });
   }
 });
 
@@ -2052,7 +2058,7 @@ app.post(["/api/auth/change-password", "/api/auth/change-passcode"], async (req:
     res.json(result);
   } catch (err: any) {
     console.error("Password change endpoint error:", err);
-    res.status(500).json({ success: false, error: err.message || "Failed to update password." });
+    res.status(500).json({ success: false, error: clientSafeDbError("Failed to update password.", err) });
   }
 });
 
@@ -2077,7 +2083,8 @@ app.get("/api/admin/system-stats", checkRBAC(["admin", "accountant", "librarian"
       lastBackup: new Date().toISOString()
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message || "Failed to query system stats." });
+    console.error("System stats query failed:", error);
+    res.status(500).json({ error: clientSafeDbError("Failed to query system stats.", error) });
   }
 });
 
@@ -2404,7 +2411,7 @@ app.patch("/api/admin/courses/:id", async (req: any, res: any) => {
 
     await writeAdminAudit(req, "course.updated", "course", id, { code });
     res.json(course);
-  } catch (error: any) { res.status(409).json({ error: error?.message || "Unable to update course." }); }
+  } catch (error: any) { console.error("Course update failed:", error); res.status(409).json({ error: clientSafeDbError("Unable to update course.", error) }); }
 });
 
 app.post("/api/admin/courses/:id/:action", async (req: any, res: any) => {
@@ -2431,7 +2438,7 @@ app.post("/api/admin/courses/:id/:action", async (req: any, res: any) => {
     if (!result.rows[0]) return res.status(404).json({ error: "Course not found." });
     await writeAdminAudit(req, `course.${action}d`, "course", id);
     res.json(result.rows[0]);
-  } catch (error: any) { res.status(500).json({ error: error?.message || "Course action failed." }); }
+  } catch (error: any) { console.error("Course action failed:", error); res.status(500).json({ error: clientSafeDbError("Course action failed.", error) }); }
 });
 
 app.delete("/api/admin/courses/:id", async (req: any, res: any) => {
@@ -2443,7 +2450,7 @@ app.delete("/api/admin/courses/:id", async (req: any, res: any) => {
     if (!result.rows[0]) return res.status(404).json({ error: "Course not found." });
     await writeAdminAudit(req, "course.deleted", "course", req.params.id);
     res.status(204).end();
-  } catch (error: any) { res.status(500).json({ error: error?.message || "Unable to delete course." }); }
+  } catch (error: any) { console.error("Course delete failed:", error); res.status(500).json({ error: clientSafeDbError("Unable to delete course.", error) }); }
 });
 
 app.get("/api/courses/:id/gallery", async (req, res) => {
@@ -2465,7 +2472,7 @@ app.put("/api/admin/courses/:id/gallery", async (req: any, res: any) => {
     });
     await writeAdminAudit(req, "course.gallery.updated", "course", req.params.id, { imageCount: images.length });
     res.status(204).end();
-  } catch (error: any) { res.status(500).json({ error: error?.message || "Unable to save gallery." }); }
+  } catch (error: any) { console.error("Gallery save failed:", error); res.status(500).json({ error: clientSafeDbError("Unable to save gallery.", error) }); }
 });
 
 app.post("/api/courses/:id/reviews", async (req: any, res: any) => {
@@ -2478,7 +2485,7 @@ app.post("/api/courses/:id/reviews", async (req: any, res: any) => {
     const identity = await db.execute(sql`SELECT name FROM students WHERE id=${req.user.userId}`);
     const result = await db.execute(sql`INSERT INTO course_reviews (course_id,student_id,student_name,rating,comment,status) VALUES (${req.params.id},${req.user.userId},${identity.rows[0]?.name || "Student"},${rating},${comment},'pending') RETURNING *`);
     res.status(201).json(result.rows[0]);
-  } catch (error: any) { res.status(409).json({ error: error?.message || "You already submitted a review for this course." }); }
+  } catch (error: any) { console.error("Course review failed:", error); res.status(409).json({ error: clientSafeDbError("Unable to submit course review.", error) }); }
 });
 
 app.patch("/api/admin/reviews/:id", async (req: any, res: any) => {
@@ -2676,7 +2683,7 @@ app.post("/api/public/applications", async (req, res) => {
       submittedAt,
       application: applicationRecord
     });
-  } catch (error: any) { res.status(409).json({ error: error?.message || "Unable to submit application." }); }
+  } catch (error: any) { console.error("Application submit failed:", error); res.status(409).json({ error: clientSafeDbError("Unable to submit application.", error) }); }
 });
 
 app.get("/api/public/applications/reference/:reference", async (req: any, res: any) => {
@@ -2764,7 +2771,8 @@ app.patch("/api/admin/applications/:id", async (req: any, res: any) => {
     res.json(application);
   } catch (error: any) {
     console.error("Application status update failed:", error);
-    res.status(500).json({ error: error?.message || "Unable to update application." }); }
+    res.status(500).json({ error: clientSafeDbError("Unable to update application.", error) });
+  }
 });
 
   // REST Resource: Invoices
@@ -3138,7 +3146,8 @@ app.get(
         weekStart: todayStr,
       }));
 
-      // Syllabus coverage
+      // Syllabus coverage: logged topics cannot exceed planned topics for display.
+      // With zero planned topics, report 0/0 and null percent (N/A) — never "1 of 0".
       let plannedTopicsCount = 0;
       if (subjectCodes.length > 0) {
         const topics = await db
@@ -3147,10 +3156,21 @@ app.get(
           .where(inArray(syllabusTopics.subjectCode, subjectCodes));
         plannedTopicsCount = topics.length;
       }
-      const completedSessionsCount = sessionRows.length;
-      const coveragePercent = plannedTopicsCount > 0
-        ? Math.min(100, Math.round((completedSessionsCount / plannedTopicsCount) * 100))
-        : null;
+      const rawLoggedSessionsCount = sessionRows.length;
+      const completedSessionsCount =
+        plannedTopicsCount > 0
+          ? Math.min(rawLoggedSessionsCount, plannedTopicsCount)
+          : 0;
+      const coveragePercent =
+        plannedTopicsCount > 0
+          ? Math.min(
+              100,
+              Math.max(
+                0,
+                Math.round((completedSessionsCount / plannedTopicsCount) * 100)
+              )
+            )
+          : null;
 
       // Attendance statistics
       let attendanceRate = 0;
@@ -3246,7 +3266,7 @@ app.get(
           percent: coveragePercent,
           completedSessions: completedSessionsCount,
           plannedTopics: plannedTopicsCount,
-          note: `${completedSessionsCount} of ${plannedTopicsCount || 0} planned topics logged`,
+          note: `${completedSessionsCount} of ${plannedTopicsCount} planned topics logged`,
         },
         tasks,
         recentSessions,
@@ -3271,7 +3291,7 @@ app.get(
       });
     } catch (error: any) {
       console.error("Failed to fetch faculty dashboard summary:", error);
-      res.status(500).json({ error: error.message || "Failed to load dashboard summary" });
+      res.status(500).json({ error: clientSafeDbError("Failed to load dashboard summary", error) });
     }
   }
 );
@@ -3339,7 +3359,7 @@ app.post(
       });
     } catch (error: any) {
       console.error("Failed to log teaching session:", error);
-      res.status(500).json({ error: error.message || "Failed to log session" });
+      res.status(500).json({ error: clientSafeDbError("Failed to log session", error) });
     }
   }
 );
@@ -4144,25 +4164,26 @@ app.get("/api/students", async (req, res) => {
     const cohortParam = ((req.query.cohort as string) || "").trim();
     const statusParam = ((req.query.accountStatus as string) || "").trim();
     const unitsParam = ((req.query.registeredUnits as string) || (req.query.units as string) || "").trim();
-    const sortByParam = ((req.query.sortBy as string) || "").trim();
-    const sortOrderParam = ((req.query.sortOrder as string) || "asc").toLowerCase() === "desc" ? "desc" : "asc";
+    const sortField = resolveStudentSortField(req.query.sortBy as string);
+    const sortOrderParam = resolveStudentSortOrder(req.query.sortOrder as string);
     const isAllParam = req.query.all === "true";
 
     const page = !isNaN(pageParam) && pageParam > 0 ? pageParam : 1;
     const limit = !isNaN(limitParam) && limitParam > 0 ? Math.min(limitParam, 200) : 25;
     const offset = (page - 1) * limit;
 
-    // Build SQL conditions
+    // Build SQL conditions (all user values are bound parameters — never concatenated)
     const conditions = [];
 
     if (searchParam) {
-      const searchPattern = `%${searchParam}%`;
+      // Escape LIKE metacharacters; bind pattern as a parameter with ESCAPE '\'
+      const searchPattern = toIlikeContainsPattern(searchParam);
       conditions.push(
         or(
-          ilike(students.name, searchPattern),
-          ilike(students.admissionNo, searchPattern),
-          ilike(students.email, searchPattern),
-          ilike(students.cohort, searchPattern)
+          sql`${students.name} ILIKE ${searchPattern} ESCAPE '\\'`,
+          sql`${students.admissionNo} ILIKE ${searchPattern} ESCAPE '\\'`,
+          sql`${students.email} ILIKE ${searchPattern} ESCAPE '\\'`,
+          sql`${students.cohort} ILIKE ${searchPattern} ESCAPE '\\'`
         )
       );
     }
@@ -4194,31 +4215,23 @@ app.get("/api/students", async (req, res) => {
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-    // Sorting Clause
+    // Sorting: allowlisted field only — never interpolate client sortBy into SQL
     let orderByClause;
     const unitCountSubquery = sql<number>`(SELECT COUNT(*)::int FROM student_enrollments WHERE student_id = ${students.id})`;
-    switch (sortByParam) {
+    switch (sortField) {
       case "name":
-      case "fullName":
-      case "studentName":
         orderByClause = sortOrderParam === "desc" ? desc(students.name) : asc(students.name);
         break;
       case "cohort":
         orderByClause = sortOrderParam === "desc" ? desc(students.cohort) : asc(students.cohort);
         break;
       case "accountStatus":
-      case "status":
         orderByClause = sortOrderParam === "desc" ? desc(students.accountStatus) : asc(students.accountStatus);
         break;
       case "createdAt":
-      case "dateRegistered":
-      case "registrationDate":
-      case "date":
         orderByClause = sortOrderParam === "desc" ? desc(students.createdAt) : asc(students.createdAt);
         break;
       case "registeredUnits":
-      case "enrolledUnits":
-      case "units":
         orderByClause = sortOrderParam === "desc" ? desc(unitCountSubquery) : asc(unitCountSubquery);
         break;
       case "admissionNo":
@@ -4338,8 +4351,8 @@ app.get("/api/students", async (req, res) => {
     const cohortParam = ((req.query.cohort as string) || "").trim();
     const statusParam = ((req.query.accountStatus as string) || "").trim();
     const unitsParam = ((req.query.registeredUnits as string) || (req.query.units as string) || "").trim();
-    const sortByParam = ((req.query.sortBy as string) || "").trim();
-    const sortOrderParam = ((req.query.sortOrder as string) || "asc").toLowerCase() === "desc" ? "desc" : "asc";
+    const sortField = resolveStudentSortField(req.query.sortBy as string);
+    const sortOrderParam = resolveStudentSortOrder(req.query.sortOrder as string);
 
     if (searchParam) {
       allStudents = allStudents.filter(
@@ -4377,9 +4390,8 @@ app.get("/api/students", async (req, res) => {
       let valA: any = "";
       let valB: any = "";
 
-      switch (sortByParam) {
+      switch (sortField) {
         case "name":
-        case "fullName":
           valA = a.name || "";
           valB = b.name || "";
           break;
@@ -4392,7 +4404,6 @@ app.get("/api/students", async (req, res) => {
           valB = b.accountStatus || "";
           break;
         case "registeredUnits":
-        case "enrolledUnits":
           valA = a.enrolledUnits?.length || 0;
           valB = b.enrolledUnits?.length || 0;
           break;
@@ -4570,7 +4581,7 @@ app.delete(["/api/admin/users/:id", "/api/admin/users/[id]", "/api/students/:id"
     });
   } catch (error: any) {
     console.error("Purge user error:", error);
-    return res.status(500).json({ success: false, error: error.message || "Failed to purge user record." });
+    return res.status(500).json({ success: false, error: clientSafeDbError("Failed to purge user record.", error) });
   }
 });
 

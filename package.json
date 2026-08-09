@@ -15,7 +15,9 @@
     "build": "npm run build:frontend && npm run build:backend && rm -rf dist && cp -r frontend/dist ./dist",
     "lint:frontend": "npm run lint --workspace=frontend",
     "lint:backend": "npm run lint --workspace=backend",
-    "lint": "npm run lint:frontend && npm run lint:backend"
+    "lint": "npm run lint:frontend && npm run lint:backend",
+    "test:backend": "npm run test --workspace=backend",
+    "test": "npm run test:backend"
   },
   "devDependencies": {
     "concurrently": "^10.0.3",

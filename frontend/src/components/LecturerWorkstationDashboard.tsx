@@ -54,7 +54,13 @@ export default function LecturerWorkstationDashboard({
     tasks,
   } = summary;
 
-  const coveragePercent = syllabusCoverage.percent;
+  const rawCoveragePercent = syllabusCoverage.percent;
+  const coveragePercent =
+    rawCoveragePercent == null ||
+    !Number.isFinite(rawCoveragePercent) ||
+    syllabusCoverage.plannedTopics <= 0
+      ? null
+      : Math.min(100, Math.max(0, rawCoveragePercent));
   const gaugeOffset =
     coveragePercent == null
       ? 314.16
@@ -366,11 +372,16 @@ export default function LecturerWorkstationDashboard({
             </div>
           </div>
           <div className="text-[10px] text-slate-500 font-medium text-center font-mono leading-relaxed px-4">
-            {syllabusCoverage.note}
+            {syllabusCoverage.plannedTopics <= 0
+              ? '0 of 0 planned topics logged'
+              : syllabusCoverage.note}
             {syllabusCoverage.plannedTopics > 0 && (
               <span className="block mt-1 text-slate-400">
-                {syllabusCoverage.completedSessions}/{syllabusCoverage.plannedTopics} topics
-                covered
+                {Math.min(
+                  syllabusCoverage.completedSessions,
+                  syllabusCoverage.plannedTopics
+                )}
+                /{syllabusCoverage.plannedTopics} topics covered
               </span>
             )}
           </div>

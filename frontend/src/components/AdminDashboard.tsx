@@ -569,8 +569,43 @@ export default function AdminDashboard({
   const [newFaculty, setNewFaculty] = useState('School of Computing & AI');
   const [newThumbnail, setNewThumbnail] = useState('https://images.unsplash.com/photo-1541339907198-e08756dedf3f?auto=format&fit=crop&q=80&w=600');
   const [newThumbnailFile, setNewThumbnailFile] = useState<File | null>(null);
+  const [localThumbnailPreview, setLocalThumbnailPreview] = useState('');
+  const [thumbnailLoadError, setThumbnailLoadError] = useState(false);
+  const [thumbnailFailedUrl, setThumbnailFailedUrl] = useState('');
   const [isThumbnailUploading, setIsThumbnailUploading] = useState(false);
   const [thumbnailUploadError, setThumbnailUploadError] = useState('');
+
+  // Revoke temporary object URLs when the local preview changes or component unmounts
+  useEffect(() => {
+    return () => {
+      if (localThumbnailPreview && localThumbnailPreview.startsWith('blob:')) {
+        URL.revokeObjectURL(localThumbnailPreview);
+      }
+    };
+  }, [localThumbnailPreview]);
+
+  const resolveCourseThumbnailSrc = (src: string) => {
+    const value = src?.toString().trim();
+    if (!value) return '';
+    if (value.startsWith('blob:') || value.startsWith('/') || /^https?:\/\//i.test(value) || /^\/\//.test(value)) {
+      return value;
+    }
+    return `/${value}`;
+  };
+
+  const imagePreviewSrc = localThumbnailPreview || resolveCourseThumbnailSrc(newThumbnail);
+
+  const clearThumbnailSelection = () => {
+    if (localThumbnailPreview && localThumbnailPreview.startsWith('blob:')) {
+      URL.revokeObjectURL(localThumbnailPreview);
+    }
+    setNewThumbnail('');
+    setNewThumbnailFile(null);
+    setLocalThumbnailPreview('');
+    setThumbnailLoadError(false);
+    setThumbnailFailedUrl('');
+    setThumbnailUploadError('');
+  };
 
   // Allocation subject states
   const [allocateLecturerId, setAllocateLecturerId] = useState('');
@@ -1759,6 +1794,10 @@ export default function AdminDashboard({
                           if (!file) return;
                           setNewThumbnailFile(file);
                           setThumbnailUploadError('');
+                          setThumbnailLoadError(false);
+
+                          const localUrl = URL.createObjectURL(file);
+                          setLocalThumbnailPreview(localUrl);
                           setIsThumbnailUploading(true);
 
                           try {
@@ -1778,6 +1817,7 @@ export default function AdminDashboard({
 
                             const payload = await response.json();
                             setNewThumbnail(payload.fileUrl || newThumbnail);
+                            setLocalThumbnailPreview('');
                             toast.success('Course image uploaded successfully.');
                           } catch (error: any) {
                             console.error('Thumbnail upload error:', error);
@@ -1792,22 +1832,41 @@ export default function AdminDashboard({
                       {thumbnailUploadError && <p className="text-[11px] text-rose-600">{thumbnailUploadError}</p>}
                     </div>
 
-                    {newThumbnail && (
+                    {(imagePreviewSrc || newThumbnail) && (
                       <div className="rounded-xl overflow-hidden border border-slate-200 bg-slate-50">
-                        <img src={newThumbnail} alt="Course thumbnail preview" className="w-full h-40 object-cover" />
-                        <div className="p-2 flex gap-2">
+                        {thumbnailLoadError ? (
+                          <div className="w-full h-40 bg-slate-100 flex flex-col items-center justify-center gap-2 text-slate-500 text-xs">
+                            <div className="w-10 h-10 rounded-full bg-slate-200 flex items-center justify-center text-slate-400">!</div>
+                            <span>Image unavailable</span>
+                            <span className="text-[10px] text-slate-400">Please upload another image or verify the URL.</span>
+                          </div>
+                        ) : (
+                          <img
+                            src={imagePreviewSrc}
+                            alt="Course thumbnail preview"
+                            className="w-full h-40 object-cover"
+                            onError={(event) => {
+                              const failedUrl = (event.currentTarget as HTMLImageElement).src;
+                              setThumbnailLoadError(true);
+                              setThumbnailFailedUrl(failedUrl);
+                              const isDev = typeof import.meta !== 'undefined' && (import.meta as any).env?.DEV;
+                              if (isDev) {
+                                console.error('Course thumbnail failed to load:', failedUrl);
+                              }
+                            }}
+                          />
+                        )}
+                        <div className="p-2 flex gap-2 items-center justify-between">
                           <button
                             type="button"
-                            onClick={() => {
-                              // Clear the thumbnail preview and mark for removal on save
-                              setNewThumbnail('');
-                              setNewThumbnailFile(null);
-                              setThumbnailUploadError('');
-                            }}
+                            onClick={clearThumbnailSelection}
                             className="text-[11px] text-rose-600 bg-rose-50 border border-rose-100 px-2 py-1 rounded"
                           >
                             Remove image
                           </button>
+                          {thumbnailLoadError && (
+                            <span className="text-[10px] text-slate-400">Preview could not be loaded.</span>
+                          )}
                         </div>
                       </div>
                     )}
