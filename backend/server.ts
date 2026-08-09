@@ -70,6 +70,12 @@ import {
   adminResetUserPassword,
   findUserByIdentifier,
 } from "./src/auth.ts";
+import {
+  continuousAssessmentTotal,
+  sanitizeStudentGradesRecord,
+  validateAggregateGrade,
+  validateMarkBreakdown,
+} from "./src/marksValidation.ts";
 
 // Import initial mock databases from src/data.ts to bootstrap our persistent store
 import { 
@@ -728,13 +734,13 @@ async function performDatabaseSync(dbState: any): Promise<void> {
 
         await tx.delete(grades).where(eq(grades.studentId, s.id));
         if (s.grades) {
-          for (const [subjCode, gr] of Object.entries(s.grades)) {
-            const g = gr as { cat: number; exam: number };
+          const sanitizedGrades = sanitizeStudentGradesRecord(s.grades, s.grades);
+          for (const [subjCode, gr] of Object.entries(sanitizedGrades)) {
             await tx.insert(grades).values({
               studentId: s.id,
               subjectCode: subjCode,
-              catScore: String(g.cat || 0),
-              examScore: String(g.exam || 0)
+              catScore: String(gr.cat),
+              examScore: String(gr.exam)
             });
           }
         }
@@ -2247,6 +2253,24 @@ app.post("/api/data", async (req, res) => {
   const dbVal = getDatabase();
   // Merge keys dynamically to ensure schema resilience
   const updatedDb = { ...dbVal, ...incomingData };
+
+  // Never persist out-of-range grades from client sync payloads
+  if (Array.isArray(updatedDb.students)) {
+    const previousById = new Map(
+      (Array.isArray(dbVal.students) ? dbVal.students : []).map((s: any) => [s.id, s])
+    );
+    updatedDb.students = updatedDb.students.map((student: any) => {
+      if (!student || typeof student !== "object") return student;
+      const previous = previousById.get(student.id) as { grades?: Record<string, { cat?: unknown; exam?: unknown }> } | undefined;
+      const previousGrades = previous?.grades;
+      const incomingGrades = student.grades as Record<string, { cat?: unknown; exam?: unknown }> | undefined;
+      return {
+        ...student,
+        grades: sanitizeStudentGradesRecord(incomingGrades, previousGrades),
+      };
+    });
+  }
+
   const success = saveDatabase(updatedDb);
 
   if (success) {
@@ -3360,6 +3384,89 @@ app.post(
     } catch (error: any) {
       console.error("Failed to log teaching session:", error);
       res.status(500).json({ error: clientSafeDbError("Failed to log session", error) });
+    }
+  }
+);
+
+// POST validated lecturer grade upsert (component totals → cat_score + exam_score)
+app.post(
+  ["/api/lecturer/grades", "/api/faculty/grades"],
+  async (req: any, res: any) => {
+    try {
+      const { studentId, subjectCode, cat, exam, assessments, marks } = req.body || {};
+      if (!studentId || !subjectCode) {
+        return res.status(400).json({ error: "studentId and subjectCode are required." });
+      }
+
+      const componentMarks = marks || {};
+      const assessmentList = Array.isArray(assessments) ? assessments : [];
+      const componentErrors = validateMarkBreakdown(componentMarks, assessmentList);
+      if (Object.keys(componentErrors).length > 0) {
+        const firstError = Object.values(componentErrors)[0];
+        return res.status(400).json({ error: firstError || "Invalid marks provided." });
+      }
+
+      const aggregateCat = continuousAssessmentTotal(componentMarks, assessmentList);
+      const validated = validateAggregateGrade(aggregateCat, exam);
+      if (validated.ok !== true) {
+        return res.status(400).json({ error: validated.error });
+      }
+      const aggregateGrade = validated;
+
+      const existing = await db
+        .select()
+        .from(grades)
+        .where(and(eq(grades.studentId, studentId), eq(grades.subjectCode, String(subjectCode).trim())))
+        .limit(1);
+
+      let saved;
+      if (existing.length > 0) {
+        const updated = await db
+          .update(grades)
+          .set({
+            catScore: String(aggregateGrade.cat),
+            examScore: String(aggregateGrade.exam),
+          })
+          .where(eq(grades.id, existing[0].id))
+          .returning();
+        saved = updated[0];
+      } else {
+        const inserted = await db
+          .insert(grades)
+          .values({
+            studentId,
+            subjectCode: String(subjectCode).trim(),
+            catScore: String(aggregateGrade.cat),
+            examScore: String(aggregateGrade.exam),
+          })
+          .returning();
+        saved = inserted[0];
+      }
+
+      // Keep in-memory / json cache consistent
+      const dbVal = getDatabase();
+      if (Array.isArray(dbVal.students)) {
+        dbVal.students = dbVal.students.map((student: any) => {
+          if (student.id !== studentId) return student;
+          return {
+            ...student,
+            grades: {
+              ...(student.grades || {}),
+              [String(subjectCode).trim()]: { cat: aggregateGrade.cat, exam: aggregateGrade.exam },
+            },
+          };
+        });
+        saveDatabase(dbVal);
+      }
+
+      res.json({
+        success: true,
+        grade: { cat: aggregateGrade.cat, exam: aggregateGrade.exam },
+        record: saved,
+      });
+    } catch (error: any) {
+      console.error("Failed to save lecturer grade:", error);
+      res.status(500).json({ error: clientSafeDbError("Unable to save grade.", error) });
     }
   }
 );

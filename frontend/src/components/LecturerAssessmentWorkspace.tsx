@@ -7,6 +7,18 @@ import {
   Bar, BarChart, CartesianGrid, Cell, LabelList, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
 import { Grade, LecturerAssignedSubject, Student } from '../types';
+import {
+  AGGREGATE_CAT_MAX,
+  AGGREGATE_EXAM_MAX,
+  continuousAssessmentTotal,
+  maxMarksForField,
+  parseMarkInput,
+  sumValidMarks,
+  validateAggregateGrade,
+  validateMarkBreakdown,
+  type MarkBreakdown,
+  type MarkField,
+} from '../utils/marksValidation';
 
 type AssessmentKind = 'CAT1' | 'CAT2' | 'Assignment' | 'FinalExam';
 
@@ -16,13 +28,6 @@ interface AssessmentDef {
   name: string;
   maxMarks: number;
   published: boolean;
-}
-
-interface MarkBreakdown {
-  cat1: number;
-  cat2: number;
-  assignment: number;
-  exam: number;
 }
 
 interface AssessmentAnalytics {
@@ -60,6 +65,8 @@ const KIND_OPTIONS: Array<{ kind: AssessmentKind; label: string; defaultMax: num
   { kind: 'Assignment', label: 'Assignment', defaultMax: 10 },
   { kind: 'FinalExam', label: 'Final Exam', defaultMax: 70 },
 ];
+
+const MARK_FIELDS: MarkField[] = ['cat1', 'cat2', 'assignment', 'exam'];
 
 function letterGrade(total: number): string {
   if (total >= 70) return 'A';
@@ -100,29 +107,12 @@ function loadBreakdowns(lecturerId: string, subject: string): Record<string, Mar
 }
 
 function splitCat(cat: number): Pick<MarkBreakdown, 'cat1' | 'cat2' | 'assignment'> {
-  const safe = Math.max(0, Math.min(30, Number(cat) || 0));
+  const safe = Math.max(0, Math.min(AGGREGATE_CAT_MAX, Number(cat) || 0));
   const cat1 = Math.min(10, safe);
   const remaining = safe - cat1;
   const cat2 = Math.min(10, remaining);
   const assignment = Math.max(0, remaining - cat2);
   return { cat1, cat2, assignment };
-}
-
-function validateMarks(marks: MarkBreakdown): Partial<Record<keyof MarkBreakdown, string>> {
-  const errors: Partial<Record<keyof MarkBreakdown, string>> = {};
-  const continuousFields: Array<keyof Pick<MarkBreakdown, 'cat1' | 'cat2' | 'assignment'>> = ['cat1', 'cat2', 'assignment'];
-
-  for (const field of continuousFields) {
-    if (!Number.isFinite(marks[field]) || marks[field] < 0 || marks[field] > 10) {
-      errors[field] = 'Enter a mark from 0 to 10.';
-    }
-  }
-
-  if (!Number.isFinite(marks.exam) || marks.exam < 0 || marks.exam > 70) {
-    errors.exam = 'Enter a mark from 0 to 70.';
-  }
-
-  return errors;
 }
 
 export default function LecturerAssessmentWorkspace({
@@ -228,56 +218,83 @@ export default function LecturerAssessmentWorkspace({
     if (selectedSubject) localStorage.setItem(marksKey(lecturerId, selectedSubject), JSON.stringify(next));
   };
 
-  const updateDraft = (studentId: string, field: keyof MarkBreakdown, value: string) => {
-    const numeric = value === '' ? 0 : Number(value);
+  const updateDraft = (studentId: string, field: MarkField, value: string) => {
+    const numeric = parseMarkInput(value);
     setDrafts((prev) => ({
       ...prev,
       [studentId]: {
         ...prev[studentId],
-        [field]: Number.isNaN(numeric) ? 0 : numeric,
+        [field]: Number.isNaN(numeric) ? Number.NaN : numeric,
       },
     }));
   };
 
-  const saveStudentMarks = (student: Student) => {
+  const saveStudentMarks = async (student: Student) => {
     if (!selectedSubject) return;
     const marks = resolveBreakdown(student);
-    const fieldErrors = validateMarks(marks);
+    const fieldErrors = validateMarkBreakdown(marks, assessments);
     const firstError = Object.values(fieldErrors)[0];
     if (firstError) {
       showWarning('Mark invalid', firstError);
       return;
     }
-    const catTotal = marks.cat1 + marks.cat2 + marks.assignment;
-    if (!Number.isFinite(catTotal) || catTotal < 0 || catTotal > 30) {
-      showWarning('CAT total invalid', 'CAT 1 + CAT 2 + Assignment must be between 0 and 30.');
+    const catTotal = continuousAssessmentTotal(marks, assessments);
+    const aggregate = validateAggregateGrade(catTotal, marks.exam);
+    if (aggregate.ok === false) {
+      showWarning('Grade invalid', aggregate.error);
       return;
     }
-    if (marks.exam < 0 || marks.exam > 70) {
-      showWarning('Exam score invalid', 'Final Exam must be between 0 and 70.');
-      return;
+
+    try {
+      const response = await fetch('/api/lecturer/grades', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lecturerId,
+          studentId: student.id,
+          subjectCode: selectedSubject,
+          cat: aggregate.cat,
+          exam: aggregate.exam,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        showWarning('Save blocked', body.error || 'Unable to save marks.');
+        return;
+      }
+
+      const nextBreakdowns = { ...breakdowns, [student.id]: marks };
+      persistBreakdowns(nextBreakdowns);
+      onUpdateGrades(student.id, selectedSubject, {
+        cat: body.grade?.cat ?? aggregate.cat,
+        exam: body.grade?.exam ?? aggregate.exam,
+      });
+      setDrafts((prev) => {
+        const copy = { ...prev };
+        delete copy[student.id];
+        return copy;
+      });
+      setSaveFlash(student.id);
+      setTimeout(() => setSaveFlash(null), 1200);
+      showToast(`Saved marks for ${student.name}.`, 'success');
+    } catch (error: any) {
+      showWarning('Save failed', error?.message || 'Unable to save marks.');
     }
-    const nextBreakdowns = { ...breakdowns, [student.id]: marks };
-    persistBreakdowns(nextBreakdowns);
-    onUpdateGrades(student.id, selectedSubject, { cat: catTotal, exam: marks.exam });
-    setDrafts((prev) => {
-      const copy = { ...prev };
-      delete copy[student.id];
-      return copy;
-    });
-    setSaveFlash(student.id);
-    setTimeout(() => setSaveFlash(null), 1200);
-    showToast(`Saved marks for ${student.name}.`, 'success');
   };
 
   const saveAllVisible = () => {
-    filteredStudents.forEach((student) => saveStudentMarks(student));
+    void (async () => {
+      for (const student of filteredStudents) {
+        await saveStudentMarks(student);
+      }
+    })();
   };
 
   const createAssessment = () => {
     const option = KIND_OPTIONS.find((item) => item.kind === newKind);
     const name = newName.trim() || option?.label || newKind;
-    const maxMarks = Math.max(1, Math.min(newKind === 'FinalExam' ? 70 : 30, Number(newMax) || option?.defaultMax || 10));
+    const kindCap = newKind === 'FinalExam' ? AGGREGATE_EXAM_MAX : AGGREGATE_CAT_MAX;
+    const maxMarks = Math.max(1, Math.min(kindCap, Number(newMax) || option?.defaultMax || 10));
     if (assessments.some((item) => item.kind === newKind)) {
       showWarning('Assessment exists', `${option?.label || newKind} is already configured for this module.`);
       return;
@@ -300,14 +317,14 @@ export default function LecturerAssessmentWorkspace({
 
   const reportRows = () => subjectStudents.map((student) => {
     const marks = resolveBreakdown(student);
-    const total = marks.cat1 + marks.cat2 + marks.assignment + marks.exam;
+    const total = sumValidMarks(marks, assessments);
     return [
       student.admissionNo,
       student.name,
-      String(marks.cat1),
-      String(marks.cat2),
-      String(marks.assignment),
-      String(marks.exam),
+      String(Number.isFinite(marks.cat1) ? marks.cat1 : ''),
+      String(Number.isFinite(marks.cat2) ? marks.cat2 : ''),
+      String(Number.isFinite(marks.assignment) ? marks.assignment : ''),
+      String(Number.isFinite(marks.exam) ? marks.exam : ''),
       String(total),
       letterGrade(total),
       student.grades[selectedSubject] ? 'Graded' : 'Pending',
@@ -520,7 +537,7 @@ export default function LecturerAssessmentWorkspace({
                         <input
                           type="number"
                           min={1}
-                          max={assessment.kind === 'FinalExam' ? 70 : 30}
+                          max={assessment.kind === 'FinalExam' ? AGGREGATE_EXAM_MAX : AGGREGATE_CAT_MAX}
                           value={assessment.maxMarks}
                           onChange={(event) => persistAssessments(assessments.map((item) => item.id === assessment.id ? { ...item, maxMarks: Number(event.target.value) || 1 } : item))}
                           className="w-20 rounded border border-slate-200 px-2 py-1"
@@ -573,7 +590,7 @@ export default function LecturerAssessmentWorkspace({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-sm font-semibold text-slate-900">Marks entry</h3>
-            <p className="text-xs text-slate-500">CAT components save into continuous assessment (max 30). Final Exam saves separately (max 70).</p>
+            <p className="text-xs text-slate-500">CAT components save into continuous assessment (max {AGGREGATE_CAT_MAX}). Final Exam saves separately (max {AGGREGATE_EXAM_MAX}).</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative">
@@ -619,29 +636,39 @@ export default function LecturerAssessmentWorkspace({
               <tbody>
                 {filteredStudents.map((student) => {
                   const marks = resolveBreakdown(student);
-                  const total = marks.cat1 + marks.cat2 + marks.assignment + marks.exam;
+                  const fieldErrors = validateMarkBreakdown(marks, assessments);
+                  const total = sumValidMarks(marks, assessments);
+                  const hasInvalid = Object.keys(fieldErrors).length > 0;
                   const graded = !!student.grades[selectedSubject];
-                  const fieldErrors = validateMarks(marks);
                   return (
                     <tr key={student.id} className="border-b border-slate-100 last:border-0">
                       <td className="px-3 py-2.5 font-mono font-semibold text-slate-800">{student.admissionNo}</td>
                       <td className="px-3 py-2.5 font-medium text-slate-800">{student.name}</td>
-                      {(['cat1', 'cat2', 'assignment', 'exam'] as const).map((field) => (
-                        <td key={field} className="px-3 py-2.5 text-center">
-                          <input
-                            type="number"
-                            min={0}
-                            max={field === 'exam' ? 70 : 10}
-                            value={marks[field]}
-                            onChange={(event) => updateDraft(student.id, field, event.target.value)}
-                            aria-invalid={Boolean(fieldErrors[field])}
-                            title={fieldErrors[field]}
-                            className={`w-16 rounded border px-2 py-1 text-center font-mono outline-none focus:ring-2 ${fieldErrors[field] ? 'border-rose-400 bg-rose-50 focus:ring-rose-100' : 'border-slate-200 focus:border-blue-400 focus:ring-blue-100'}`}
-                          />
-                        </td>
-                      ))}
-                      <td className="px-3 py-2.5 text-center font-semibold text-slate-900">{total}</td>
-                      <td className="px-3 py-2.5 text-center font-semibold text-slate-900">{letterGrade(total)}</td>
+                      {MARK_FIELDS.map((field) => {
+                        const max = maxMarksForField(assessments, field);
+                        const displayValue = Number.isFinite(marks[field]) ? marks[field] : '';
+                        return (
+                          <td key={field} className="px-3 py-2.5 text-center">
+                            <input
+                              type="number"
+                              min={0}
+                              max={max}
+                              step="any"
+                              value={displayValue}
+                              onChange={(event) => updateDraft(student.id, field, event.target.value)}
+                              aria-invalid={Boolean(fieldErrors[field])}
+                              title={fieldErrors[field]}
+                              className={`w-16 rounded border px-2 py-1 text-center font-mono outline-none focus:ring-2 ${fieldErrors[field] ? 'border-rose-400 bg-rose-50 focus:ring-rose-100' : 'border-slate-200 focus:border-blue-400 focus:ring-blue-100'}`}
+                            />
+                          </td>
+                        );
+                      })}
+                      <td className={`px-3 py-2.5 text-center font-semibold ${hasInvalid ? 'text-slate-400' : 'text-slate-900'}`}>
+                        {total}
+                      </td>
+                      <td className={`px-3 py-2.5 text-center font-semibold ${hasInvalid ? 'text-slate-400' : 'text-slate-900'}`}>
+                        {hasInvalid ? '—' : letterGrade(total)}
+                      </td>
                       <td className="px-3 py-2.5 text-center">
                         <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${graded ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
                           {graded ? 'Graded' : 'Pending'}
@@ -650,8 +677,9 @@ export default function LecturerAssessmentWorkspace({
                       <td className="px-3 py-2.5 text-right">
                         <button
                           type="button"
-                          onClick={() => saveStudentMarks(student)}
-                          className={`rounded-lg px-2.5 py-1.5 text-[11px] font-semibold ${saveFlash === student.id ? 'bg-emerald-600 text-white' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                          onClick={() => void saveStudentMarks(student)}
+                          disabled={hasInvalid}
+                          className={`rounded-lg px-2.5 py-1.5 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${saveFlash === student.id ? 'bg-emerald-600 text-white' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
                         >
                           {saveFlash === student.id ? 'Saved' : 'Save'}
                         </button>
