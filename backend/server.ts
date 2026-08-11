@@ -64,6 +64,8 @@ import {
   upsertUserAuthRecord,
   sanitizeProfile,
   issueAuthToken,
+  issueAccessToken,
+  issueRefreshToken,
   migrateAuthSchemaAndData,
   authenticateUser,
   changeUserPassword,
@@ -1490,8 +1492,19 @@ async function authenticateJWT(req: any, res: any, next: any) {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as any;
-    const session = await db.execute(sql`SELECT session_version, is_active FROM users WHERE email = ${decoded.email} LIMIT 1`);
-    const current = session.rows[0] as any;
+    let current: any = null;
+
+    if (decoded.roleId || decoded.userId) {
+      const lookupId = decoded.roleId || decoded.userId;
+      const sessionById = await db.execute(sql`SELECT COALESCE(session_version, 0) AS session_version, is_active FROM users WHERE LOWER(role_id) = LOWER(${lookupId}) OR LOWER(username) = LOWER(${lookupId}) OR LOWER(uid) = LOWER(${lookupId}) LIMIT 1`);
+      current = sessionById.rows[0];
+    }
+
+    if (!current && decoded.email) {
+      const sessionByEmail = await db.execute(sql`SELECT COALESCE(session_version, 0) AS session_version, is_active FROM users WHERE LOWER(email) = LOWER(${decoded.email}) LIMIT 1`);
+      current = sessionByEmail.rows[0];
+    }
+
     if (!current || current.is_active !== true || Number(decoded.sv || 0) !== Number(current.session_version || 0)) {
       return res.status(401).json({ success: false, error: "Access Denied: This session is no longer valid. Please sign in again." });
     }
@@ -1503,6 +1516,9 @@ async function authenticateJWT(req: any, res: any, next: any) {
     
     next();
   } catch (err: any) {
+    if (err?.name !== 'JsonWebTokenError' && err?.name !== 'TokenExpiredError') {
+      console.error("authenticateJWT execution error:", err);
+    }
     return res.status(401).json({
       success: false,
       error: "Access Denied: Invalid or expired authentication token."
@@ -1514,6 +1530,7 @@ async function authenticateJWT(req: any, res: any, next: any) {
 const publicAPIPaths = [
   "/api/health",
   "/api/auth/login",
+  "/api/auth/refresh",
   "/api/auth/reset-request",
   "/api/auth/reset-password",
   "/api/auth/reset-requests",
@@ -2140,11 +2157,54 @@ app.post("/api/auth/login", async (req: any, res: any) => {
       role: result.role,
       userId: result.userId,
       token: result.token,
+      refreshToken: result.refreshToken,
       profile: result.profile
     });
   } catch (err: any) {
     console.error("Login endpoint error:", err);
     res.status(500).json({ success: false, error: clientSafeDbError("Authentication failed.", err) });
+  }
+});
+
+// Silent Token Refresh Endpoint
+app.post("/api/auth/refresh", async (req: any, res: any) => {
+  try {
+    const refreshToken = req.body?.refreshToken || req.headers['x-refresh-token'];
+    if (!refreshToken) {
+      return res.status(401).json({ success: false, error: "Refresh token required." });
+    }
+
+    const decoded = jwt.verify(refreshToken, JWT_SECRET) as any;
+    if (decoded.tokenType !== 'refresh') {
+      return res.status(401).json({ success: false, error: "Invalid token type." });
+    }
+
+    let current: any = null;
+    if (decoded.roleId || decoded.userId) {
+      const lookupId = decoded.roleId || decoded.userId;
+      const sessionById = await db.execute(sql`SELECT * FROM users WHERE LOWER(role_id) = LOWER(${lookupId}) OR LOWER(username) = LOWER(${lookupId}) OR LOWER(uid) = LOWER(${lookupId}) LIMIT 1`);
+      current = sessionById.rows[0];
+    }
+    if (!current && decoded.email) {
+      const sessionByEmail = await db.execute(sql`SELECT * FROM users WHERE LOWER(email) = LOWER(${decoded.email}) LIMIT 1`);
+      current = sessionByEmail.rows[0];
+    }
+
+    if (!current || current.is_active !== true || Number(decoded.sv || 0) !== Number(current.session_version || 0)) {
+      return res.status(401).json({ success: false, error: "Session invalid or expired." });
+    }
+
+    const profileId = current.role_id || current.username || String(current.id);
+    const newAccessToken = issueAccessToken(profileId, current.role, current.email, JWT_SECRET, current.role_id, current.session_version || 0);
+    const newRefreshToken = issueRefreshToken(profileId, current.role, current.email, JWT_SECRET, current.role_id, current.session_version || 0);
+
+    return res.json({
+      success: true,
+      token: newAccessToken,
+      refreshToken: newRefreshToken
+    });
+  } catch (err) {
+    return res.status(401).json({ success: false, error: "Invalid or expired refresh token." });
   }
 });
 
@@ -5362,18 +5422,22 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
     const requestedStudentId =
       (req.query.studentId as string) || (req.headers["x-student-id"] as string);
     const studentId = req.user.userId as string;
-    if (requestedStudentId && requestedStudentId !== studentId) {
-      return res.status(403).json({ error: "Students can only view their own dashboard." });
-    }
+    const roleId = (req.user.roleId as string) || studentId;
 
     const [studentRow] = await db
       .select()
       .from(students)
-      .where(eq(students.id, studentId))
+      .where(or(eq(students.id, studentId), eq(students.id, roleId), eq(students.admissionNo, studentId), eq(students.admissionNo, roleId)))
       .limit(1);
 
     if (!studentRow) {
       return res.status(404).json({ error: "Student profile not found" });
+    }
+
+    const actualStudentId = studentRow.id;
+
+    if (requestedStudentId && requestedStudentId !== actualStudentId && requestedStudentId !== studentRow.admissionNo) {
+      return res.status(403).json({ error: "Students can only view their own dashboard." });
     }
 
     const enrollmentRows = await db
@@ -5694,9 +5758,9 @@ app.get("/api/student/dashboard", async (req: any, res: any) => {
   // keep the already-authenticated student's portal readable during a transient
   // database failure; every fallback use is surfaced in failedModules/logs.
   const snapshot = getDatabase();
-  const snapshotStudent = (snapshot?.students || []).find((student: any) => student?.id === userId) || null;
+  const snapshotStudent = (snapshot?.students || []).find((student: any) => student?.id === userId || student?.admissionNo === userId || student?.email === userId) || null;
   const profilePromise = loadModule("student-profile", snapshotStudent, async () => {
-    const [row] = await db.select().from(students).where(eq(students.id, userId)).limit(1);
+    const [row] = await db.select().from(students).where(or(eq(students.id, userId), eq(students.admissionNo, userId))).limit(1);
     return row || null;
   });
 

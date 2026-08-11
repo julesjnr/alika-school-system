@@ -105,13 +105,13 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     requestUrl.includes('/api/auth/reset-requests')
   );
 
-  const expireSession = () => {
+  const expireSession = (message = 'Your session is no longer valid. Please log in again.') => {
     localStorage.removeItem("zenti_current_user_role");
     localStorage.removeItem("zenti_current_user_id");
     localStorage.removeItem("zenti_session_token");
     localStorage.removeItem("zenti_refresh_token");
     window.history.replaceState({}, '', '/login');
-    window.dispatchEvent(new CustomEvent('zenti-session-expired'));
+    window.dispatchEvent(new CustomEvent('zenti-session-expired', { detail: { message } }));
   };
 
   if (response.status === 401 && !isAuthEndpoint && !isRefreshEndpoint) {
@@ -121,7 +121,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const retriedResponse = await originalFetch(input, init);
       // If token refresh succeeded but we still get 401, treat as expired.
       if (retriedResponse.status === 401) {
-        expireSession();
+        expireSession('Your session is no longer valid. Please log in again.');
         return retriedResponse;
       }
       // For other statuses (including 403), return the response so the UI can
@@ -130,9 +130,9 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     }
 
     // No refresh token or refresh failed: expire session.
-    expireSession();
+    expireSession('Your session is no longer valid. Please log in again.');
   } else if ((response.status === 401 || response.status === 403) && isRefreshEndpoint) {
-    expireSession();
+    expireSession('Your session is no longer valid. Please log in again.');
   }
 
   return response;

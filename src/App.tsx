@@ -229,10 +229,10 @@ export default function App() {
 
           if (!hasError && savedRole && savedId) {
             if (savedRole === "student") {
-              const studentExists = (db.students || []).some((s: any) => s.id === savedId);
+              const studentExists = (db.students || []).some((s: any) => s.id === savedId || s.admissionNo === savedId || s.email === savedId);
               if (!studentExists) hasError = true;
             } else if (["lecturer", "accountant", "librarian"].includes(savedRole)) {
-              const lecturerExists = (db.lecturers || []).some((l: any) => l.id === savedId);
+              const lecturerExists = (db.lecturers || []).some((l: any) => l.id === savedId || l.designatorCode === savedId || l.email === savedId);
               if (!lecturerExists) hasError = true;
             } else if (savedRole === "admin") {
               if (savedId !== "admin") hasError = true;
@@ -1360,8 +1360,8 @@ Zenti Library Services`;
 console.log("CURRENT USER ID:", currentUserId);
 console.log("ACTIVE LECTURER:", activeLecturerProfile);
 
-  const activeStudentProfile = (students && students.length > 0) ? (students.find(s => s.id === currentUserId) || students[0]) : null;
-  const activeLecturerProfile = (lecturers && lecturers.length > 0) ? (lecturers.find(l => l.id === currentUserId) || lecturers[0]) : null;
+  const activeStudentProfile = (students && students.length > 0) ? (students.find(s => s.id === currentUserId || s.admissionNo === currentUserId || s.email === currentUserId) || students[0]) : null;
+  const activeLecturerProfile = (lecturers && lecturers.length > 0) ? (lecturers.find(l => l.id === currentUserId || l.designatorCode === currentUserId || l.email === currentUserId) || lecturers[0]) : null;
 
   if (isBooting) {
     return (

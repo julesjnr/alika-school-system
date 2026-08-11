@@ -21,7 +21,8 @@ export default function SessionTimeout({
   // Retrieve last recorded activity time
   const getLastActivity = (): number => {
     const stored = localStorage.getItem(lastActivityKey);
-    return stored ? parseInt(stored, 10) : Date.now();
+    const parsed = stored ? parseInt(stored, 10) : Date.now();
+    return isNaN(parsed) || parsed <= 0 ? Date.now() : parsed;
   };
 
   // Record a new activity time

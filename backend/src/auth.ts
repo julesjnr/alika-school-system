@@ -237,6 +237,7 @@ export async function migrateAuthSchemaAndData(inMemoryDb?: any): Promise<void> 
         role_id VARCHAR(255),
         is_active BOOLEAN DEFAULT TRUE NOT NULL,
         must_change_password BOOLEAN DEFAULT TRUE NOT NULL,
+        session_version INTEGER DEFAULT 0 NOT NULL,
         last_login TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
         updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
@@ -249,6 +250,7 @@ export async function migrateAuthSchemaAndData(inMemoryDb?: any): Promise<void> 
       ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(255);
       ALTER TABLE users ADD COLUMN IF NOT EXISTS role_id VARCHAR(255);
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INTEGER DEFAULT 0 NOT NULL;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
     `);
 
