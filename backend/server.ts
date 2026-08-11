@@ -5188,6 +5188,294 @@ app.post("/api/students/:id/reset-password", async (req, res) => {
 });
 
 /**
+ * Student portal visual summary used by StudentVisualSummaryDashboard.
+ * Requires an authenticated student JWT; students may only load their own data.
+ */
+app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: any, res: any) => {
+  try {
+    if (req.user?.role !== "student" || !req.user?.userId) {
+      return res.status(403).json({
+        error: "Only an authenticated student may load this dashboard summary.",
+      });
+    }
+
+    const requestedStudentId =
+      (req.query.studentId as string) || (req.headers["x-student-id"] as string);
+    const studentId = req.user.userId as string;
+    if (requestedStudentId && requestedStudentId !== studentId) {
+      return res.status(403).json({ error: "Students can only view their own dashboard." });
+    }
+
+    const [studentRow] = await db
+      .select()
+      .from(students)
+      .where(eq(students.id, studentId))
+      .limit(1);
+
+    if (!studentRow) {
+      return res.status(404).json({ error: "Student profile not found" });
+    }
+
+    const enrollmentRows = await db
+      .select()
+      .from(studentEnrollments)
+      .where(eq(studentEnrollments.studentId, studentId));
+
+    const gradeRows = await db
+      .select()
+      .from(grades)
+      .where(eq(grades.studentId, studentId));
+
+    const attendanceRows = await db
+      .select()
+      .from(studentAttendance)
+      .where(eq(studentAttendance.studentId, studentId));
+
+    const invoiceRows = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.studentId, studentId));
+
+    const [paymentRows, notificationRows, scheduleRows, courseRows, lecturerRows, lecturerSubjectRows] =
+      await Promise.all([
+        db.select().from(payments).where(eq(payments.studentId, studentId)),
+        db
+          .select()
+          .from(notifications)
+          .where(
+            or(
+              eq(notifications.targetUserId, studentId),
+              eq(notifications.targetUserRole, "student"),
+              eq(notifications.targetUserRole, "all")
+            )
+          )
+          .orderBy(desc(notifications.dateTime))
+          .limit(5),
+        db.select().from(lectureSchedules),
+        db.select().from(courses),
+        db.select().from(lecturers).where(eq(lecturers.isActive, true)),
+        db.select().from(lecturerSubjects),
+      ]);
+    const activeCourseCount = courseRows.filter((c) => c.active !== false).length;
+
+    const markToGpa = (mark: number): number => {
+      if (mark >= 70) return 4.0;
+      if (mark >= 60) return 3.0;
+      if (mark >= 50) return 2.0;
+      if (mark >= 40) return 1.0;
+      return 0.0;
+    };
+
+    const gpaStanding = (value: number): string => {
+      if (value >= 3.7) return "Excellent";
+      if (value >= 3.0) return "Good";
+      if (value >= 2.0) return "Satisfactory";
+      if (value > 0) return "At Risk";
+      return "N/A";
+    };
+
+    let gpa: number | null = null;
+    let gpaLabel = "N/A";
+    if (gradeRows.length > 0) {
+      const total = gradeRows.reduce((sum, g) => {
+        const mark = Number(g.catScore || 0) + Number(g.examScore || 0);
+        return sum + markToGpa(mark);
+      }, 0);
+      gpa = Number((total / gradeRows.length).toFixed(2));
+      gpaLabel = gpaStanding(gpa);
+    }
+
+    const sortedGrades = [...gradeRows].sort((a, b) =>
+      String(a.gradedAt || "").localeCompare(String(b.gradedAt || ""))
+    );
+    let runningGpaSum = 0;
+    const gpaTrend = sortedGrades.map((g, index) => {
+      const mark = Number(g.catScore || 0) + Number(g.examScore || 0);
+      runningGpaSum += markToGpa(mark);
+      const pointGpa = Number((runningGpaSum / (index + 1)).toFixed(2));
+      const dateLabel = g.gradedAt
+        ? new Date(g.gradedAt).toLocaleDateString("en-GB", { month: "short", year: "2-digit" })
+        : g.subjectCode;
+      return {
+        label: dateLabel,
+        semester: dateLabel,
+        GPA: pointGpa,
+        subjectCode: g.subjectCode,
+        gradedAt: g.gradedAt || null,
+      };
+    });
+
+    const enrolledCodes = enrollmentRows.map((e) => e.courseCode);
+    const attendanceByCode = new Map(
+      attendanceRows.map((a) => [a.subjectCode, Number(a.attendanceRate)])
+    );
+    const attendanceValues = enrolledCodes
+      .map((code) => attendanceByCode.get(code))
+      .filter((v): v is number => typeof v === "number" && !Number.isNaN(v));
+
+    const attendanceRate =
+      attendanceValues.length > 0
+        ? Number(
+            (
+              attendanceValues.reduce((s, v) => s + v, 0) / attendanceValues.length
+            ).toFixed(1)
+          )
+        : null;
+
+    const outstandingFees = invoiceRows
+      .filter((i) => i.status === "unpaid")
+      .reduce((sum, i) => sum + Number(i.amount || 0), 0);
+    const totalFees = invoiceRows.reduce((sum, i) => sum + Number(i.amount || 0), 0);
+    const paidFees = paymentRows.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+
+    const courseByCode = new Map(courseRows.map((course) => [course.code, course]));
+    const lecturerById = new Map(lecturerRows.map((lecturer) => [lecturer.id, lecturer]));
+    const lecturerIdByCourse = new Map(
+      lecturerSubjectRows.map((assignment) => [assignment.subjectCode, assignment.lecturerId])
+    );
+    const today = new Date().toISOString().slice(0, 10);
+    const todaySchedule = scheduleRows
+      .filter((schedule) => enrolledCodes.includes(schedule.subjectCode) && schedule.sessionDate === today)
+      .sort((a, b) => a.startTime.localeCompare(b.startTime))
+      .map((schedule) => ({
+        id: schedule.id,
+        time: `${schedule.startTime}–${schedule.endTime}`,
+        courseCode: schedule.subjectCode,
+        unitName: courseByCode.get(schedule.subjectCode)?.title || schedule.subjectCode,
+        lecturer: lecturerById.get(schedule.lecturerId)?.name || null,
+        room: schedule.room || null,
+      }));
+    const registeredUnits = enrolledCodes.map((courseCode) => ({
+      courseCode,
+      unitName: courseByCode.get(courseCode)?.title || courseCode,
+      credits: null,
+      lecturer: lecturerById.get(lecturerIdByCourse.get(courseCode) || "")?.name || null,
+      status: "Active",
+    }));
+
+    const completedUnits = gradeRows.filter((g) => {
+      const mark = Number(g.catScore || 0) + Number(g.examScore || 0);
+      return mark >= 40 && enrolledCodes.includes(g.subjectCode);
+    }).length;
+
+    const requiredUnits = Math.max(activeCourseCount, completedUnits, 1);
+    const degreePercent = Math.min(100, Math.round((completedUnits / requiredUnits) * 100));
+
+    const gradedCodes = new Set(gradeRows.map((g) => g.subjectCode));
+    const deliverables: Array<{
+      id: string;
+      title: string;
+      detail: string;
+      priority: "high" | "normal" | "done";
+      type: string;
+    }> = [];
+
+    if (outstandingFees > 0) {
+      deliverables.push({
+        id: "fees",
+        title: "Settle outstanding tuition fees",
+        detail: `KES ${outstandingFees.toLocaleString()} unpaid on your finance ledger.`,
+        priority: "high",
+        type: "finance",
+      });
+    }
+
+    const remainingToEnroll = Math.max(0, activeCourseCount - enrolledCodes.length);
+    if (remainingToEnroll > 0) {
+      deliverables.push({
+        id: "enroll",
+        title: "Complete unit registration",
+        detail: `${remainingToEnroll} curriculum unit${remainingToEnroll === 1 ? "" : "s"} still available to enroll.`,
+        priority: "normal",
+        type: "enrollment",
+      });
+    }
+
+    const awaitingGrades = enrolledCodes.filter((code) => !gradedCodes.has(code));
+    if (awaitingGrades.length > 0) {
+      deliverables.push({
+        id: "grades",
+        title: "Awaiting published grades",
+        detail: `${awaitingGrades.length} enrolled module${awaitingGrades.length === 1 ? "" : "s"} without CAT/exam marks yet.`,
+        priority: "normal",
+        type: "grades",
+      });
+    }
+
+    for (const code of enrolledCodes) {
+      const rate = attendanceByCode.get(code);
+      if (typeof rate === "number" && rate < 75) {
+        deliverables.push({
+          id: `att-${code}`,
+          title: `Attendance below threshold (${code})`,
+          detail: `Current rate ${rate}% — exam eligibility requires at least 75%.`,
+          priority: "high",
+          type: "attendance",
+        });
+      }
+    }
+
+    const paperRows = await db
+      .select({
+        semester: examPapers.semester,
+        year: examPapers.year,
+        subjectCode: examPapers.subjectCode,
+      })
+      .from(examPapers)
+      .orderBy(desc(examPapers.year))
+      .limit(50);
+    const relevantPapers = paperRows.filter((paper) => enrolledCodes.includes(paper.subjectCode));
+    const latestPaper = (relevantPapers.length > 0 ? relevantPapers : paperRows)[0];
+    const academicYear = studentRow.cohort || null;
+
+    res.json({
+      studentId,
+      admissionNo: studentRow.admissionNo,
+      programme: studentRow.programme || studentRow.department || null,
+      semester: latestPaper?.semester || null,
+      academicYear,
+      gpa,
+      gpaLabel,
+      creditsEarned: null,
+      modulesPassed: completedUnits,
+      attendanceRate,
+      activeModules: enrolledCodes.length,
+      requiredUnits: null,
+      outstandingFees,
+      feeSummary: {
+        total: totalFees,
+        paid: paidFees,
+        balance: Math.max(0, totalFees - paidFees),
+        status: outstandingFees > 0 ? "Outstanding" : totalFees > 0 ? "Paid" : "No fees posted",
+      },
+      gpaTrend,
+      todaySchedule,
+      registeredUnits,
+      notifications: notificationRows.map((notification) => ({
+        id: notification.id,
+        title: notification.title,
+        message: notification.message,
+        type: notification.type,
+        dateTime: notification.dateTime,
+      })),
+      degreeProgress: {
+        completed: completedUnits,
+        required: requiredUnits,
+        percent: degreePercent,
+        note:
+          "Required units currently equal active courses in the catalogue until a degree_requirements table is added.",
+      },
+      deliverables,
+      nextLecture: todaySchedule[0] || null,
+      scheduleAvailable: todaySchedule.length > 0,
+    });
+  } catch (error: any) {
+    console.error("Failed to build student dashboard summary:", error);
+    res.status(500).json({ error: error.message || "Failed to load dashboard summary" });
+  }
+});
+
+/**
  * Load the student portal in independently-failable modules.  This deliberately
  * does not use loadFullDatabaseState(): one unrelated table (for example the
  * library) must never prevent a student from seeing their profile or fees.
