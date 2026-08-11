@@ -16,6 +16,7 @@ const studentSchemaMigrations = [
   "0007_attendance_late_students.sql",
   "0008_allow_negative_invoice_amounts.sql",
   "0009_admissions_academics_production.sql",
+  "0011_admin_password_reset_tokens.sql",
 ];
 
 export async function runMigrations(retries = 3, delayMs = 2000): Promise<void> {

@@ -86,18 +86,18 @@ export function sanitizeProfile(profileObj: Record<string, unknown> | null | und
   return rest;
 }
 
-export function issueAccessToken(userId: string, role: string, email: string, jwtSecret: string, roleId?: string): string {
+export function issueAccessToken(userId: string, role: string, email: string, jwtSecret: string, roleId?: string, sessionVersion = 0): string {
   const expiresIn = (process.env.ACCESS_TOKEN_EXPIRES_IN || '15m') as any;
-  return jwt.sign({ userId, role, email, roleId: roleId || userId, tokenType: 'access' }, jwtSecret, { expiresIn });
+  return jwt.sign({ userId, role, email, roleId: roleId || userId, tokenType: 'access', sv: sessionVersion }, jwtSecret, { expiresIn });
 }
 
-export function issueRefreshToken(userId: string, role: string, email: string, jwtSecret: string, roleId?: string): string {
+export function issueRefreshToken(userId: string, role: string, email: string, jwtSecret: string, roleId?: string, sessionVersion = 0): string {
   const expiresIn = (process.env.REFRESH_TOKEN_EXPIRES_IN || '7d') as any;
-  return jwt.sign({ userId, role, email, roleId: roleId || userId, tokenType: 'refresh' }, jwtSecret, { expiresIn });
+  return jwt.sign({ userId, role, email, roleId: roleId || userId, tokenType: 'refresh', sv: sessionVersion }, jwtSecret, { expiresIn });
 }
 
-export function issueAuthToken(userId: string, role: string, email: string, jwtSecret: string, roleId?: string): string {
-  return issueAccessToken(userId, role, email, jwtSecret, roleId);
+export function issueAuthToken(userId: string, role: string, email: string, jwtSecret: string, roleId?: string, sessionVersion = 0): string {
+  return issueAccessToken(userId, role, email, jwtSecret, roleId, sessionVersion);
 }
 
 export interface UserAuthRecord {
@@ -109,6 +109,7 @@ export interface UserAuthRecord {
   roleId: string | null;
   isActive: boolean;
   mustChangePassword: boolean;
+  sessionVersion?: number;
   lastLogin: string | null;
   createdAt: string;
   updatedAt: string;
@@ -443,8 +444,8 @@ export async function authenticateUser(params: {
   }
 
   // Generate JWT token
-  const token = issueAccessToken(profileId, userRole, user.email, jwtSecret, user.role_id);
-  const refreshToken = issueRefreshToken(profileId, userRole, user.email, jwtSecret, user.role_id);
+  const token = issueAccessToken(profileId, userRole, user.email, jwtSecret, user.role_id, user.session_version || 0);
+  const refreshToken = issueRefreshToken(profileId, userRole, user.email, jwtSecret, user.role_id, user.session_version || 0);
 
   // Load user profile if profile loader function is provided
   let profileObj: any = null;
@@ -512,14 +513,15 @@ export async function changeUserPassword(params: {
     UPDATE users
     SET password_hash = ${newHash},
         must_change_password = FALSE,
+        session_version = COALESCE(session_version, 0) + 1,
         updated_at = NOW()
     WHERE id = ${user.id}
   `);
 
   const profileId = user.role_id || user.username || String(user.id);
   const userRole = user.role;
-  const token = issueAccessToken(profileId, userRole, user.email, jwtSecret, user.role_id);
-  const refreshToken = issueRefreshToken(profileId, userRole, user.email, jwtSecret, user.role_id);
+  const token = issueAccessToken(profileId, userRole, user.email, jwtSecret, user.role_id, (user.session_version || 0) + 1);
+  const refreshToken = issueRefreshToken(profileId, userRole, user.email, jwtSecret, user.role_id, (user.session_version || 0) + 1);
 
   let profileObj: any = null;
   if (getProfileFn) {

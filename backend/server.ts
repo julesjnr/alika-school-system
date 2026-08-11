@@ -547,28 +547,57 @@ let saveTimeout: any = null;
 let lastSaveTime = 0;
 const DEBOUNCE_DELAY = 3000;
 const THROTTLE_LIMIT = 5000;
+// Stable advisory-lock key so only one full-state sync can hold courses/lecturer
+// writes at a time across Node processes sharing the same database.
+const FULL_DB_SYNC_LOCK_KEY = 872314001;
 
 let syncFailureCount = 0;
 let isSyncPausedUntil = 0;
 
+function dedupeCoursesForSync(rawCourses: any[]): any[] {
+  const byId = new Map<string, any>();
+  for (const course of rawCourses || []) {
+    if (!course?.id) continue;
+    byId.set(String(course.id), course);
+  }
+
+  // `courses_code_key` is unique. Keep the last occurrence per code so repeated
+  // sync payloads cannot deadlock themselves on the code index.
+  const byCode = new Map<string, any>();
+  for (const course of byId.values()) {
+    const code = String(course.code || "").trim().toUpperCase();
+    if (!code) continue;
+    byCode.set(code, course);
+  }
+  return Array.from(byCode.values());
+}
+
 async function performDatabaseSync(dbState: any): Promise<void> {
-  isSavingFullState = true;
   lastSaveTime = Date.now();
 
   try {
     // Full-state sync touches many tables. Keep it on one pooled connection and
     // roll it back as a unit if the database connection is interrupted.
     await db.transaction(async (tx) => {
+    // Serialize syncs across processes. Without this, orphaned/overlapping
+    // backends leave idle-in-transaction locks on courses and the next INSERT
+    // dies with SQLSTATE 57014 while inserting index tuples.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${FULL_DB_SYNC_LOCK_KEY})`);
+    // Fail fast if a client stalls mid-sync instead of holding locks forever.
+    await tx.execute(sql`SET LOCAL idle_in_transaction_session_timeout = '60s'`);
+    await tx.execute(sql`SET LOCAL lock_timeout = '15s'`);
+
     // 1. Courses
     if (dbState.courses) {
-      const ids = dbState.courses.map((c: any) => c.id).filter(Boolean);
+      const syncedCourses = dedupeCoursesForSync(dbState.courses);
+      const ids = syncedCourses.map((c: any) => c.id).filter(Boolean);
       if (ids.length > 0) {
         await tx.delete(courses).where(notInArray(courses.id, ids));
       } else {
         await tx.delete(courses);
       }
-      for (const c of dbState.courses) {
-        const val = {
+      if (syncedCourses.length > 0) {
+        const courseValues = syncedCourses.map((c: any) => ({
           id: c.id,
           code: c.code,
           title: c.title,
@@ -577,12 +606,25 @@ async function performDatabaseSync(dbState: any): Promise<void> {
           fees: String(c.fees || 0),
           thumbnail: c.thumbnail || null,
           active: c.active !== false,
-          faculty: c.faculty || "School of Computing"
-        };
-        await tx.insert(courses).values(val).onConflictDoUpdate({
-          target: courses.id,
-          set: val
-        });
+          faculty: c.faculty || "School of Computing",
+        }));
+        // One batched upsert keeps the courses lock window short and idempotent.
+        await tx
+          .insert(courses)
+          .values(courseValues)
+          .onConflictDoUpdate({
+            target: courses.id,
+            set: {
+              code: sql`excluded.code`,
+              title: sql`excluded.title`,
+              description: sql`excluded.description`,
+              duration: sql`excluded.duration`,
+              fees: sql`excluded.fees`,
+              thumbnail: sql`excluded.thumbnail`,
+              active: sql`excluded.active`,
+              faculty: sql`excluded.faculty`,
+            },
+          });
       }
     }
 
@@ -1226,11 +1268,22 @@ async function performDatabaseSync(dbState: any): Promise<void> {
   } finally {
     isSavingFullState = false;
     if (pendingSaveState) {
-      const nextState = pendingSaveState;
-      pendingSaveState = null;
       const timeSinceLastSave = Date.now() - lastSaveTime;
       const delay = Math.max(0, DEBOUNCE_DELAY - timeSinceLastSave);
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+      }
       saveTimeout = setTimeout(() => {
+        saveTimeout = null;
+        if (isSavingFullState) {
+          return;
+        }
+        const nextState = pendingSaveState;
+        if (!nextState) {
+          return;
+        }
+        pendingSaveState = null;
+        isSavingFullState = true;
         performDatabaseSync(nextState).catch(err => {
           console.error("[DB TUNER] Failed to run queued performDatabaseSync:", err);
         });
@@ -1245,6 +1298,8 @@ export async function saveFullDatabaseState(dbState: any): Promise<void> {
     return;
   }
   dbState = sanitizeStateIds(dbState);
+  // Always keep the newest payload. A later call while a sync is in flight must
+  // not start a second writer; it only replaces the queued snapshot.
   pendingSaveState = dbState;
 
   if (saveTimeout) {
@@ -1256,21 +1311,38 @@ export async function saveFullDatabaseState(dbState: any): Promise<void> {
     return;
   }
 
+  const scheduleSync = (delayMs: number) => {
+    const launch = () => {
+      saveTimeout = null;
+      if (isSavingFullState) {
+        return;
+      }
+      const nextState = pendingSaveState;
+      if (!nextState) {
+        return;
+      }
+      // Claim the in-process mutex BEFORE the async transaction starts. The old
+      // code set this flag inside performDatabaseSync, so overlapping POST /api/data
+      // calls could open two writers and deadlock on courses indexes.
+      pendingSaveState = null;
+      isSavingFullState = true;
+      performDatabaseSync(nextState).catch((err) => {
+        console.error("[DB TUNER] Failed to run database synchronization:", err);
+      });
+    };
+
+    if (delayMs <= 0) {
+      launch();
+    } else {
+      saveTimeout = setTimeout(launch, delayMs);
+    }
+  };
+
   const timeSinceLastSave = Date.now() - lastSaveTime;
   if (timeSinceLastSave >= THROTTLE_LIMIT) {
-    const nextState = pendingSaveState;
-    pendingSaveState = null;
-    performDatabaseSync(nextState).catch(err => {
-      console.error("[DB TUNER] Failed to run throttled database synchronization:", err);
-    });
+    scheduleSync(0);
   } else {
-    const nextState = pendingSaveState;
-    pendingSaveState = null;
-    saveTimeout = setTimeout(() => {
-      performDatabaseSync(nextState).catch(err => {
-        console.error("[DB TUNER] Failed to run debounced database synchronization:", err);
-      });
-    }, DEBOUNCE_DELAY);
+    scheduleSync(DEBOUNCE_DELAY);
   }
 }
 
@@ -1400,7 +1472,7 @@ function checkRBAC(allowedRoles: string[]) {
 }
 
 // JWT Verification Middleware
-function authenticateJWT(req: any, res: any, next: any) {
+async function authenticateJWT(req: any, res: any, next: any) {
   const authHeader = req.headers.authorization;
   let token = null;
   if (authHeader && authHeader.toLowerCase().startsWith('bearer ')) {
@@ -1418,6 +1490,11 @@ function authenticateJWT(req: any, res: any, next: any) {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const session = await db.execute(sql`SELECT session_version, is_active FROM users WHERE email = ${decoded.email} LIMIT 1`);
+    const current = session.rows[0] as any;
+    if (!current || current.is_active !== true || Number(decoded.sv || 0) !== Number(current.session_version || 0)) {
+      return res.status(401).json({ success: false, error: "Access Denied: This session is no longer valid. Please sign in again." });
+    }
     req.user = decoded;
     
     // Propagate role and ID to headers for downstream compatibility
@@ -1438,6 +1515,7 @@ const publicAPIPaths = [
   "/api/health",
   "/api/auth/login",
   "/api/auth/reset-request",
+  "/api/auth/reset-password",
   "/api/auth/reset-requests",
   "/api/data",
   "/api/student/registered-units",
@@ -1447,6 +1525,42 @@ const publicAPIPaths = [
   "/api/public/applications",
   "/api/public/application-documents"
 ];
+
+const PASSWORD_RESET_RESPONSE = "If an eligible account exists, a password-reset link will be sent shortly.";
+const PASSWORD_RESET_WINDOW_MS = 60 * 60 * 1000;
+const PASSWORD_RESET_MAX_REQUESTS = 3;
+const PASSWORD_RESET_TOKEN_TTL_MS = 20 * 60 * 1000;
+
+function passwordResetHash(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function validResetPassword(password: unknown): password is string {
+  return typeof password === 'string'
+    && password.length >= 12
+    && /[a-z]/.test(password)
+    && /[A-Z]/.test(password)
+    && /\d/.test(password)
+    && /[^A-Za-z0-9]/.test(password);
+}
+
+async function sendPasswordResetEmail(email: string, resetUrl: string): Promise<boolean> {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.PASSWORD_RESET_FROM || process.env.RESEND_FROM;
+  if (!apiKey || !from) return false;
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      from,
+      to: [email],
+      subject: 'Reset your Zenti administrator password',
+      html: `<p>We received a request to reset your Zenti administrator password.</p><p><a href="${resetUrl}">Reset password</a></p><p>This link expires in 20 minutes and can be used once. If you did not request this, you can ignore this email.</p>`,
+    }),
+  });
+  return response.ok;
+}
 
 // Mount JWT Protection Middleware globally across all /api routes except public endpoints
 app.use("/api", (req: any, res: any, next: any) => {
@@ -2094,55 +2208,101 @@ app.get("/api/admin/system-stats", checkRBAC(["admin", "accountant", "librarian"
   }
 });
 
-// Submit a password reset request
+// Password reset requests deliberately return the same response for every email.
+// This replaces the legacy approval queue for self-service administrator recovery.
 app.post("/api/auth/reset-request", async (req: any, res: any) => {
   try {
-    const { email, reason } = req.body;
-    if (!email) {
-      res.status(400).json({ success: false, error: "Email is required." });
+    const suppliedEmail = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    if (!/^\S+@\S+\.\S+$/.test(suppliedEmail)) {
+      res.status(200).json({ success: true, message: PASSWORD_RESET_RESPONSE });
       return;
     }
 
-    const searchEmail = email.trim().toLowerCase();
-    const userAuth = await findUserByIdentifier(searchEmail);
-
-    if (!userAuth) {
-      res.status(404).json({ success: false, error: `No account registered with "${email}" could be located.` });
+    const emailHash = passwordResetHash(suppliedEmail);
+    const recent = await db.execute(sql`
+      SELECT COUNT(*)::int AS count FROM password_reset_rate_limits
+      WHERE email_hash = ${emailHash}
+        AND requested_at > NOW() - INTERVAL '1 hour'
+    `);
+    if (Number((recent.rows[0] as any)?.count || 0) >= PASSWORD_RESET_MAX_REQUESTS) {
+      res.status(200).json({ success: true, message: PASSWORD_RESET_RESPONSE });
       return;
     }
+    await db.execute(sql`INSERT INTO password_reset_rate_limits (email_hash) VALUES (${emailHash})`);
+    await db.execute(sql`DELETE FROM password_reset_rate_limits WHERE requested_at < NOW() - INTERVAL '24 hours'`);
 
-    const dbStore = getDatabase();
-    const existingPending = (dbStore.passwordResetRequests || []).find(
-      (r: any) => r.email.toLowerCase() === searchEmail && r.status === 'pending'
-    );
-    if (existingPending) {
-      res.status(400).json({ 
-        success: false, 
-        error: "You already have a pending reset request under review by the Administrator." 
+    const accountResult = await db.execute(sql`
+      SELECT id, email FROM users
+      WHERE LOWER(email) = ${suppliedEmail}
+        AND is_active = TRUE
+        AND LOWER(role) IN ('admin', 'superadmin', 'super_admin')
+      LIMIT 1
+    `);
+    const account = accountResult.rows[0] as { id: number; email: string } | undefined;
+    if (account) {
+      const rawToken = crypto.randomBytes(32).toString('base64url');
+      const tokenHash = passwordResetHash(rawToken);
+      const expiresAt = new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MS).toISOString();
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`UPDATE password_reset_tokens SET used_at = NOW() WHERE user_id = ${account.id} AND used_at IS NULL`);
+        await tx.execute(sql`
+          INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, requested_ip)
+          VALUES (${account.id}, ${tokenHash}, ${expiresAt}, ${String(req.ip || '').slice(0, 64) || null})
+        `);
       });
+
+      const appUrl = (process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+      const delivered = await sendPasswordResetEmail(account.email, `${appUrl}/reset-password?token=${encodeURIComponent(rawToken)}`);
+      if (!delivered) {
+        await db.execute(sql`DELETE FROM password_reset_tokens WHERE token_hash = ${tokenHash}`);
+      }
+    }
+    res.status(200).json({ success: true, message: PASSWORD_RESET_RESPONSE });
+  } catch (err: any) {
+    console.error("Password reset request failed:", err?.message || 'unknown error');
+    res.status(200).json({ success: true, message: PASSWORD_RESET_RESPONSE });
+  }
+});
+
+app.post("/api/auth/reset-password", async (req: any, res: any) => {
+  try {
+    const token = typeof req.body?.token === 'string' ? req.body.token : '';
+    const newPassword = req.body?.newPassword;
+    if (!token || !validResetPassword(newPassword)) {
+      res.status(400).json({ success: false, error: "Use a password with at least 12 characters, uppercase, lowercase, number, and symbol." });
       return;
     }
-
-    const profileObj = await getProfileForUser(userAuth.role, userAuth.role_id, userAuth.email);
-
-    const newRequest = {
-      id: `req-${Date.now()}`,
-      userId: userAuth.role_id || userAuth.username || String(userAuth.id),
-      name: profileObj?.name || userAuth.username,
-      email: userAuth.email,
-      role: userAuth.role,
-      date: new Date().toLocaleString(),
-      reason: reason || "Forgotten password",
-      status: 'pending'
-    };
-
-    dbStore.passwordResetRequests = [newRequest, ...(dbStore.passwordResetRequests || [])];
-    saveDatabase(dbStore);
-
-    res.status(201).json({ success: true, message: "Reset request submitted to the Administrator.", request: newRequest });
+    const tokenHash = passwordResetHash(token);
+    const newHash = hashPassword(newPassword);
+    const updated = await db.transaction(async (tx) => {
+      const claimed = await tx.execute(sql`
+        UPDATE password_reset_tokens
+        SET used_at = NOW()
+        WHERE token_hash = ${tokenHash}
+          AND used_at IS NULL
+          AND expires_at > NOW()
+        RETURNING user_id
+      `);
+      const userId = (claimed.rows[0] as any)?.user_id;
+      if (!userId) return false;
+      const changed = await tx.execute(sql`
+        UPDATE users SET password_hash = ${newHash}, must_change_password = FALSE,
+          session_version = COALESCE(session_version, 0) + 1, updated_at = NOW()
+        WHERE id = ${userId} AND LOWER(role) IN ('admin', 'superadmin', 'super_admin')
+        RETURNING id
+      `);
+      if (!changed.rows[0]) return false;
+      await tx.execute(sql`UPDATE password_reset_tokens SET used_at = NOW() WHERE user_id = ${userId} AND used_at IS NULL`);
+      return true;
+    });
+    if (!updated) {
+      res.status(400).json({ success: false, error: "This password-reset link is invalid or has expired." });
+      return;
+    }
+    res.json({ success: true, message: "Password reset successfully. Please sign in with your new password." });
   } catch (err: any) {
-    console.error("Reset request submission error:", err);
-    res.status(500).json({ success: false, error: err.message });
+    console.error("Password reset completion failed:", err?.message || 'unknown error');
+    res.status(500).json({ success: false, error: "Unable to reset password. Please request a new link." });
   }
 });
 

@@ -19,6 +19,7 @@ import ApplicationSubmittedPage from './components/ApplicationSubmittedPage';
 import ConsultationBookingPage from './components/ConsultationBookingPage';
 import LoginPage from './components/LoginPage';
 import ChangePasswordPage from './components/ChangePasswordPage';
+import ResetPasswordPage from './components/ResetPasswordPage';
 import StudentDashboard from './components/StudentDashboard';
 import LecturerDashboard from './components/LecturerDashboard';
 import AdminDashboard from './components/AdminDashboard';
@@ -1518,6 +1519,11 @@ Zenti Library Services`;
               setCurrentPath('/');
             }}
           />
+        ) : currentPath === '/reset-password' ? (
+          <ResetPasswordPage onLogin={() => {
+            window.history.pushState({}, '', '/login');
+            setCurrentPath('/login');
+          }} />
         ) : currentPath === '/change-password' ? (
           <ChangePasswordPage
             onSuccess={(role, userId) => {

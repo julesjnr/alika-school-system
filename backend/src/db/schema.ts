@@ -536,6 +536,20 @@ export const lecturerSubjects = pgTable("lecturer_subjects", {
     .notNull(),
 });
 
+/** One-time password-reset credentials. The raw token is never persisted. */
+export const passwordResetTokens = pgTable("password_reset_tokens", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	userId: integer("user_id").notNull(),
+	tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+	expiresAt: timestamp("expires_at", { withTimezone: true, mode: 'string' }).notNull(),
+	usedAt: timestamp("used_at", { withTimezone: true, mode: 'string' }),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	requestedIp: varchar("requested_ip", { length: 64 }),
+}, (table) => [
+	unique("password_reset_tokens_token_hash_key").on(table.tokenHash),
+	index("idx_password_reset_tokens_active").using("btree", table.userId.asc().nullsLast().op("int4_ops"), table.expiresAt.asc().nullsLast().op("timestamptz_ops")),
+]);
+
 //--grade table to link students and their grades for subjects
 export const grades = pgTable("grades", {
 	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
@@ -622,6 +636,7 @@ export const users = pgTable("users", {
 	roleId: varchar("role_id", { length: 255 }),
 	isActive: boolean("is_active").default(true).notNull(),
 	mustChangePassword: boolean("must_change_password").default(true).notNull(),
+	sessionVersion: integer("session_version").default(0).notNull(),
 	lastLogin: timestamp("last_login", { withTimezone: true, mode: 'string' }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
