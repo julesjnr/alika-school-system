@@ -149,6 +149,21 @@ export default function App() {
 
   const [sessionExpiredMessage, setSessionExpiredMessage] = useState<string>('');
   const isAdminAccessRole = currentUserRole === 'admin' || currentUserRole === 'super_admin' || currentUserRole === 'admissions_officer';
+  const isProtectedRoute = (path: string) => path.startsWith('/admin');
+
+  const clearAuthSession = (message = '') => {
+    localStorage.removeItem('zenti_current_user_role');
+    localStorage.removeItem('zenti_current_user_id');
+    localStorage.removeItem('zenti_session_token');
+    localStorage.removeItem('zenti_refresh_token');
+    localStorage.removeItem('zenti_last_activity');
+    setCurrentUserRole(null);
+    setCurrentUserId('');
+    setSessionExpiredMessage(message);
+    // Replace the protected history entry so Back cannot return to it after logout.
+    window.history.replaceState({}, '', '/login');
+    setCurrentPath('/login');
+  };
 
   useEffect(() => {
     if (!currentUserRole) {
@@ -158,6 +173,15 @@ export default function App() {
     if (currentPath === '/login' || currentPath === '/') {
       window.history.replaceState({}, '', '/');
       setCurrentPath('/');
+    }
+  }, [currentUserRole, currentPath]);
+
+  // Anonymous visitors must be sent to login. A 403 is reserved for an
+  // authenticated identity that is missing the route's required permission.
+  useEffect(() => {
+    if (!currentUserRole && isProtectedRoute(currentPath)) {
+      window.history.replaceState({}, '', '/login');
+      setCurrentPath('/login');
     }
   }, [currentUserRole, currentPath]);
 
@@ -180,11 +204,7 @@ export default function App() {
 
   useEffect(() => {
     const handleExpired = () => {
-      setCurrentUserRole(null);
-      setCurrentUserId("");
-      setSessionExpiredMessage("Your session has expired due to inactivity. Please log in again.");
-      window.history.pushState({}, '', '/login');
-      setCurrentPath('/login');
+      clearAuthSession("Your session has expired due to inactivity. Please log in again.");
     };
     window.addEventListener('zenti-session-expired', handleExpired);
     return () => window.removeEventListener('zenti-session-expired', handleExpired);
@@ -195,10 +215,12 @@ export default function App() {
       setCurrentPath(window.location.pathname);
     };
     window.addEventListener('popstate', handleLocationChange);
+    window.addEventListener('pageshow', handleLocationChange);
     // Poll location for instant route modification interception
     const interval = setInterval(handleLocationChange, 400);
     return () => {
       window.removeEventListener('popstate', handleLocationChange);
+      window.removeEventListener('pageshow', handleLocationChange);
       clearInterval(interval);
     };
   }, []);
@@ -1562,7 +1584,7 @@ Zenti Library Services`;
               setCurrentPath('/apply');
             }}
           />
-        ) : currentPath === '/login' ? (
+        ) : (currentPath === '/login' || (!currentUserRole && isProtectedRoute(currentPath))) ? (
           <LoginPage
             students={students}
             lecturers={lecturers}
@@ -1590,7 +1612,7 @@ Zenti Library Services`;
               setCurrentPath('/');
             }}
           />
-        ) : currentPath.startsWith('/admin') && !isAdminAccessRole && currentUserRole !== 'accountant' && currentUserRole !== 'librarian' ? (
+        ) : currentUserRole && currentPath.startsWith('/admin') && !isAdminAccessRole && currentUserRole !== 'accountant' && currentUserRole !== 'librarian' ? (
           <Forbidden403
             onBackToDashboard={() => {
               window.history.pushState({}, '', '/');
@@ -1631,7 +1653,7 @@ Zenti Library Services`;
               onTriggerGateLog={handleTriggerGateLog}
               onCheckoutBook={handleCheckoutBook}
               onReturnBook={handleReturnBook}
-              onLogout={() => { setCurrentUserRole(null); setCurrentUserId(''); window.history.pushState({}, '', '/'); setCurrentPath('/'); }}
+              onLogout={() => clearAuthSession()}
             />
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center p-12 text-center bg-slate-50 dark:bg-slate-900">
@@ -1664,7 +1686,7 @@ Zenti Library Services`;
               onAddBookRequest={handleAddBookRequest}
               attendanceSessions={attendanceSessions}
               onSaveAttendance={handleSaveAttendance}
-              onLogout={() => { setCurrentUserRole(null); setCurrentUserId(''); window.history.pushState({}, '', '/'); setCurrentPath('/'); }}
+              onLogout={() => clearAuthSession()}
             />
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center p-12 text-center bg-slate-50 dark:bg-slate-900">
@@ -1713,7 +1735,7 @@ Zenti Library Services`;
             onDeleteStudent={handleDeleteStudent}
             onUpdateBookRequestStatus={handleUpdateBookRequestStatus}
             onTriggerGateLog={handleTriggerGateLog}
-            onLogout={() => { setCurrentUserRole(null); setCurrentUserId(''); }}
+            onLogout={() => clearAuthSession()}
             onUpdateLecturer={handleUpdateLecturerProfile}
             onUpdateStudent={handleUpdateStudentProfile}
             mockEmails={mockEmails}
@@ -1758,7 +1780,7 @@ Zenti Library Services`;
             onDeleteStudent={handleDeleteStudent}
             onUpdateBookRequestStatus={handleUpdateBookRequestStatus}
             onTriggerGateLog={handleTriggerGateLog}
-            onLogout={() => { setCurrentUserRole(null); setCurrentUserId(''); }}
+            onLogout={() => clearAuthSession()}
             onUpdateLecturer={handleUpdateLecturerProfile}
             onUpdateStudent={handleUpdateStudentProfile}
             isAccountantView={true}
@@ -1803,7 +1825,7 @@ Zenti Library Services`;
             onDeleteStudent={handleDeleteStudent}
             onUpdateBookRequestStatus={handleUpdateBookRequestStatus}
             onTriggerGateLog={handleTriggerGateLog}
-            onLogout={() => { setCurrentUserRole(null); setCurrentUserId(''); }}
+            onLogout={() => clearAuthSession()}
             onUpdateLecturer={handleUpdateLecturerProfile}
             onUpdateStudent={handleUpdateStudentProfile}
             isLibrarianView={true}
@@ -1968,16 +1990,10 @@ Zenti Library Services`;
       <SessionTimeout
         isAuthenticated={!!currentUserRole}
         onLogout={(isTimeout) => {
-          setCurrentUserRole(null);
-          setCurrentUserId("");
           if (isTimeout) {
-            setSessionExpiredMessage("Your session has expired due to inactivity. Please log in again.");
-            window.history.pushState({}, '', '/login');
-            setCurrentPath('/login');
+            clearAuthSession("Your session has expired due to inactivity. Please log in again.");
           } else {
-            setSessionExpiredMessage("");
-            window.history.pushState({}, '', '/');
-            setCurrentPath('/');
+            clearAuthSession();
           }
         }}
         timeoutMinutes={15}

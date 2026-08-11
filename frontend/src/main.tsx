@@ -15,6 +15,9 @@ async function performSilentRefresh(): Promise<string | null> {
   refreshTokenPromise = (async () => {
     try {
       const storedRefreshToken = localStorage.getItem('zenti_refresh_token');
+      if (!storedRefreshToken) {
+        return null;
+      }
       const headersRecord: Record<string, string> = {
         'Content-Type': 'application/json',
         'ngrok-skip-browser-warning': 'true',
@@ -35,7 +38,9 @@ async function performSilentRefresh(): Promise<string | null> {
       }
 
       const data = await res.json();
-      if (data.success && data.token) {
+      // Logout may have cleared storage while this refresh request was in flight.
+      // Never restore a session that was explicitly ended in the meantime.
+      if (data.success && data.token && localStorage.getItem('zenti_refresh_token') === storedRefreshToken) {
         localStorage.setItem('zenti_session_token', data.token);
         if (data.refreshToken) {
           localStorage.setItem('zenti_refresh_token', data.refreshToken);
@@ -105,7 +110,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     localStorage.removeItem("zenti_current_user_id");
     localStorage.removeItem("zenti_session_token");
     localStorage.removeItem("zenti_refresh_token");
-    window.history.pushState({}, '', '/login');
+    window.history.replaceState({}, '', '/login');
     window.dispatchEvent(new CustomEvent('zenti-session-expired'));
   };
 
