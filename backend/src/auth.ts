@@ -217,7 +217,7 @@ export async function upsertUserAuthRecord(params: {
 /**
  * Database Migration Function:
  * 1. Ensures `users` table columns match the production-grade specification.
- * 2. Removes obsolete authentication columns (passcode, must_change_password) from profile tables (`students`, `lecturers`).
+ * 2. Retains legacy profile columns so this migration never deletes existing data.
  * 3. Migrates existing default accounts and role profiles into `users`.
  */
 export async function migrateAuthSchemaAndData(inMemoryDb?: any): Promise<void> {
@@ -251,27 +251,25 @@ export async function migrateAuthSchemaAndData(inMemoryDb?: any): Promise<void> 
       ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
     `);
 
-    // 2. Drop obsolete auth columns from profile tables if present
-    await db.execute(sql`
-      DO $$ 
-      BEGIN
-        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'students' AND column_name = 'passcode') THEN
-          ALTER TABLE students DROP COLUMN passcode;
-        END IF;
-        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'students' AND column_name = 'must_change_password') THEN
-          ALTER TABLE students DROP COLUMN must_change_password;
-        END IF;
-        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lecturers' AND column_name = 'passcode') THEN
-          ALTER TABLE lecturers DROP COLUMN passcode;
-        END IF;
-        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lecturers' AND column_name = 'must_change_password') THEN
-          ALTER TABLE lecturers DROP COLUMN must_change_password;
-        END IF;
-      END $$;
-    `);
+    // 2. Legacy profile columns are intentionally retained.  Authentication now
+    // uses `users`, but dropping old columns is destructive and requires an
+    // ACCESS EXCLUSIVE lock during application startup.
+
+    // Load existing identities once.  The full profile state was loaded before
+    // this migration starts, so repeated profile reads and archive-aware lookup
+    // queries only consume pooled connections and can stall startup.
+    const existingIdentityRows = await db.execute(sql`SELECT username, email FROM users`);
+    const existingIdentities = new Set<string>();
+    for (const user of existingIdentityRows.rows as Array<{ username?: string; email?: string }>) {
+      if (user.username) existingIdentities.add(user.username.trim().toLowerCase());
+      if (user.email) existingIdentities.add(user.email.trim().toLowerCase());
+    }
+    const hasExistingIdentity = (username: string, email?: string | null) =>
+      existingIdentities.has(username.trim().toLowerCase()) ||
+      Boolean(email && existingIdentities.has(email.trim().toLowerCase()));
 
     // 3. Migrate Master Admin User (skip if already migrated, to avoid overwriting a changed password)
-    const existingAdmin = await findUserByIdentifier('admin');
+    const existingAdmin = hasExistingIdentity('admin', 'admin@zenti.edu');
     if (!existingAdmin) {
       const adminPass = getDefaultPasswordForRole('admin');
       const adminHash = hashPassword(adminPass);
@@ -284,6 +282,8 @@ export async function migrateAuthSchemaAndData(inMemoryDb?: any): Promise<void> 
         isActive: true,
         mustChangePassword: !process.env.ADMIN_PASSCODE && !process.env.DEFAULT_ADMIN_PASSWORD,
       });
+      existingIdentities.add('admin');
+      existingIdentities.add('admin@zenti.edu');
       if (!process.env.ADMIN_PASSCODE && !process.env.DEFAULT_ADMIN_PASSWORD) {
         console.warn(
           '[auth] Admin account created with a generated password. Set ADMIN_PASSCODE (or DEFAULT_ADMIN_PASSWORD) and reset the admin user, or complete first-login password change.'
@@ -292,18 +292,15 @@ export async function migrateAuthSchemaAndData(inMemoryDb?: any): Promise<void> 
     }
 
     // 4. Migrate Students from Database / Memory Store
-    let studentList: any[] = [];
-    try {
-      studentList = await db.select().from(students);
-    } catch (e) {
-      studentList = (inMemoryDb && inMemoryDb.students) || [];
-    }
+    const studentList: any[] = Array.isArray(inMemoryDb?.students)
+      ? inMemoryDb.students
+      : await db.select().from(students);
 
     for (const st of studentList) {
       const username = st.admissionNo || st.id;
       // Skip students that already have a users record; re-migrating would overwrite
       // any password they've since set via the change-password flow.
-      const existingStudentUser = await findUserByIdentifier(username) || (st.email ? await findUserByIdentifier(st.email) : null);
+      const existingStudentUser = hasExistingIdentity(username, st.email);
       if (existingStudentUser) continue;
 
       const { plain: rawPass } = resolvePassword(st.passcode, 'student');
@@ -318,15 +315,14 @@ export async function migrateAuthSchemaAndData(inMemoryDb?: any): Promise<void> 
         isActive: st.accountStatus !== 'Disabled',
         mustChangePassword: mustChange,
       });
+      existingIdentities.add(username.trim().toLowerCase());
+      if (st.email) existingIdentities.add(st.email.trim().toLowerCase());
     }
 
     // 5. Migrate Lecturers, Librarians, Accountants from Database / Memory Store
-    let lecturerList: any[] = [];
-    try {
-      lecturerList = await db.select().from(lecturers);
-    } catch (e) {
-      lecturerList = (inMemoryDb && inMemoryDb.lecturers) || [];
-    }
+    const lecturerList: any[] = Array.isArray(inMemoryDb?.lecturers)
+      ? inMemoryDb.lecturers
+      : await db.select().from(lecturers);
 
     for (const lec of lecturerList) {
       let role = 'lecturer';
@@ -339,7 +335,7 @@ export async function migrateAuthSchemaAndData(inMemoryDb?: any): Promise<void> 
       const username = lec.designatorCode || lec.id;
       // Skip staff that already have a users record; re-migrating would overwrite
       // any password they've since set via the change-password flow.
-      const existingStaffUser = await findUserByIdentifier(username) || (lec.email ? await findUserByIdentifier(lec.email) : null);
+      const existingStaffUser = hasExistingIdentity(username, lec.email);
       if (existingStaffUser) continue;
 
       const { plain: rawPass } = resolvePassword(lec.passcode, role);
@@ -354,6 +350,8 @@ export async function migrateAuthSchemaAndData(inMemoryDb?: any): Promise<void> 
         isActive: lec.isActive !== false,
         mustChangePassword: mustChange,
       });
+      existingIdentities.add(username.trim().toLowerCase());
+      if (lec.email) existingIdentities.add(lec.email.trim().toLowerCase());
     }
 
     console.log("Authentication system database migration completed successfully!");

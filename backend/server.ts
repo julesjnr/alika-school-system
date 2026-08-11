@@ -2999,6 +2999,172 @@ app.post("/api/lecturers", async (req, res) => {
   }
 });
 
+// Admin Route: Update Personnel Permissions (Accountant / Librarian / Active status)
+app.patch("/api/admin/personnel/:id/permissions", checkRBAC(["admin", "super_admin"]), async (req: any, res: any) => {
+  try {
+    const targetId = req.params.id;
+    if (!targetId || typeof targetId !== "string") {
+      return res.status(400).json({ success: false, error: "Valid personnel ID parameter is required." });
+    }
+
+    const { isAccountant, isLibrarian, isActive } = req.body || {};
+    const cleanId = targetId.trim();
+
+    // 1. Fetch lecturer from PostgreSQL
+    const existing = await db
+      .select()
+      .from(lecturers)
+      .where(or(eq(lecturers.id, cleanId), eq(lecturers.designatorCode, cleanId)))
+      .limit(1);
+
+    if (existing.length === 0) {
+      return res.status(404).json({ success: false, error: "Personnel record not found." });
+    }
+
+    const targetLecturer = existing[0];
+    const updatedFields: Record<string, boolean> = {};
+
+    if (typeof isAccountant === "boolean") {
+      updatedFields.isAccountant = isAccountant;
+    }
+    if (typeof isLibrarian === "boolean") {
+      updatedFields.isLibrarian = isLibrarian;
+    }
+    if (typeof isActive === "boolean") {
+      updatedFields.isActive = isActive;
+    }
+
+    if (Object.keys(updatedFields).length === 0) {
+      return res.status(400).json({ success: false, error: "No permission fields provided for update." });
+    }
+
+    // 2. Update PostgreSQL using parameterized query
+    const [updatedLecturer] = await db
+      .update(lecturers)
+      .set(updatedFields)
+      .where(eq(lecturers.id, targetLecturer.id))
+      .returning();
+
+    // 3. Update auth records if primary role affected
+    const primaryRole = updatedLecturer.isAccountant
+      ? "accountant"
+      : updatedLecturer.isLibrarian
+      ? "librarian"
+      : "lecturer";
+
+    try {
+      const authConditions: any[] = [];
+      if (updatedLecturer.designatorCode) {
+        authConditions.push(eq(users.username, updatedLecturer.designatorCode));
+      }
+      if (updatedLecturer.id) {
+        authConditions.push(eq(users.roleId, updatedLecturer.id));
+      }
+      if (updatedLecturer.email) {
+        authConditions.push(eq(users.email, updatedLecturer.email.toLowerCase()));
+      }
+      if (authConditions.length > 0) {
+        await db
+          .update(users)
+          .set({ role: primaryRole, isActive: updatedLecturer.isActive })
+          .where(or(...authConditions));
+      }
+    } catch (authErr) {
+      console.warn("Notice: Auth user role sync warning:", authErr);
+    }
+
+    // 4. Record audit event
+    const changesSummary = [
+      typeof isAccountant === "boolean" ? `Accountant Access: ${isAccountant ? "Granted" : "Revoked"}` : null,
+      typeof isLibrarian === "boolean" ? `Librarian Access: ${isLibrarian ? "Granted" : "Revoked"}` : null,
+      typeof isActive === "boolean" ? `Status: ${isActive ? "Active" : "Inactive"}` : null,
+    ].filter(Boolean).join(", ");
+
+    await writeAdminAudit(req, "personnel.permissions_updated", "personnel", targetLecturer.id, {
+      personnelName: targetLecturer.name,
+      designatorCode: targetLecturer.designatorCode,
+      changes: changesSummary,
+      isAccountant: updatedLecturer.isAccountant,
+      isLibrarian: updatedLecturer.isLibrarian,
+      isActive: updatedLecturer.isActive,
+    });
+
+    // Also push into db_store.json audits array for memory cache consistency
+    const fullDb = await loadFullDatabaseState();
+    if (fullDb.lecturers) {
+      const idx = fullDb.lecturers.findIndex((l: any) => l.id === targetLecturer.id || l.designatorCode === targetLecturer.designatorCode);
+      if (idx !== -1) {
+        fullDb.lecturers[idx] = { ...fullDb.lecturers[idx], ...updatedFields };
+      }
+    }
+    fullDb.audits = fullDb.audits || [];
+    fullDb.audits.unshift({
+      id: crypto.randomUUID(),
+      role: req.user?.role || "Admin",
+      user: req.user?.username || req.user?.email || "Admin User",
+      action: "PERMISSION_UPDATE",
+      status: "Success",
+      resource: `Updated permissions for ${targetLecturer.name} (${targetLecturer.designatorCode}): ${changesSummary}`,
+      timestamp: new Date().toISOString().replace("T", " ").slice(0, 19),
+    });
+    saveDatabase(fullDb);
+
+    return res.status(200).json({
+      success: true,
+      message: `Successfully updated permissions for ${targetLecturer.name}.`,
+      personnel: updatedLecturer,
+    });
+  } catch (error: any) {
+    console.error("Failed to update personnel permissions:", error);
+    return res.status(500).json({
+      success: false,
+      error: clientSafeDbError("Failed to update personnel access permissions.", error),
+    });
+  }
+});
+
+// Admin Route: Get Personnel Access Audit Logs
+app.get("/api/admin/personnel/access-logs", checkRBAC(["admin", "super_admin", "accountant", "librarian"]), async (req: any, res: any) => {
+  try {
+    // 1. Try fetching audit logs from PostgreSQL admin_audit_logs
+    try {
+      const auditRows = await db.execute(
+        sql`SELECT id, actor_id, actor_role, action, resource_type, resource_id, details, created_at
+            FROM admin_audit_logs
+            WHERE resource_type IN ('personnel', 'auth', 'lecturers') OR action LIKE 'personnel%' OR action LIKE 'PERMISSION%'
+            ORDER BY created_at DESC LIMIT 25`
+      );
+      if (auditRows.rows && auditRows.rows.length > 0) {
+        const mapped = auditRows.rows.map((row: any) => {
+          const details = typeof row.details === "string" ? JSON.parse(row.details) : (row.details || {});
+          return {
+            id: String(row.id),
+            role: row.actor_role || "Admin",
+            user: details.personnelName ? `Admin (${details.personnelName})` : row.actor_id || "Admin User",
+            action: row.action || "PERMISSION_UPDATE",
+            status: "Success",
+            resource: details.changes || details.resource || `Updated access for ID ${row.resource_id}`,
+            timestamp: row.created_at ? new Date(row.created_at).toISOString().replace("T", " ").slice(0, 19) : new Date().toISOString(),
+          };
+        });
+        return res.json(mapped);
+      }
+    } catch (pgErr) {
+      console.warn("Notice: PostgreSQL admin_audit_logs query notice:", pgErr);
+    }
+
+    // 2. Fallback to in-memory JSON db_store.json audits
+    const fullDb = getDatabase();
+    const auditsList = (fullDb.audits || []).filter((a: any) =>
+      a.action?.includes("PERMISSION") || a.action?.includes("ROLE") || a.resource?.toLowerCase().includes("permission") || a.resource?.toLowerCase().includes("accountant") || a.resource?.toLowerCase().includes("staff")
+    );
+    return res.json(auditsList.length > 0 ? auditsList.slice(0, 20) : (fullDb.audits || []).slice(0, 20));
+  } catch (error: any) {
+    console.error("Failed to fetch access logs:", error);
+    return res.status(500).json({ error: "Failed to fetch access logs" });
+  }
+});
+
 // ==========================================
 // FACULTY / LECTURER DASHBOARD API ENDPOINTS
 // ==========================================
@@ -4259,6 +4425,298 @@ app.patch("/api/finance/payments/:paymentId/reconcile", async (req, res) => {
       code: "PAYMENT_RECONCILIATION_FAILED",
       requestId,
     });
+  }
+});
+
+// ==========================================
+// ADDITIONAL FINANCE SUITE ENDPOINTS
+// ==========================================
+
+// Budgets
+app.get("/api/finance/budgets", async (_req, res) => {
+  try {
+    const fullDb = getDatabase();
+    res.json(fullDb.budgets || [
+      { id: "b1", department: "Computer Science & IT", amount: 2500000, spent: 1420000, color: "from-blue-600 to-cyan-500" },
+      { id: "b2", department: "Business & Economics", amount: 1800000, spent: 980000, color: "from-purple-600 to-indigo-500" },
+      { id: "b3", department: "Health Sciences & Nursing", amount: 3200000, spent: 2150000, color: "from-emerald-600 to-teal-500" },
+      { id: "b4", department: "Library & Learning Resources", amount: 1200000, spent: 750000, color: "from-amber-600 to-orange-500" }
+    ]);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch budgets" });
+  }
+});
+
+app.post("/api/finance/budgets", async (req, res) => {
+  try {
+    const { department, amount } = req.body;
+    const fullDb = await loadFullDatabaseState();
+    fullDb.budgets = fullDb.budgets || [
+      { id: "b1", department: "Computer Science & IT", amount: 2500000, spent: 1420000, color: "from-blue-600 to-cyan-500" },
+      { id: "b2", department: "Business & Economics", amount: 1800000, spent: 980000, color: "from-purple-600 to-indigo-500" },
+      { id: "b3", department: "Health Sciences & Nursing", amount: 3200000, spent: 2150000, color: "from-emerald-600 to-teal-500" },
+      { id: "b4", department: "Library & Learning Resources", amount: 1200000, spent: 750000, color: "from-amber-600 to-orange-500" }
+    ];
+    const idx = fullDb.budgets.findIndex((b: any) => b.department === department);
+    if (idx !== -1) {
+      fullDb.budgets[idx].amount = Number(amount);
+    } else {
+      fullDb.budgets.push({ id: crypto.randomUUID(), department, amount: Number(amount), spent: 0, color: "from-blue-600 to-indigo-500" });
+    }
+    saveDatabase(fullDb);
+    res.json({ success: true, department, amount });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to update budget ceiling" });
+  }
+});
+
+// Vouchers
+app.get("/api/finance/vouchers", async (_req, res) => {
+  try {
+    const fullDb = getDatabase();
+    res.json(fullDb.vouchers || []);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch vouchers" });
+  }
+});
+
+app.post("/api/finance/vouchers", async (req, res) => {
+  try {
+    const voucher = {
+      id: crypto.randomUUID(),
+      ...req.body,
+      createdAt: new Date().toISOString()
+    };
+    const fullDb = await loadFullDatabaseState();
+    fullDb.vouchers = fullDb.vouchers || [];
+    fullDb.vouchers.unshift(voucher);
+    saveDatabase(fullDb);
+    res.json(voucher);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to create voucher" });
+  }
+});
+
+app.patch("/api/finance/vouchers/:id/approve", async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    const fullDb = await loadFullDatabaseState();
+    fullDb.vouchers = fullDb.vouchers || [];
+    const idx = fullDb.vouchers.findIndex((v: any) => v.id === id || v.voucherNo === id);
+    if (idx !== -1) {
+      fullDb.vouchers[idx].status = "Approved";
+      fullDb.vouchers[idx].approvedBy = req.user?.username || "Admin";
+      saveDatabase(fullDb);
+      res.json({ success: true, voucher: fullDb.vouchers[idx] });
+    } else {
+      res.status(404).json({ error: "Voucher not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to approve voucher" });
+  }
+});
+
+// Imprests
+app.get("/api/finance/imprests", async (_req, res) => {
+  try {
+    const fullDb = getDatabase();
+    res.json(fullDb.imprests || []);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch imprests" });
+  }
+});
+
+app.post("/api/finance/imprests", async (req, res) => {
+  try {
+    const imprest = {
+      id: crypto.randomUUID(),
+      ...req.body,
+      status: "pending",
+      date: new Date().toISOString().substring(0, 10)
+    };
+    const fullDb = await loadFullDatabaseState();
+    fullDb.imprests = fullDb.imprests || [];
+    fullDb.imprests.unshift(imprest);
+    saveDatabase(fullDb);
+    res.json(imprest);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to request imprest" });
+  }
+});
+
+app.patch("/api/finance/imprests/:id/status", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const fullDb = await loadFullDatabaseState();
+    fullDb.imprests = fullDb.imprests || [];
+    const idx = fullDb.imprests.findIndex((imp: any) => imp.id === id);
+    if (idx !== -1) {
+      fullDb.imprests[idx].status = status;
+      saveDatabase(fullDb);
+      res.json({ success: true, imprest: fullDb.imprests[idx] });
+    } else {
+      res.status(404).json({ error: "Imprest record not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to update imprest status" });
+  }
+});
+
+// Suppliers & POs
+app.get("/api/finance/suppliers", async (_req, res) => {
+  try {
+    const fullDb = getDatabase();
+    res.json(fullDb.suppliers || []);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch suppliers" });
+  }
+});
+
+app.post("/api/finance/suppliers", async (req, res) => {
+  try {
+    const supplier = {
+      id: crypto.randomUUID(),
+      ...req.body,
+      pos: []
+    };
+    const fullDb = await loadFullDatabaseState();
+    fullDb.suppliers = fullDb.suppliers || [];
+    fullDb.suppliers.push(supplier);
+    saveDatabase(fullDb);
+    res.json(supplier);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to register supplier" });
+  }
+});
+
+app.post("/api/finance/suppliers/po", async (req, res) => {
+  try {
+    const { supplierId, itemName, amount } = req.body;
+    const po = {
+      id: crypto.randomUUID(),
+      poNo: `PO-${Math.floor(1000 + Math.random() * 9000)}`,
+      itemName,
+      amount: Number(amount),
+      status: 'pending',
+      date: new Date().toISOString().substring(0, 10)
+    };
+    const fullDb = await loadFullDatabaseState();
+    fullDb.suppliers = fullDb.suppliers || [];
+    const idx = fullDb.suppliers.findIndex((s: any) => s.id === supplierId);
+    if (idx !== -1) {
+      fullDb.suppliers[idx].pos = fullDb.suppliers[idx].pos || [];
+      fullDb.suppliers[idx].pos.unshift(po);
+      saveDatabase(fullDb);
+      res.json(po);
+    } else {
+      res.status(404).json({ error: "Supplier not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to raise Purchase Order" });
+  }
+});
+
+app.patch("/api/finance/suppliers/po/:poId", async (req: any, res: any) => {
+  try {
+    const { poId } = req.params;
+    const { supplierId, action } = req.body;
+    const fullDb = await loadFullDatabaseState();
+    fullDb.suppliers = fullDb.suppliers || [];
+    const supIdx = fullDb.suppliers.findIndex((s: any) => s.id === supplierId);
+    if (supIdx !== -1) {
+      const pos = fullDb.suppliers[supIdx].pos || [];
+      const poIdx = pos.findIndex((p: any) => p.id === poId || p.poNo === poId);
+      if (poIdx !== -1) {
+        pos[poIdx].status = action === 'approve' ? 'approved' : action === 'settle' ? 'settled' : pos[poIdx].status;
+        saveDatabase(fullDb);
+        return res.json({ success: true, po: pos[poIdx] });
+      }
+    }
+    res.status(404).json({ error: "Purchase order not found" });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to update purchase order" });
+  }
+});
+
+// Expenses
+app.get("/api/finance/expenses", async (_req, res) => {
+  try {
+    const fullDb = getDatabase();
+    res.json(fullDb.expenses || []);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch expenses" });
+  }
+});
+
+app.post("/api/finance/expenses", async (req, res) => {
+  try {
+    const expense = {
+      id: crypto.randomUUID(),
+      ...req.body
+    };
+    const fullDb = await loadFullDatabaseState();
+    fullDb.expenses = fullDb.expenses || [];
+    fullDb.expenses.unshift(expense);
+    saveDatabase(fullDb);
+    res.json(expense);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to log expense" });
+  }
+});
+
+// Bank Statements & Audits
+app.get("/api/finance/bank-statements", async (_req, res) => {
+  try {
+    const fullDb = getDatabase();
+    res.json(fullDb.bankStatements || []);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch bank statements" });
+  }
+});
+
+app.post("/api/finance/bank-statements/match", async (req, res) => {
+  try {
+    const { statementId, studentId } = req.body;
+    const fullDb = await loadFullDatabaseState();
+    fullDb.bankStatements = fullDb.bankStatements || [];
+    const idx = fullDb.bankStatements.findIndex((s: any) => s.id === statementId);
+    if (idx !== -1) {
+      fullDb.bankStatements[idx].status = 'Matched';
+      fullDb.bankStatements[idx].matchedStudentId = studentId;
+      saveDatabase(fullDb);
+      res.json({ success: true, statement: fullDb.bankStatements[idx] });
+    } else {
+      res.status(404).json({ error: "Bank statement record not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to match bank statement" });
+  }
+});
+
+app.get("/api/finance/audits", async (_req, res) => {
+  try {
+    const fullDb = getDatabase();
+    res.json(fullDb.financeAudits || fullDb.audits || []);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch finance audit logs" });
+  }
+});
+
+app.post("/api/finance/audits", async (req, res) => {
+  try {
+    const audit = {
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
+      ...req.body
+    };
+    const fullDb = await loadFullDatabaseState();
+    fullDb.financeAudits = fullDb.financeAudits || [];
+    fullDb.financeAudits.unshift(audit);
+    saveDatabase(fullDb);
+    res.json(audit);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to record audit log" });
   }
 });
 
