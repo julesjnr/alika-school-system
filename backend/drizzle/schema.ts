@@ -359,6 +359,7 @@ export const students = pgTable("students", {
 	phone: varchar({ length: 30 }).notNull(),
 	admissionNo: varchar("admission_no", { length: 50 }).notNull(),
 	cohort: varchar({ length: 50 }).notNull(),
+	courseId: uuid("course_id").references(() => courses.id, { onDelete: "restrict" }),
 	programme: varchar({ length: 255 }),
 	department: varchar({ length: 255 }),
 	avatar: text(),
@@ -369,6 +370,7 @@ export const students = pgTable("students", {
 	index("idx_students_email").using("btree", table.email.asc().nullsLast().op("text_ops")),
 	index("idx_students_name").using("btree", table.name.asc().nullsLast().op("text_ops")),
 	index("idx_students_cohort").using("btree", table.cohort.asc().nullsLast().op("text_ops")),
+	index("idx_students_course_id").using("btree", table.courseId.asc().nullsLast().op("uuid_ops")),
 	index("idx_students_account_status").using("btree", table.accountStatus.asc().nullsLast().op("text_ops")),
 	index("idx_students_created_at").using("btree", table.createdAt.desc().nullsLast().op("timestamptz_ops")),
 	unique("students_email_key").on(table.email),
@@ -416,8 +418,8 @@ export const grades = pgTable("grades", {
 			name: "grades_student_id_fkey"
 		}).onDelete("cascade"),
 	unique("uq_student_subject").on(table.studentId, table.subjectCode),
-	check("grades_cat_score_check", sql`(cat_score >= 0.00) AND (cat_score <= 30.00)`),
-	check("grades_exam_score_check", sql`(exam_score >= 0.00) AND (exam_score <= 70.00)`),
+	check("grades_cat_score_check", sql`cat_score >= 0.00`),
+	check("grades_exam_score_check", sql`exam_score >= 0.00`),
 ]);
 
 export const invoices = pgTable("invoices", {
@@ -426,7 +428,9 @@ export const invoices = pgTable("invoices", {
 	invoiceNo: varchar("invoice_no", { length: 50 }).notNull(),
 	description: text().notNull(),
 	amount: numeric({ precision: 12, scale:  2 }).notNull(),
-	date: date().notNull(),
+	date: date().notNull().default(sql`CURRENT_DATE`),
+	dueDate: date("due_date").default(sql`CURRENT_DATE + INTERVAL '14 days'`),
+	outstandingBalance: numeric("outstanding_balance", { precision: 12, scale: 2 }).default('0.00').notNull(),
 	status: varchar({ length: 20 }).default('unpaid').notNull(),
 }, (table) => [
 	index("idx_invoices_student").using("btree", table.studentId.asc().nullsLast().op("uuid_ops")),

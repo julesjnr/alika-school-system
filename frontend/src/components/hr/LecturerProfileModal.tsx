@@ -309,7 +309,7 @@ export const LecturerProfileModal: React.FC<LecturerProfileModalProps> = ({
                   <div className="relative pl-8 space-y-1">
                     <div className="absolute left-1.5 top-1.5 w-3 h-3 rounded-full bg-blue-600 border-2 border-white dark:border-slate-900"></div>
                     <span className="text-[10px] font-mono text-slate-400">{lecturer.employmentDate || '2024-01-15'}</span>
-                    <h5 className="text-xs font-bold text-slate-900 dark:text-white">Joined Zenti Faculty as {lecturer.academicRank}</h5>
+                    <h5 className="text-xs font-bold text-slate-900 dark:text-white">Joined Alika Medical Faculty as {lecturer.academicRank}</h5>
                     <p className="text-[11px] text-slate-500">Initial appointment under {lecturer.department} with base rate KES {lecturer.hourlyRate}/hr.</p>
                   </div>
                   {lecturer.contractStartDate && (

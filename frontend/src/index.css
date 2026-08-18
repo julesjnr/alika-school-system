@@ -14,9 +14,80 @@
 }
 
 @layer base {
+  html, body, #root {
+    overflow-x: hidden;
+  }
+
   body {
     @apply antialiased text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-950 transition-colors duration-300;
     font-family: var(--font-sans);
+  }
+
+  .landing-horizontal-shell {
+    display: flex;
+    width: 100vw;
+    height: 100vh;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x mandatory;
+    scroll-behavior: smooth;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(15, 118, 110, 0.55) transparent;
+  }
+
+  .landing-panel {
+    scroll-snap-align: start;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .landing-panel .landing-panel-content,
+  .landing-panel .landing-panel-title,
+  .landing-panel .landing-panel-copy,
+  .landing-panel .landing-panel-cta,
+  .landing-panel .landing-panel-card {
+    opacity: 0;
+    transform: translateY(28px);
+    transition: opacity 0.8s ease, transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: opacity, transform;
+  }
+
+  .landing-panel.is-visible .landing-panel-content,
+  .landing-panel.is-visible .landing-panel-title,
+  .landing-panel.is-visible .landing-panel-copy,
+  .landing-panel.is-visible .landing-panel-cta,
+  .landing-panel.is-visible .landing-panel-card {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .landing-panel.is-visible .landing-panel-copy {
+    transition-delay: 0.12s;
+  }
+
+  .landing-panel.is-visible .landing-panel-cta {
+    transition-delay: 0.2s;
+  }
+
+  .landing-panel.is-visible .landing-panel-card {
+    transition-delay: 0.14s;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .landing-horizontal-shell {
+      scroll-behavior: auto;
+    }
+
+    .landing-panel .landing-panel-content,
+    .landing-panel .landing-panel-title,
+    .landing-panel .landing-panel-copy,
+    .landing-panel .landing-panel-cta,
+    .landing-panel .landing-panel-card {
+      transition: none;
+      opacity: 1;
+      transform: none;
+    }
   }
   
   h1, h2, h3, h4, th {

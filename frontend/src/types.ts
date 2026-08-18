@@ -8,6 +8,8 @@ export interface Course {
   thumbnail: string;
   faculty: string; // e.g., "School of Computing", "Engineering"
   active: boolean;
+  courseContent?: string | null;
+  courseHighlights?: string[] | string | null;
 }
 
 export interface CourseGalleryImage {
@@ -230,8 +232,8 @@ export interface PayrollPeriod {
 }
 
 export interface Grade {
-  cat: number;   // Max 30
-  exam: number;  // Max 70
+  cat: number;
+  exam: number;
   gradedAt?: string;
 }
 
@@ -242,6 +244,7 @@ export interface Student {
   phone: string;
   admissionNo: string;
   cohort: string; // e.g., "2024 Intake"
+  courseId?: string;
   programme?: string;
   department?: string;
   enrolledUnits: string[]; // Code list
@@ -585,10 +588,16 @@ export interface LecturerAdvisorNote {
 export interface LecturerStudentLookup {
   id: string;
   name: string;
+  email?: string | null;
+  phone?: string | null;
   admissionNo: string;
   avatar: string | null;
   cohort: string;
-  course: string;
+  course: string | null;
+  programme?: string | null;
+  courseId?: string | null;
+  courseCode?: string | null;
+  courseTitle?: string | null;
   department: string | null;
   yearOfStudy: number | null;
   semester: string | null;
@@ -597,6 +606,7 @@ export interface LecturerStudentLookup {
   academicStanding: string;
   registeredUnits: LecturerStudentLookupUnit[];
   advisorNotes: LecturerAdvisorNote[];
+  accountStatus?: string | null;
 }
 
 export interface LecturerStudentDirectoryItem {

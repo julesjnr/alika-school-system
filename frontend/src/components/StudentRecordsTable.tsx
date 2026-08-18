@@ -12,9 +12,18 @@ interface StudentRecordsTableProps {
   onDeleteStudent?: (studentId: string) => void;
   refetchTrigger?: number;
   canManageRecords?: boolean;
+  /** Optional heading override (e.g. Academic Allocation vs Admissions registry). */
+  title?: string;
+  description?: string;
 }
 
-export default function StudentRecordsTable({ onUpdateStudent, refetchTrigger = 0, canManageRecords = false }: StudentRecordsTableProps) {
+export default function StudentRecordsTable({
+  onUpdateStudent,
+  refetchTrigger = 0,
+  canManageRecords = false,
+  title = 'Student Master Registry',
+  description = 'Query student credentials, enrolled units, and financial statement balances efficiently with server-side pagination.',
+}: StudentRecordsTableProps) {
   const { showConfirm } = useNotification();
   // State for paginated data
   const [students, setStudents] = useState<Student[]>([]);
@@ -369,10 +378,10 @@ export default function StudentRecordsTable({ onUpdateStudent, refetchTrigger = 
         <div>
           <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
             <Users className="w-5 h-5 text-[#2563EB]" />
-            Student Master Registry
+            {title}
           </h3>
           <p className="text-xs text-slate-400 mt-1">
-            Query student credentials, enrolled units, and financial statement balances efficiently with server-side pagination.
+            {description}
           </p>
         </div>
         <div className="flex items-center gap-3">

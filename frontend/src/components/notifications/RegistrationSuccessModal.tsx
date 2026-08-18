@@ -152,7 +152,7 @@ IMPORTANT SECURITY POLICY:
           <body>
             <div class="card">
               <div class="header">
-                <h1 class="institution">Zenti University</h1>
+                <h1 class="institution">Alika Medical Training College &amp; Medical Center</h1>
                 <div class="doc-title">Official Credential Issuance Slip</div>
               </div>
               <div class="field-group">

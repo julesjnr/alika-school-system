@@ -2598,7 +2598,7 @@ export default function FinanceSuite({
                   </div>
 
                   <div className="pt-2 text-[9.5px] text-slate-400 leading-relaxed italic text-center">
-                    * This is a cryptographically signed secure payroll voucher issued online via AI Zenti SMS accounting engine.
+                    * This is a cryptographically signed secure payroll voucher issued online via Alika Medical SMS accounting engine.
                   </div>
 
                 </div>

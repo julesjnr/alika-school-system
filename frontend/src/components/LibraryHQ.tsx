@@ -455,7 +455,7 @@ export default function LibraryHQ({
                   type="url"
                   value={newBook.eUrl_aid}
                   onChange={(e) => setNewBook({...newBook, eUrl_aid: e.target.value})}
-                  placeholder="https://e-library.zenti.edu/viewer/digital-asset.pdf"
+                  placeholder="https://library.alikamedical.co.ke/viewer/digital-asset.pdf"
                   className="w-full bg-white border border-slate-250 p-2.5 rounded-xl font-medium font-mono"
                   required={newBook.type === 'E-Book'}
                 />

@@ -1,11 +1,10 @@
 import { Lecturer, PayrollRecord, BankingInfo } from '../../types';
 
 export const DEPARTMENTS = [
-  { id: 'dept-1', code: 'CS', name: 'Department of Computer Science & Software Engineering' },
-  { id: 'dept-2', code: 'IT', name: 'Department of Information Technology & Cyber Security' },
-  { id: 'dept-3', code: 'DS', name: 'Department of Data Science & Artificial Intelligence' },
-  { id: 'dept-4', code: 'BIS', name: 'Department of Business Information Systems' },
-  { id: 'dept-5', code: 'EEE', name: 'Department of Electrical & Electronic Engineering' }
+  { id: 'dept-1', code: 'TRG', name: 'Medical Training Faculty' },
+  { id: 'dept-2', code: 'CLN', name: 'Clinical Practical Training' },
+  { id: 'dept-3', code: 'MED', name: 'Medical Center Outpatient Services' },
+  { id: 'dept-4', code: 'ADM', name: 'Administration & Admissions' }
 ];
 
 export const ACADEMIC_RANKS = [

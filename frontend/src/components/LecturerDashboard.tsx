@@ -234,12 +234,12 @@ export default function LecturerDashboard({
     const catVal = input?.cat !== undefined && input.cat !== '' ? parseInt(input.cat) : currentGrade.cat;
     const examVal = input?.exam !== undefined && input.exam !== '' ? parseInt(input.exam) : currentGrade.exam;
 
-    if (isNaN(catVal) || catVal < 0 || catVal > 30) {
-      showWarning("CAT Score Error", 'Continuous Assessment Test (CAT) must be a numeric score between 0 and 30.');
+    if (isNaN(catVal) || catVal < 0) {
+      showWarning("CAT Score Error", 'Continuous assessment must be a valid non-negative score for the configured module assessment.');
       return;
     }
-    if (isNaN(examVal) || examVal < 0 || examVal > 70) {
-      showWarning("Exam Score Error", 'Final Exam score must be a numeric score between 0 and 70.');
+    if (isNaN(examVal) || examVal < 0) {
+      showWarning("Exam Score Error", 'Final exam must be a valid non-negative score for the configured module assessment.');
       return;
     }
 
@@ -467,7 +467,7 @@ export default function LecturerDashboard({
                 <School className="w-5 h-5 text-white" />
               </div>
               <div>
-                <span className="text-sm font-black tracking-tight text-white block uppercase leading-none">ZENTI</span>
+                <span className="text-sm font-black tracking-tight text-white block uppercase leading-none">ALIKA</span>
                 <span className="text-[8px] text-slate-500 font-bold uppercase tracking-widest block">Faculty Portal</span>
               </div>
             </div>
@@ -538,7 +538,7 @@ export default function LecturerDashboard({
               <School className="w-5 h-5 text-white" />
             </div>
             <div className="min-w-0">
-              <span className="text-base font-black tracking-tight text-slate-900 dark:text-white block uppercase leading-none truncate">ZENTI ACADEMY</span>
+              <span className="text-base font-black tracking-tight text-slate-900 dark:text-white block uppercase leading-none truncate">ALIKA MEDICAL</span>
               <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block mt-1">Faculty Portal</span>
             </div>
           </div>

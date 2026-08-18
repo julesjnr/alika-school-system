@@ -240,7 +240,7 @@ export const LecturerRegistrationForm: React.FC<LecturerRegistrationFormProps> =
                 <input
                   type="email"
                   required
-                  placeholder="samuel.omondi@zenti.ac.ke"
+                  placeholder="samuel.omondi@alikamedical.co.ke"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg pl-9 pr-3 py-2 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none text-slate-900 dark:text-white"

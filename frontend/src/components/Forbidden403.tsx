@@ -99,7 +99,7 @@ export default function Forbidden403({ onBackToDashboard, attemptedRoute = "/adm
             }}
             className="w-full bg-transparent hover:bg-slate-800/40 text-slate-400 hover:text-white font-semibold py-2.5 px-6 rounded-xl text-xs uppercase tracking-wider transition-colors cursor-pointer text-center border border-slate-800"
           >
-            Return to Public Campus Hub
+            Return to Homepage
           </button>
         </div>
 

@@ -3,6 +3,7 @@ dotenv.config({ override: true });
 import express from "express";
 import path from "path";
 import fs from "fs";
+import { fileURLToPath } from "url";
 import crypto from "crypto";
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -54,6 +55,8 @@ import {
   lectureSchedules,
   syllabusTopics,
   classAttendanceSessions,
+  studentAssessmentMarks,
+  assessmentConfigurations,
 } from "./src/db/schema.ts";
 import { eq, notInArray, and, or, desc, asc, count, inArray, sql } from "drizzle-orm";
 import { supabase } from "./src/db/supabaseClient.ts";
@@ -70,14 +73,28 @@ import {
   authenticateUser,
   changeUserPassword,
   adminResetUserPassword,
+  resetStudentPassword,
+  PasswordResetError,
   findUserByIdentifier,
 } from "./src/auth.ts";
 import {
+  calculateOverallPercentage,
+  calculateWeightedAssessmentResult,
   continuousAssessmentTotal,
+  letterGradeFromOverallPercentage,
+  maxMarksForField,
   sanitizeStudentGradesRecord,
   validateAggregateGrade,
   validateMarkBreakdown,
+  validateAssessmentWeights,
 } from "./src/marksValidation.ts";
+import {
+  computePublishedAssessmentSummary,
+  computeStudentAcademicSummary,
+  deriveAcademicStanding,
+} from "./src/studentLookup.ts";
+import { ensureStudentCanonicalEnrollment } from "./src/studentEnrollmentSync.ts";
+import { generateInvoiceNumber, resolveInvoiceDefaults } from "./src/invoiceNumber.ts";
 
 // Import initial mock databases from src/data.ts to bootstrap our persistent store
 import { 
@@ -92,13 +109,29 @@ import {
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-const uploadBaseDirectory = path.join(process.cwd(), 'uploads');
+const uploadBaseDirectory = process.env.UPLOAD_DIR || (
+  fs.existsSync(path.join(process.cwd(), 'uploads'))
+    ? path.join(process.cwd(), 'uploads')
+    : (fs.existsSync(path.join(process.cwd(), 'backend/uploads'))
+        ? path.join(process.cwd(), 'backend/uploads')
+        : path.join(process.cwd(), 'uploads'))
+);
 function ensureUploadsDirectory() {
   if (!fs.existsSync(uploadBaseDirectory)) {
     fs.mkdirSync(uploadBaseDirectory, { recursive: true });
   }
 }
-ensureUploadsDirectory();
+app.use('/uploads/schools', express.static(path.join(uploadBaseDirectory, 'schools')));
+app.use('/uploads/misc', express.static(path.join(uploadBaseDirectory, 'misc')));
+app.use('/uploads/applications', (req: any, res: any, next: any) => {
+  authenticateJWT(req, res, () => {
+    const userRole = req.user?.role;
+    if (userRole && (['admin', 'super_admin', 'admissions_officer', 'student', 'lecturer'].includes(userRole))) {
+      return express.static(path.join(uploadBaseDirectory, 'applications'))(req, res, next);
+    }
+    return res.status(403).json({ error: "Access Denied: You do not have permission to view private applicant documents." });
+  });
+});
 app.use('/uploads', express.static(uploadBaseDirectory));
 
 const uploadStorage = multer.diskStorage({
@@ -243,6 +276,14 @@ export async function loadFullDatabaseState(): Promise<any> {
   const studentRows = await db.select().from(students);
   const enrollmentRows = await db.select().from(studentEnrollments);
   const gradeRows = await db.select().from(grades);
+  const assessmentRowsAll = await db.select({
+    studentId: studentAssessmentMarks.studentId,
+    subjectCode: studentAssessmentMarks.subjectCode,
+    rawMark: studentAssessmentMarks.rawMark,
+    maxMarks: studentAssessmentMarks.maxMarks,
+    weight: studentAssessmentMarks.weight,
+    assessmentKind: studentAssessmentMarks.assessmentKind,
+  }).from(studentAssessmentMarks);
   const invoiceRows = await db.select().from(invoices);
   const paymentRows = await db.select().from(payments);
   const attendanceRows = await db.select().from(studentAttendance);
@@ -253,12 +294,39 @@ export async function loadFullDatabaseState(): Promise<any> {
     const enrolledUnits = enrollmentRows.filter(e => e.studentId === s.id).map(e => e.courseCode);
     
     const studentGrades: Record<string, { cat: number; exam: number }> = {};
-    gradeRows.filter(g => g.studentId === s.id).forEach(g => {
-      studentGrades[g.subjectCode] = {
-        cat: g.catScore ? Number(g.catScore) : 0,
-        exam: g.examScore ? Number(g.examScore) : 0
-      };
-    });
+    const studentAssessments = assessmentRowsAll.filter(a => a.studentId === s.id);
+    const grouped = new Map<string, typeof studentAssessments>();
+    for (const a of studentAssessments) {
+      const key = String(a.subjectCode || '').trim();
+      if (!key) continue;
+      const arr = grouped.get(key) || [];
+      arr.push(a);
+      grouped.set(key, arr);
+    }
+
+    const unpublishedSubjectsForStudent: string[] = [];
+    for (const [subjectCode, rows] of grouped.entries()) {
+      let weightedPercentTotal = 0;
+      let totalWeight = 0;
+      for (const r of rows) {
+        const rawMark = Number(r.rawMark ?? 0);
+        const maxMarks = Number(r.maxMarks ?? 0);
+        const weight = Number(r.weight ?? 0) || 0;
+        if (!Number.isFinite(rawMark) || !Number.isFinite(maxMarks) || maxMarks <= 0) continue;
+        weightedPercentTotal += (Math.min((rawMark / maxMarks) * 100, 100)) * weight;
+        totalWeight += weight;
+      }
+      if ((Number(totalWeight) || 0) <= 0) {
+        // marks present but no configured weights — treat as unpublished
+        unpublishedSubjectsForStudent.push(subjectCode);
+        continue;
+      }
+      const overallPercent = totalWeight > 0 ? Number((weightedPercentTotal / totalWeight).toFixed(2)) : 0;
+      // split into CAT/Exam parts for legacy UI: 30% CAT, 70% Exam
+      const cat = Math.round(Number((overallPercent * 0.3).toFixed(2)));
+      const exam = Math.round(Number((overallPercent * 0.7).toFixed(2)));
+      studentGrades[subjectCode] = { cat, exam };
+    }
 
     const ledger = invoiceRows.filter(i => i.studentId === s.id).map(i => ({
       id: i.id,
@@ -296,11 +364,15 @@ export async function loadFullDatabaseState(): Promise<any> {
       phone: s.phone,
       admissionNo: s.admissionNo,
       cohort: s.cohort,
+      courseId: s.courseId ?? undefined,
+      programme: s.programme ?? undefined,
+      department: s.department ?? undefined,
       avatar: s.avatar ?? undefined,
       accountStatus,
       createdAt: s.createdAt ?? undefined,
       enrolledUnits,
       grades: studentGrades,
+      unpublishedSubjects: unpublishedSubjectsForStudent,
       ledger,
       payments: paymentsList,
       attendance: attendanceMap
@@ -759,6 +831,9 @@ async function performDatabaseSync(dbState: any): Promise<void> {
           phone: s.phone,
           admissionNo: s.admissionNo,
           cohort: s.cohort,
+          courseId: s.courseId || null,
+          programme: s.programme || null,
+          department: s.department || null,
           avatar: s.avatar || null,
         };
         await tx.insert(students).values(studentVal).onConflictDoUpdate({
@@ -1537,7 +1612,6 @@ const publicAPIPaths = [
   "/api/data",
   "/api/student/registered-units",
   "/api/student-enrollments",
-  "/api/students",
   "/api/public/consultations",
   "/api/public/applications",
   "/api/public/application-documents"
@@ -1572,8 +1646,8 @@ async function sendPasswordResetEmail(email: string, resetUrl: string): Promise<
     body: JSON.stringify({
       from,
       to: [email],
-      subject: 'Reset your Zenti administrator password',
-      html: `<p>We received a request to reset your Zenti administrator password.</p><p><a href="${resetUrl}">Reset password</a></p><p>This link expires in 20 minutes and can be used once. If you did not request this, you can ignore this email.</p>`,
+      subject: 'Reset your Alika administrator password',
+      html: `<p>We received a request to reset your Alika Medical Training College & Medical Center administrator password.</p><p><a href="${resetUrl}">Reset password</a></p><p>This link expires in 20 minutes and can be used once. If you did not request this, you can ignore this email.</p>`,
     }),
   });
   return response.ok;
@@ -1657,39 +1731,153 @@ async function queueEmail(eventKey: string, recipient: string, subject: string, 
 }
 
 async function generateAdmissionNumber(): Promise<string> {
-  let admissionNo: string;
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    admissionNo = `ADM-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
-    const exists = await db.execute(sql`SELECT 1 FROM students WHERE admission_no=${admissionNo} LIMIT 1`);
-    if (!exists.rows.length) return admissionNo;
+  // The database unique constraint remains the final concurrency safeguard.
+  return `ADM-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+}
+
+class EnrollmentError extends Error {
+  constructor(message: string, readonly statusCode = 400) {
+    super(message);
   }
-  return `ADM-${new Date().getFullYear()}-${Date.now()}`;
 }
 
 async function createStudentFromApplication(application: any) {
-  if (!application || !application.email || !application.fullName) return null;
+  const fullName = application?.full_name || application?.fullName;
+  const email = application?.email;
+  const phone = application?.phone;
+  const admissionNo = application?.admission_no || application?.admissionNo || await generateAdmissionNumber();
+  const approvedCourseId = application?.approved_course_id || application?.approvedCourseId || application?.first_choice_course_id || application?.firstChoiceCourseId;
+  const preferredIntake = application?.preferred_intake || application?.preferredIntake;
+  const nationality = application?.nationality;
 
-  const existing = await db.execute(sql`SELECT * FROM students WHERE LOWER(email) = LOWER(${application.email}) OR admission_no = ${application.admissionNo}`);
-  if (existing.rows.length) {
-    return existing.rows[0];
+  if (!application || !email || !fullName) return null;
+
+  const cohort = preferredIntake || '';
+
+  // Admissions owns student creation. Reuse the same student row if already admitted —
+  // never insert a duplicate for Academic Allocation or a second approval pass.
+  const enrolled = await enrollAdmittedStudentRecord({
+    name: fullName,
+    email,
+    phone,
+    admissionNo,
+    cohort,
+    courseId: approvedCourseId,
+    department: nationality,
+    accountStatus: 'Active',
+  });
+
+  return enrolled.student
+    ? { ...enrolled.student, defaultPassword: enrolled.defaultPassword, created: enrolled.created }
+    : null;
+}
+
+/**
+ * Admissions-owned student enrollment. Creates one students row + auth user, or
+ * returns the existing row when email/admission number already match. Academic
+ * Allocation must never call this to invent parallel student identities.
+ */
+async function enrollAdmittedStudentRecord(params: {
+  name: string;
+  email: string;
+  phone?: string | null;
+  admissionNo?: string | null;
+  cohort?: string | null;
+  courseId?: string | null;
+  department?: string | null;
+  avatar?: string | null;
+  accountStatus?: string;
+  passcode?: string | null;
+}): Promise<{ student: any; created: boolean; defaultPassword: string | null }> {
+  const email = cleanText(params.email, 255).toLowerCase();
+  const name = cleanText(params.name, 255);
+  const phone = cleanText(params.phone || '', 50);
+  const courseId = cleanText(params.courseId || '', 50);
+  const cohort = cleanText(params.cohort || '', 100);
+  if (!email || !name || !phone || !courseId || !cohort) {
+    throw new EnrollmentError('Name, email, phone, programme, and intake are required for student admission.');
   }
 
-  const admissionNo = application.admissionNo || await generateAdmissionNumber();
-  const programmeResult = await db.execute(sql`SELECT title FROM courses WHERE id=${application.approvedCourseId || application.firstChoiceCourseId} LIMIT 1`);
-  const programme = programmeResult.rows[0]?.title || null;
-  const cohort = application.preferredIntake || `Intake ${new Date().getFullYear()}`;
+  const courseResult = await db.execute(sql`SELECT id, code, title FROM courses WHERE id=${courseId} LIMIT 1`);
+  const course = courseResult.rows[0] as { id: string; code: string; title: string } | undefined;
+  if (!course) throw new EnrollmentError('The selected programme does not exist.');
 
-  const studentResult = await db.execute(sql`INSERT INTO students (name,email,phone,admission_no,cohort,programme,department,avatar,account_status,created_at,updated_at)
-    VALUES (${cleanText(application.fullName,255)}, ${cleanText(application.email,255).toLowerCase()}, ${cleanText(application.phone,50)}, ${admissionNo}, ${cleanText(cohort,100)}, ${cleanText(programme,255)}, ${cleanText(application.nationality,255)}, ${null}, 'Active', NOW(), NOW()) RETURNING *`);
+  let admissionNo = cleanText(params.admissionNo || '', 100);
+  if (!admissionNo) {
+    admissionNo = await generateAdmissionNumber();
+  }
 
-  const student = studentResult.rows[0];
-  if (!student) return null;
+  const department = cleanText(params.department || '', 255) || null;
+  const accountStatus = cleanText(params.accountStatus || 'Pending Setup', 50) || 'Pending Setup';
 
-  const defaultPassword = resolvePassword(undefined, 'student').plain;
+  let student: any;
+  let created = false;
+
+  try {
+    await db.transaction(async (tx: any) => {
+      const existingUsers = await tx
+        .select()
+        .from(students)
+        .where(or(eq(students.email, email), eq(students.admissionNo, admissionNo)))
+        .limit(1);
+
+      if (existingUsers.length > 0) {
+        const matchingEmail = existingUsers.find((candidate: any) => String(candidate.email || '').toLowerCase() === email);
+        if (matchingEmail) {
+          student = matchingEmail;
+          created = false;
+          return;
+        }
+        throw new EnrollmentError('The admission number is already assigned to another student.', 409);
+      }
+
+      const [insertedStudent] = await tx.insert(students).values({
+        name,
+        email,
+        phone,
+        admissionNo,
+        cohort,
+        courseId: course.id,
+        programme: course.title,
+        department,
+        avatar: params.avatar ?? null,
+        accountStatus,
+        createdAt: new Date().toISOString(),
+      }).returning();
+
+      if (!insertedStudent) {
+        throw new Error('Failed to create admitted student record.');
+      }
+
+      student = insertedStudent;
+      created = true;
+
+      const canonicalCreated = await ensureStudentCanonicalEnrollment(tx, student.id, course.code);
+      if (canonicalCreated && !student.enrolledUnits) {
+        student.enrolledUnits = [course.code];
+      }
+    });
+  } catch (error: any) {
+    if (error instanceof EnrollmentError) throw error;
+    if (error?.code !== '23505' && error?.cause?.code !== '23505') throw error;
+
+    const concurrent = await db.execute(sql`SELECT * FROM students WHERE LOWER(email) = LOWER(${email}) OR admission_no = ${admissionNo} LIMIT 1`);
+    const existingStudent: any = concurrent.rows[0];
+    if (existingStudent && String(existingStudent.email || '').toLowerCase() === email) {
+      return { student: existingStudent, created: false, defaultPassword: null };
+    }
+    throw new EnrollmentError('The admission number is already assigned to another student.', 409);
+  }
+
+  if (!student) {
+    throw new Error('Failed to create admitted student record.');
+  }
+
+  const { plain: defaultPassword } = resolvePassword(params.passcode || undefined, 'student');
   try {
     await upsertUserAuthRecord({
       username: admissionNo,
-      email: application.email.toLowerCase(),
+      email,
       passwordHash: hashPassword(defaultPassword),
       role: 'student',
       roleId: String(student.id),
@@ -1697,23 +1885,26 @@ async function createStudentFromApplication(application: any) {
       mustChangePassword: true,
     });
   } catch (err: any) {
-    console.warn("Failed to create associated auth record for admitted student:", err?.message || err);
+    console.warn('Failed to create associated auth record for admitted student:', err?.message || err);
   }
 
-  return { ...student, defaultPassword };
+  return { student, created, defaultPassword };
 }
 
 async function queueAdmissionLetter(application: any, student?: any) {
-  if (!application || !application.email) return;
-  const admissionNo = application.admissionNo || student?.admissionNo || '';
-  const loginUrl = `${process.env.APP_BASE_URL || 'https://portal.zenti.local'}/login?portal=student`;
-  const body = `Dear ${application.fullName},\n\n` +
-    `Congratulations! Your application ${application.application_no} has been approved.\n` +
+  const fullName = application?.full_name || application?.fullName || 'Applicant';
+  const email = application?.email;
+  const applicationNo = application?.application_no || application?.applicationNo || '';
+  const admissionNo = application?.admission_no || application?.admissionNo || student?.admission_no || student?.admissionNo || '';
+  if (!application || !email) return;
+  const loginUrl = `${process.env.APP_BASE_URL || process.env.APP_URL || 'https://alikamedical.co.ke'}/login?portal=student`;
+  const body = `Dear ${fullName},\n\n` +
+    `Congratulations! Your application ${applicationNo} has been approved.\n` +
     `Your admission number is ${admissionNo}.\n` +
     `Please visit ${loginUrl} to log in and complete your student onboarding.\n\n` +
     `If you are logging in for the first time, use your admission number as the username. You will be prompted to change your password on first sign in.\n\n` +
-    `Best regards,\nZenti Admissions Team`;
-  await queueEmail(`application:${application.id}:admission_letter`, application.email, `Admission Offer: ${application.application_no}`, body);
+    `Best regards,\nAlika Admissions Team`;
+  await queueEmail(`application:${application.id}:admission_letter`, email, `Admission Offer: ${applicationNo}`, body);
 }
 
 // ==========================================
@@ -1953,7 +2144,7 @@ async function getProfileForUser(role: string, roleId: string | null, email: str
     return sanitizeProfile(lecturer);
   }
   if (role === "admin") {
-    return { name: "System Administrator", email: email || "admin@zenti.edu" };
+    return { name: "System Administrator", email: email || "admin@alikamedical.co.ke" };
   }
   return null;
 }
@@ -2145,8 +2336,11 @@ app.post("/api/auth/login", async (req: any, res: any) => {
         success: true,
         status: "REQUIRES_PASSWORD_CHANGE",
         userId: result.userId,
+        username: result.username,
         role: result.role,
         email: result.email,
+        token: result.token,
+        refreshToken: result.refreshToken,
         message: result.message
       });
       return;
@@ -2209,21 +2403,35 @@ app.post("/api/auth/refresh", async (req: any, res: any) => {
 });
 
 // Password Change Endpoint (/api/auth/change-password and /api/auth/change-passcode)
+// Requires the authenticated JWT session established at login (including forced-change login).
 app.post(["/api/auth/change-password", "/api/auth/change-passcode"], async (req: any, res: any) => {
   try {
+    if (!req.user?.userId && !req.user?.email) {
+      res.status(401).json({ success: false, error: "Your session has expired. Please sign in again." });
+      return;
+    }
+
     const { role, userId, currentPasscode, currentPassword, newPasscode, newPassword } = req.body;
     const inputCurrent = currentPassword || currentPasscode;
     const inputNew = newPassword || newPasscode;
-    const identifier = userId || req.user?.userId;
+    const identifier = (typeof userId === 'string' && userId.trim()) ? userId.trim() : (req.user.userId || req.user.email);
 
     if (!identifier || !inputCurrent || !inputNew) {
       res.status(400).json({ success: false, error: "Missing required parameters for password update." });
       return;
     }
 
+    // Bind the change to the authenticated session — do not allow changing another account.
+    const sessionUser = await findUserByIdentifier(req.user.userId || req.user.email, req.user.role);
+    const targetUser = await findUserByIdentifier(identifier, role || req.user.role);
+    if (!sessionUser || !targetUser || Number(sessionUser.id) !== Number(targetUser.id)) {
+      res.status(403).json({ success: false, error: "You can only change the password for your own account." });
+      return;
+    }
+
     const result = await changeUserPassword({
       identifier,
-      roleHint: role,
+      roleHint: role || req.user.role,
       currentPasscode: inputCurrent,
       newPasscode: inputNew,
       jwtSecret: JWT_SECRET,
@@ -2513,7 +2721,9 @@ app.get("/api/courses", async (req, res) => {
       fees: Number(c.fees),
       thumbnail: c.thumbnail ?? "",
       active: c.active,
-      faculty: c.faculty
+      faculty: c.faculty,
+      courseContent: "",
+      courseHighlights: []
     }));
     res.json(result);
   } catch (err: any) {
@@ -2812,7 +3022,7 @@ app.patch("/api/admin/consultations/:id", async (req: any, res: any) => {
     if (!consultation) return res.status(404).json({ error: "Consultation not found." });
 
     if (reply) {
-      const messageId = `<consultation-${consultation.id}-${crypto.randomUUID()}@zenti.local>`;
+      const messageId = `<consultation-${consultation.id}-${crypto.randomUUID()}@alikamedical.co.ke>`;
       await db.execute(sql`INSERT INTO consultation_messages (consultation_id, direction, sender_name, sender_email, body, message_id, created_at) VALUES (${consultation.id}, 'admin', 'Admissions Officer', NULL, ${reply}, ${messageId}, NOW())`);
       await queueEmail(`consultation:${consultation.id}:reply:${messageId}`, consultation.email, `Re: Consultation ${consultation.request_no}`, reply);
     }
@@ -2863,6 +3073,7 @@ app.post('/api/public/application-documents', (req: any, res: any, next: any) =>
     const fileUrl = `/uploads/${relPath}`;
     const uploadedAt = new Date().toISOString();
     res.status(201).json({
+      documentType,
       fileUrl,
       fileName: req.file.originalname,
       mimeType: req.file.mimetype,
@@ -2889,9 +3100,10 @@ app.post("/api/public/applications", async (req, res) => {
   }
   if (![...requiredDocuments].every((type) => documents.some((doc: any) => doc.documentType === type))) return res.status(400).json({ error: "Passport photo, national ID, and KCSE certificate are required." });
   for (const doc of documents) {
-    const filename = path.basename(cleanText(doc.fileUrl, 2000));
-    const filePath = path.join(uploadBaseDirectory, filename);
-    if (!fs.existsSync(filePath)) {
+    const rawUrl = cleanText(doc.fileUrl, 2000);
+    const relPath = rawUrl.replace(/^\/?uploads\//, '').replace(/^[\\/]+/, '');
+    const safeFilePath = path.resolve(uploadBaseDirectory, relPath);
+    if (!safeFilePath.startsWith(uploadBaseDirectory) || !fs.existsSync(safeFilePath)) {
       return res.status(400).json({ error: `Storage file for document (${doc.documentType}) does not exist. Please re-upload your document.` });
     }
   }
@@ -2987,8 +3199,43 @@ app.get("/api/public/applications/reference/:reference", async (req: any, res: a
 
 app.get("/api/admin/applications", async (req: any, res: any) => {
   if (!requireAdminRole(req, res)) return;
-  try { const result = await db.execute(sql`SELECT * FROM applications ORDER BY created_at DESC`); res.json(result.rows); }
-  catch { res.status(500).json({ error: "Unable to load applications." }); }
+  try {
+    const result = await db.execute(sql`
+      SELECT 
+        a.*,
+        c1.title as first_choice_course_title,
+        c1.code as first_choice_course_code,
+        c2.title as second_choice_course_title,
+        c2.code as second_choice_course_code,
+        ca.title as approved_course_title,
+        ca.code as approved_course_code,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', d.id,
+              'document_type', d.document_type,
+              'file_name', d.file_name,
+              'mime_type', d.mime_type,
+              'file_url', d.file_url,
+              'size_bytes', d.size_bytes,
+              'created_at', d.created_at
+            )
+          ) FILTER (WHERE d.id IS NOT NULL),
+          '[]'::json
+        ) as documents
+      FROM applications a
+      LEFT JOIN courses c1 ON a.first_choice_course_id = c1.id
+      LEFT JOIN courses c2 ON a.second_choice_course_id = c2.id
+      LEFT JOIN courses ca ON a.approved_course_id = ca.id
+      LEFT JOIN application_documents d ON a.id = d.application_id
+      GROUP BY a.id, c1.id, c2.id, ca.id
+      ORDER BY a.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (error: any) {
+    console.error("Failed to load applications for admin:", error);
+    res.status(500).json({ error: "Unable to load applications." });
+  }
 });
 
 app.patch("/api/admin/applications/:id", async (req: any, res: any) => {
@@ -3005,8 +3252,6 @@ app.patch("/api/admin/applications/:id", async (req: any, res: any) => {
         application.admission_no = await generateAdmissionNumber();
         await db.execute(sql`UPDATE applications SET admission_no=${application.admission_no}, approved_course_id=${application.approved_course_id ?? application.first_choice_course_id}, updated_at=NOW() WHERE id=${application.id}`);
       }
-      const admittedStudent = await createStudentFromApplication(application);
-      await queueAdmissionLetter(application, admittedStudent);
     } else {
       await queueEmail(`application:${application.id}:${status}`, application.email, `Application ${application.application_no}: ${status.replaceAll('_', ' ')}`, `Your application status has been updated to ${status.replaceAll('_', ' ')}. Please sign in or contact Admissions for details.`);
     }
@@ -3016,6 +3261,97 @@ app.patch("/api/admin/applications/:id", async (req: any, res: any) => {
   } catch (error: any) {
     console.error("Application status update failed:", error);
     res.status(500).json({ error: clientSafeDbError("Unable to update application.", error) });
+  }
+});
+
+app.post("/api/admin/admissions/enroll", async (req: any, res: any) => {
+  if (!requireAdminRole(req, res)) return;
+  try {
+    const studentData = req.body || {};
+    let enrollmentData = {
+      name: cleanText(studentData.name, 255),
+      email: cleanText(studentData.email, 255),
+      phone: cleanText(studentData.phone, 50),
+      cohort: cleanText(studentData.cohort, 100),
+      courseId: cleanText(studentData.courseId, 50),
+      admissionNo: cleanText(studentData.admissionNo, 100),
+      department: cleanText(studentData.department, 255) || null,
+      applicationNo: '',
+    };
+
+    const applicationId = cleanText(studentData.applicationId, 50);
+    if (applicationId) {
+      const applicationResult = await db.execute(sql`
+        SELECT id, application_no, full_name, email, phone, nationality, preferred_intake,
+               admission_no, first_choice_course_id, approved_course_id, status
+        FROM applications WHERE id=${applicationId} LIMIT 1
+      `);
+      const application: any = applicationResult.rows[0];
+      if (!application) return res.status(404).json({ error: "Application not found." });
+      if (application.status !== 'approved') return res.status(400).json({ error: "Only approved applications can be enrolled." });
+
+      const approvedCourseId = application.approved_course_id || application.first_choice_course_id;
+      const requestedCourseId = cleanText(studentData.courseId, 50) || approvedCourseId;
+      if (requestedCourseId !== approvedCourseId && studentData.confirmProgrammeChange !== true) {
+        return res.status(400).json({ error: "Confirm the programme change before enrolling this approved application." });
+      }
+      const admissionNo = application.admission_no || await generateAdmissionNumber();
+      if (!application.admission_no) {
+        await db.execute(sql`UPDATE applications SET admission_no=${admissionNo}, updated_at=NOW() WHERE id=${application.id}`);
+      }
+      enrollmentData = {
+        name: application.full_name,
+        email: application.email,
+        phone: application.phone,
+        cohort: application.preferred_intake,
+        courseId: requestedCourseId,
+        admissionNo,
+        department: application.nationality || null,
+        applicationNo: application.application_no,
+      };
+    }
+
+    const enrolled = await enrollAdmittedStudentRecord({
+      ...enrollmentData,
+      avatar: studentData.avatar ?? null,
+      accountStatus: studentData.accountStatus || "Pending Setup",
+      passcode: studentData.passcode,
+    });
+
+    try {
+      const fullDb = await loadFullDatabaseState();
+      saveDatabase(fullDb);
+    } catch {}
+
+    await writeAdminAudit(
+      req,
+      enrolled.created ? "admissions.enroll" : "admissions.enroll_existing",
+      "student",
+      String(enrolled.student.id),
+      {
+        admissionNo: enrolled.student.admission_no || enrolled.student.admissionNo,
+        email: enrolled.student.email,
+        applicationNo: enrollmentData.applicationNo || null,
+        courseId: enrolled.student.course_id || enrolled.student.courseId,
+        created: enrolled.created,
+      }
+    );
+
+    res.status(enrolled.created ? 201 : 200).json({
+      ...enrolled.student,
+      id: enrolled.student.id,
+      admissionNo: enrolled.student.admission_no || enrolled.student.admissionNo,
+      accountStatus: enrolled.student.account_status || enrolled.student.accountStatus,
+      created: enrolled.created,
+      defaultPassword: enrolled.defaultPassword,
+      message: enrolled.created
+        ? "Student admitted and portal account created."
+        : "Existing admitted student reused — no duplicate record created.",
+    });
+  } catch (error: any) {
+    console.error("Admissions enrollment failed:", error);
+    if (error instanceof EnrollmentError) return res.status(error.statusCode).json({ error: error.message });
+    res.status(500).json({ error: clientSafeDbError("Failed to enroll student.", error) });
   }
 });
 
@@ -3031,27 +3367,99 @@ app.get("/api/invoices", async (req, res) => {
 });
 app.post("/api/invoices", async (req, res) => {
   try {
-    const invoiceData = req.body;
+    const invoiceData = req.body ?? {};
 
-    if (!invoiceData?.studentId || !invoiceData?.amount) {
+    if (!invoiceData?.studentId || invoiceData?.amount === undefined || invoiceData?.amount === null || invoiceData?.amount === "") {
       return res.status(400).json({
         error: "Student ID and amount are required",
       });
     }
 
-    const [invoice] = await db
-      .insert(invoices)
-      .values({
-        studentId: invoiceData.studentId,
-        invoiceNo: invoiceData.invoiceNo,
-        description: invoiceData.description,
-        amount: invoiceData.amount,
-        date: invoiceData.date,
-        status: invoiceData.status ?? "unpaid",
-      })
-      .returning();
+    const normalizedAmount = Number(invoiceData.amount);
+    if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+      return res.status(400).json({
+        error: "Amount must be a positive number",
+      });
+    }
 
-    res.status(201).json(invoice);
+    const invoiceDefaults = resolveInvoiceDefaults({
+      studentId: invoiceData.studentId,
+      amount: normalizedAmount,
+      description: invoiceData.description,
+      status: invoiceData.status,
+      date: invoiceData.date,
+      dueDate: invoiceData.dueDate,
+      outstandingBalance: invoiceData.outstandingBalance,
+    });
+
+    const invoiceNo = invoiceData.invoiceNo && String(invoiceData.invoiceNo).trim()
+      ? String(invoiceData.invoiceNo).trim()
+      : await generateInvoiceNumber();
+
+    // Ensure numeric types for DB insert (columns are NUMERIC)
+    const numericAmount = Number(invoiceDefaults.amount);
+    const numericOutstanding = Number(invoiceDefaults.outstandingBalance ?? numericAmount);
+
+    // Insert with dedicated error handling so we can return a clean 400
+    // on user-level errors (e.g. unique constraint) and optionally retry
+    // with an alternate invoice number suffix to avoid collisions.
+    let insertedInvoice: any = null;
+    try {
+      const [invoice] = await db
+        .insert(invoices)
+        .values({
+          studentId: invoiceDefaults.studentId,
+          invoiceNo,
+          description: invoiceDefaults.description,
+          amount: numericAmount,
+          date: invoiceDefaults.date,
+          dueDate: invoiceDefaults.dueDate,
+          outstandingBalance: numericOutstanding,
+          status: invoiceDefaults.status,
+        })
+        .returning();
+      insertedInvoice = invoice;
+    } catch (err: any) {
+      console.error('Invoice insert failed, attempting fallback if possible:', err?.message || err);
+      const isUniqueViolation = err && (String(err.code) === '23505' || /unique/i.test(String(err.message || '')));
+      if (isUniqueViolation) {
+        // Try up to 3 additional generated invoice numbers before bailing out
+        let success = false;
+        let lastErr: any = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const altInvoiceNo = await generateInvoiceNumber();
+            const [invoice] = await db
+              .insert(invoices)
+              .values({
+                studentId: invoiceDefaults.studentId,
+                invoiceNo: altInvoiceNo,
+                description: invoiceDefaults.description,
+                amount: numericAmount,
+                date: invoiceDefaults.date,
+                dueDate: invoiceDefaults.dueDate,
+                outstandingBalance: numericOutstanding,
+                status: invoiceDefaults.status,
+              })
+              .returning();
+            insertedInvoice = invoice;
+            success = true;
+            break;
+          } catch (err2: any) {
+            lastErr = err2;
+            console.error('Retry invoice insert attempt failed:', err2?.message || err2);
+            // continue and try another generated number
+          }
+        }
+        if (!success) {
+          return res.status(400).json({ error: clientSafeDbError('Failed to create invoice due to unique constraint', lastErr || err) });
+        }
+      } else {
+        return res.status(400).json({ error: clientSafeDbError('Failed to create invoice', err) });
+      }
+    }
+
+    return res.status(201).json({ invoice: insertedInvoice, invoiceNo: insertedInvoice?.invoiceNo });
   } catch (error: any) {
     console.error("Failed to create invoice:", error);
     res.status(500).json({ error: error.message });
@@ -3706,6 +4114,52 @@ app.get(
   }
 );
 
+// GET/POST assessment configuration for a module (lecturer/admin)
+app.get(["/api/lecturer/assessment-config", "/api/faculty/assessment-config"], authenticateJWT, checkRBAC(["lecturer", "admin", "super_admin"]), async (req: any, res: any) => {
+  try {
+    const { subjectCode } = req.query || {};
+    if (!subjectCode) return res.status(400).json({ error: 'subjectCode is required' });
+    const configs = await db.select().from(assessmentConfigurations).where(eq(assessmentConfigurations.subjectCode, subjectCode));
+    return res.json(configs.map((c:any) => ({ assessmentKind: c.assessmentKind, assessmentName: c.assessmentName, maxMarks: Number(c.maxMarks), weight: Number(c.weight) })));
+  } catch (error:any) {
+    console.error('Failed to fetch assessment config:', error);
+    return res.status(500).json({ error: clientSafeDbError('Failed to fetch assessment config', error) });
+  }
+});
+
+app.post(["/api/lecturer/assessment-config", "/api/faculty/assessment-config"], authenticateJWT, checkRBAC(["lecturer", "admin", "super_admin"]), async (req:any, res:any) => {
+  try {
+    const actorRole = req.user?.role;
+    const actorId = req.user?.userId;
+    const { subjectCode, assessments } = req.body || {};
+    if (!subjectCode || !Array.isArray(assessments)) return res.status(400).json({ error: 'subjectCode and assessments are required' });
+
+    // If lecturer role, ensure they are assigned to the subject
+    if (actorRole === 'lecturer') {
+      const assigned = await db.select().from(lecturerSubjects).where(and(eq(lecturerSubjects.lecturerId, actorId), eq(lecturerSubjects.subjectCode, subjectCode)));
+      if (!assigned || assigned.length === 0) return res.status(403).json({ error: 'You are not assigned to this subject' });
+    }
+
+    // Validate assessments structure
+    const weightError = validateAssessmentWeights(assessments);
+    if (weightError) return res.status(400).json({ error: `Assessment configuration invalid: ${weightError}` });
+
+    // Upsert each assessment config
+    for (const a of assessments) {
+      if (!a.assessmentKind || !a.assessmentName || !Number.isFinite(Number(a.maxMarks)) || Number(a.maxMarks) <= 0 || !Number.isFinite(Number(a.weight)) || Number(a.weight) < 0) {
+        return res.status(400).json({ error: 'Each assessment requires assessmentKind, assessmentName, maxMarks>0, weight>=0' });
+      }
+      await db.insert(assessmentConfigurations).values({ id: crypto.randomUUID(), subjectCode, assessmentKind: a.assessmentKind, assessmentName: a.assessmentName, maxMarks: String(a.maxMarks), weight: String(a.weight) }).onConflictDoUpdate({ target: [assessmentConfigurations.subjectCode, assessmentConfigurations.assessmentKind], set: { assessmentName: a.assessmentName, maxMarks: String(a.maxMarks), weight: String(a.weight), updatedAt: new Date().toISOString() } });
+    }
+
+    await writeAdminAudit(req, 'assessment_config.update', 'assessment_configurations', subjectCode, { actorId, actorRole, count: assessments.length });
+    return res.json({ success: true });
+  } catch (error:any) {
+    console.error('Failed to save assessment config:', error);
+    return res.status(500).json({ error: clientSafeDbError('Failed to save assessment config', error) });
+  }
+});
+
 // POST Log Teaching Session
 app.post(
   ["/api/lecturer/teaching-sessions", "/api/faculty/teaching-sessions"],
@@ -3774,12 +4228,12 @@ app.post(
   }
 );
 
-// POST validated lecturer grade upsert (component totals → cat_score + exam_score)
+// POST validated lecturer assessment raw marks; do not write aggregate totals into the legacy grades table.
 app.post(
   ["/api/lecturer/grades", "/api/faculty/grades"],
   async (req: any, res: any) => {
     try {
-      const { studentId, subjectCode, cat, exam, assessments, marks } = req.body || {};
+      const { studentId, subjectCode, assessments, marks } = req.body || {};
       if (!studentId || !subjectCode) {
         return res.status(400).json({ error: "studentId and subjectCode are required." });
       }
@@ -3792,53 +4246,103 @@ app.post(
         return res.status(400).json({ error: firstError || "Invalid marks provided." });
       }
 
-      const aggregateCat = continuousAssessmentTotal(componentMarks, assessmentList);
-      const validated = validateAggregateGrade(aggregateCat, exam);
-      if (validated.ok !== true) {
-        return res.status(400).json({ error: validated.error });
+      const finalWeightedResult = calculateWeightedAssessmentResult(componentMarks, assessmentList);
+      const finalOverallPercentage = calculateOverallPercentage(componentMarks, assessmentList);
+      const finalGradeLetter = letterGradeFromOverallPercentage(finalOverallPercentage);
+      const configuredAssessmentKinds = new Map<string, { name: string; maxMarks: number; weight: number }>();
+      for (const assessment of assessmentList) {
+        if (!assessment || typeof assessment.kind !== "string") continue;
+        const kind = String(assessment.kind);
+        const maxMarks = Number(assessment.maxMarks);
+        const weight = Number(assessment.weight ?? 0);
+        if (!Number.isFinite(maxMarks) || maxMarks <= 0) continue;
+        configuredAssessmentKinds.set(kind, {
+          name: assessment.name || kind,
+          maxMarks,
+          weight: Number.isFinite(weight) && weight >= 0 ? weight : 0,
+        });
       }
-      const aggregateGrade = validated;
 
-      const existing = await db
-        .select()
-        .from(grades)
-        .where(and(eq(grades.studentId, studentId), eq(grades.subjectCode, String(subjectCode).trim())))
-        .limit(1);
+      const rawAssessmentRows: Array<{
+        studentId: string;
+        subjectCode: string;
+        assessmentKind: string;
+        assessmentName: string;
+        rawMark: number;
+        maxMarks: number;
+        weight: number;
+        lecturerId?: string | null;
+      }> = [];
 
-      let saved;
-      if (existing.length > 0) {
-        const updated = await db
-          .update(grades)
-          .set({
-            catScore: String(aggregateGrade.cat),
-            examScore: String(aggregateGrade.exam),
-          })
-          .where(eq(grades.id, existing[0].id))
-          .returning();
-        saved = updated[0];
-      } else {
-        const inserted = await db
-          .insert(grades)
+      for (const [fieldKey, fieldValue] of Object.entries(componentMarks as Record<string, number>)) {
+        const field = String(fieldKey);
+        const kindMap: Record<string, string> = {
+          cat1: "CAT1",
+          cat2: "CAT2",
+          assignment: "Assignment",
+          exam: "FinalExam",
+        };
+        const normalizedField = field as keyof typeof kindMap;
+        const assessmentKind = kindMap[normalizedField] || field;
+        const config = configuredAssessmentKinds.get(assessmentKind);
+        const maxMarks = config?.maxMarks ?? maxMarksForField(assessmentList, normalizedField as any);
+        if (!Number.isFinite(Number(fieldValue)) || Number(fieldValue) < 0 || maxMarks <= 0) {
+          continue;
+        }
+        rawAssessmentRows.push({
+          studentId,
+          subjectCode: String(subjectCode).trim(),
+          assessmentKind,
+          assessmentName: config?.name || assessmentKind,
+          rawMark: Number(fieldValue),
+          maxMarks,
+          weight: config?.weight ?? 0,
+          lecturerId: req.body?.lecturerId || null,
+        });
+      }
+
+      if (rawAssessmentRows.length === 0) {
+        return res.status(400).json({ error: "No valid assessment marks were provided." });
+      }
+
+      for (const record of rawAssessmentRows) {
+        await db
+          .insert(studentAssessmentMarks)
           .values({
-            studentId,
-            subjectCode: String(subjectCode).trim(),
-            catScore: String(aggregateGrade.cat),
-            examScore: String(aggregateGrade.exam),
+            id: crypto.randomUUID(),
+            studentId: record.studentId,
+            subjectCode: record.subjectCode,
+            assessmentKind: record.assessmentKind,
+            assessmentName: record.assessmentName,
+            rawMark: String(record.rawMark),
+            maxMarks: String(record.maxMarks),
+            weight: String(record.weight),
+            lecturerId: record.lecturerId,
+            updatedAt: new Date().toISOString(),
           })
-          .returning();
-        saved = inserted[0];
+          .onConflictDoUpdate({
+            target: [studentAssessmentMarks.studentId, studentAssessmentMarks.subjectCode, studentAssessmentMarks.assessmentKind],
+            set: {
+              assessmentName: record.assessmentName,
+              rawMark: String(record.rawMark),
+              maxMarks: String(record.maxMarks),
+              weight: String(record.weight),
+              lecturerId: record.lecturerId,
+              updatedAt: new Date().toISOString(),
+            },
+          });
       }
 
-      // Keep in-memory / json cache consistent
       const dbVal = getDatabase();
       if (Array.isArray(dbVal.students)) {
         dbVal.students = dbVal.students.map((student: any) => {
           if (student.id !== studentId) return student;
+          const examValue = Number(componentMarks.exam ?? 0);
           return {
             ...student,
             grades: {
               ...(student.grades || {}),
-              [String(subjectCode).trim()]: { cat: aggregateGrade.cat, exam: aggregateGrade.exam },
+              [String(subjectCode).trim()]: { cat: finalWeightedResult, exam: Number.isFinite(examValue) ? examValue : 0 },
             },
           };
         });
@@ -3847,11 +4351,13 @@ app.post(
 
       res.json({
         success: true,
-        grade: { cat: aggregateGrade.cat, exam: aggregateGrade.exam },
-        record: saved,
+        grade: { cat: finalWeightedResult, exam: Number(componentMarks.exam ?? 0) },
+        overallPercent: finalOverallPercentage,
+        gradeLetter: finalGradeLetter,
+        saved: rawAssessmentRows.length,
       });
     } catch (error: any) {
-      console.error("Failed to save lecturer grade:", error);
+      console.error("Failed to save lecturer assessment marks:", error);
       res.status(500).json({ error: clientSafeDbError("Unable to save grade.", error) });
     }
   }
@@ -3939,6 +4445,106 @@ app.get(
   }
 );
 
+// POST publish a student's result for a subject (backend-enforced)
+app.post(
+  ["/api/lecturer/publish-result", "/api/faculty/publish-result"],
+  authenticateJWT,
+  checkRBAC(["lecturer", "admin", "super_admin"]),
+  async (req: any, res: any) => {
+    try {
+      const actorId = req.user?.userId;
+      const actorRole = req.user?.role;
+      const { studentId, subjectCode } = req.body || {};
+      if (!studentId || !subjectCode) return res.status(400).json({ error: 'studentId and subjectCode are required.' });
+
+      // Verify student exists
+      const [studentRow] = await db.select().from(students).where(eq(students.id, studentId)).limit(1);
+      if (!studentRow) return res.status(404).json({ error: 'Student not found.' });
+
+      // Verify lecturer / actor is allowed to publish this subject when role is lecturer
+      if (actorRole === 'lecturer') {
+        const assigned = await db.select().from(lecturerSubjects).where(and(eq(lecturerSubjects.lecturerId, actorId), eq(lecturerSubjects.subjectCode, subjectCode)));
+        if (!assigned || assigned.length === 0) {
+          return res.status(403).json({ error: 'You are not assigned to this subject.' });
+        }
+      }
+
+      // Fetch raw assessment rows for this student & subject
+      const assessmentRows = await db.select({
+        assessmentKind: studentAssessmentMarks.assessmentKind,
+        rawMark: studentAssessmentMarks.rawMark,
+        maxMarks: studentAssessmentMarks.maxMarks,
+        weight: studentAssessmentMarks.weight,
+      }).from(studentAssessmentMarks).where(and(eq(studentAssessmentMarks.studentId, studentId), eq(studentAssessmentMarks.subjectCode, subjectCode)));
+
+      if (!assessmentRows || assessmentRows.length === 0) {
+        return res.status(400).json({ error: 'No assessment marks found for this student and subject.' });
+      }
+
+      // Build assessment configuration from rows or module-level configuration
+      const configMap = new Map<string, { kind: string; maxMarks: number; weight: number }>();
+
+      // Try to load module-level configuration if present
+      const moduleConfigs = await db.select().from(assessmentConfigurations).where(eq(assessmentConfigurations.subjectCode, subjectCode));
+      if (moduleConfigs && moduleConfigs.length > 0) {
+        for (const c of moduleConfigs) {
+          configMap.set(String(c.assessmentKind), { kind: String(c.assessmentKind), maxMarks: Number(c.maxMarks || 0), weight: Number(c.weight || 0) });
+        }
+      }
+      for (const r of assessmentRows) {
+        const kind = String(r.assessmentKind || '').trim();
+        if (!kind) continue;
+        const maxMarks = Number(r.maxMarks) || 0;
+        const weight = Number(r.weight) || 0;
+        if (!configMap.has(kind)) configMap.set(kind, { kind, maxMarks, weight });
+        else {
+          const exist = configMap.get(kind)!;
+          // prefer configured maxMarks/weight if present; otherwise keep first
+          if ((exist.maxMarks || 0) <= 0 && maxMarks > 0) exist.maxMarks = maxMarks;
+          if ((exist.weight || 0) <= 0 && weight > 0) exist.weight = weight;
+          configMap.set(kind, exist);
+        }
+      }
+      const assessmentList = Array.from(configMap.values()).map((c) => ({ kind: c.kind, maxMarks: c.maxMarks, weight: c.weight }));
+
+      // Validate assessment weights and totals
+      const weightError = validateAssessmentWeights(assessmentList as any);
+      if (weightError) return res.status(400).json({ error: `Assessment configuration invalid: ${weightError}` });
+
+      // Compute published summary and overall percentage
+      const publishedSummary = computePublishedAssessmentSummary(assessmentRows.map((r: any) => ({ subjectCode, rawMark: r.rawMark, maxMarks: r.maxMarks, weight: r.weight, assessmentKind: r.assessmentKind })), [], { courseTitle: null, courseCode: null });
+      const subjectEntry = (publishedSummary.subjects || []).find((s) => s.subjectCode === subjectCode);
+      if (!subjectEntry) return res.status(400).json({ error: 'Unable to compute overall percentage; assessment data invalid.' });
+
+      if (!Number.isFinite(subjectEntry.totalWeight) || Number(subjectEntry.totalWeight) <= 0) {
+        return res.status(400).json({ error: 'Assessment weights must total > 0 before publishing.' });
+      }
+
+      const overallPercent = Number(subjectEntry.overallPercent || 0);
+      const catScore = Math.round(Number((overallPercent * 0.3).toFixed(2)));
+      const examScore = Math.round(Number((overallPercent * 0.7).toFixed(2)));
+
+      // Validate aggregate against configured maxima
+      const aggregateValidation = validateAggregateGrade(catScore, examScore, assessmentList as any);
+      if (!aggregateValidation.ok) return res.status(400).json({ error: `Aggregate grade invalid: ${aggregateValidation.error}` });
+
+      // Upsert into legacy grades table as the authoritative published result
+      await db.insert(grades).values({ id: crypto.randomUUID(), studentId, subjectCode, catScore: String(catScore), examScore: String(examScore), gradedAt: new Date().toISOString() }).onConflictDoUpdate({
+        target: [grades.studentId, grades.subjectCode],
+        set: { catScore: String(catScore), examScore: String(examScore), gradedAt: new Date().toISOString() },
+      });
+
+      // Audit
+      await writeAdminAudit(req, 'grades.publish', 'grades', `${studentId}:${subjectCode}`, { actorId, actorRole, overallPercent, catScore, examScore });
+
+      return res.json({ success: true, studentId, subjectCode, overallPercent, catScore, examScore, gradeLetter: letterGradeFromOverallPercentage(overallPercent) });
+    } catch (error: any) {
+      console.error('Failed to publish result:', error);
+      return res.status(500).json({ error: clientSafeDbError('Failed to publish result.', error) });
+    }
+  }
+);
+
 // GET Lecturer Student Directory
 app.get(
   ["/api/lecturer/students", "/api/faculty/students"],
@@ -3957,22 +4563,57 @@ app.get(
 
       let studentList: any[] = [];
       if (subjectCodes.length > 0) {
-        const gradeRecords = await db
-          .select({ studentId: grades.studentId })
-          .from(grades)
-          .where(inArray(grades.subjectCode, subjectCodes));
-        const studentIds = Array.from(new Set(gradeRecords.map((g) => g.studentId)));
+        const enrolledStudents = await db
+          .select({ studentId: studentEnrollments.studentId })
+          .from(studentEnrollments)
+          .where(inArray(studentEnrollments.courseCode, subjectCodes));
+        const studentIds = Array.from(new Set(enrolledStudents.map((row) => row.studentId)));
 
         if (studentIds.length > 0) {
           studentList = await db
-            .select()
+            .select({
+              id: students.id,
+              name: students.name,
+              admissionNo: students.admissionNo,
+              cohort: students.cohort,
+              email: students.email,
+              phone: students.phone,
+              accountStatus: students.accountStatus,
+              courseId: students.courseId,
+              programme: students.programme,
+              department: students.department,
+              avatar: students.avatar,
+              courseTitle: courses.title,
+              courseCode: courses.code,
+              courseDepartment: courses.faculty,
+            })
             .from(students)
+            .leftJoin(courses, eq(students.courseId, courses.id))
             .where(inArray(students.id, studentIds));
         }
       }
 
       if (studentList.length === 0) {
-        studentList = await db.select().from(students).limit(20);
+        studentList = await db
+          .select({
+            id: students.id,
+            name: students.name,
+            admissionNo: students.admissionNo,
+            cohort: students.cohort,
+            email: students.email,
+            phone: students.phone,
+            accountStatus: students.accountStatus,
+            courseId: students.courseId,
+            programme: students.programme,
+            department: students.department,
+            avatar: students.avatar,
+            courseTitle: courses.title,
+            courseCode: courses.code,
+            courseDepartment: courses.faculty,
+          })
+          .from(students)
+          .leftJoin(courses, eq(students.courseId, courses.id))
+          .limit(20);
       }
 
       if (q && typeof q === "string" && q.trim()) {
@@ -3981,7 +4622,7 @@ app.get(
           (s) =>
             s.name.toLowerCase().includes(term) ||
             s.admissionNo.toLowerCase().includes(term) ||
-            s.course.toLowerCase().includes(term)
+            (s.programme || s.courseTitle || "").toLowerCase().includes(term)
         );
       }
 
@@ -3989,10 +4630,15 @@ app.get(
         id: s.id,
         name: s.name,
         admissionNo: s.admissionNo,
-        cohort: s.cohort || "Regular",
-        course: s.course,
-        department: s.department || "Faculty",
-        gpa: s.gpa ? Number(s.gpa) : 3.0,
+        cohort: s.cohort || "Not recorded",
+        email: s.email || null,
+        phone: s.phone || null,
+        courseId: s.courseId || null,
+        programme: s.programme || s.courseTitle || null,
+        courseCode: s.courseCode || null,
+        courseTitle: s.courseTitle || s.programme || null,
+        department: s.courseDepartment || s.department || null,
+        accountStatus: s.accountStatus || "Active",
       }));
 
       res.json(result);
@@ -4013,8 +4659,24 @@ app.get(
 
       if (studentId && typeof studentId === "string") {
         const found = await db
-          .select()
+          .select({
+            id: students.id,
+            name: students.name,
+            email: students.email,
+            phone: students.phone,
+            admissionNo: students.admissionNo,
+            cohort: students.cohort,
+            courseId: students.courseId,
+            programme: students.programme,
+            department: students.department,
+            avatar: students.avatar,
+            accountStatus: students.accountStatus,
+            courseTitle: courses.title,
+            courseCode: courses.code,
+            courseDepartment: courses.faculty,
+          })
           .from(students)
+          .leftJoin(courses, eq(students.courseId, courses.id))
           .where(eq(students.id, studentId.trim()))
           .limit(1);
         if (found.length > 0) targetStudent = found[0];
@@ -4022,8 +4684,24 @@ app.get(
 
       if (!targetStudent && admission_no && typeof admission_no === "string") {
         const found = await db
-          .select()
+          .select({
+            id: students.id,
+            name: students.name,
+            email: students.email,
+            phone: students.phone,
+            admissionNo: students.admissionNo,
+            cohort: students.cohort,
+            courseId: students.courseId,
+            programme: students.programme,
+            department: students.department,
+            avatar: students.avatar,
+            accountStatus: students.accountStatus,
+            courseTitle: courses.title,
+            courseCode: courses.code,
+            courseDepartment: courses.faculty,
+          })
           .from(students)
+          .leftJoin(courses, eq(students.courseId, courses.id))
           .where(eq(students.admissionNo, admission_no.trim()))
           .limit(1);
         if (found.length > 0) targetStudent = found[0];
@@ -4033,45 +4711,72 @@ app.get(
         return res.status(404).json({ error: "Student record not found" });
       }
 
-      const studentGrades = await db
-        .select()
+      const courseTitle = targetStudent.courseTitle || targetStudent.programme || null;
+      const courseCode = targetStudent.courseCode || null;
+      const department = targetStudent.courseDepartment || targetStudent.department || null;
+
+      const gradeRows = await db
+        .select({
+          subjectCode: grades.subjectCode,
+          catScore: grades.catScore,
+          examScore: grades.examScore,
+        })
         .from(grades)
         .where(eq(grades.studentId, targetStudent.id));
 
-      const registeredUnits = studentGrades.map((g) => {
-        const cat = Number(g.catScore) || 0;
-        const exam = Number(g.examScore) || 0;
-        const total = cat + exam;
-        return {
-          code: g.subjectCode,
-          title: `Unit ${g.subjectCode}`,
-          faculty: "School of Computing & Technology",
-          isMyClass: true,
-          attendanceRate: 90,
-          grade: {
-            cat,
-            exam,
-            total,
-            letter: total >= 70 ? "A" : total >= 60 ? "B" : total >= 50 ? "C" : total >= 40 ? "D" : "F",
-          },
-        };
-      });
+      const enrollmentRows = await db
+        .select({ courseCode: studentEnrollments.courseCode })
+        .from(studentEnrollments)
+        .where(eq(studentEnrollments.studentId, targetStudent.id));
+
+      const academicSummary = computeStudentAcademicSummary(
+        gradeRows.map((row) => ({
+          subjectCode: row.subjectCode,
+          catScore: row.catScore,
+          examScore: row.examScore,
+        })),
+        enrollmentRows,
+        {
+          courseTitle,
+          courseCode,
+          department,
+        }
+      );
+
+      const registeredUnits = enrollmentRows.map((enrollment) => ({
+        code: enrollment.courseCode,
+        title: enrollment.courseCode,
+        faculty: department,
+        isMyClass: true,
+        attendanceRate: null,
+        grade: null,
+      }));
+
+      const gpa = academicSummary.gpa;
+      const academicStanding = academicSummary.academicStanding;
 
       res.json({
         id: targetStudent.id,
         name: targetStudent.name,
+        email: targetStudent.email,
+        phone: targetStudent.phone,
         admissionNo: targetStudent.admissionNo,
         avatar: targetStudent.avatar || null,
-        cohort: targetStudent.cohort || "Regular",
-        course: targetStudent.course,
-        department: targetStudent.department || "Faculty",
-        yearOfStudy: targetStudent.yearOfStudy || 1,
-        semester: targetStudent.semester || "Semester 1",
+        cohort: targetStudent.cohort || "Not recorded",
+        programme: courseTitle,
+        course: courseTitle,
+        department,
+        courseId: targetStudent.courseId || null,
+        courseCode,
+        courseTitle,
+        yearOfStudy: null,
+        semester: null,
         financeStatus: "Finance Cleared",
-        gpa: targetStudent.gpa ? Number(targetStudent.gpa) : 3.5,
-        academicStanding: "Good Standing",
+        gpa,
+        academicStanding,
         registeredUnits,
         advisorNotes: [],
+        accountStatus: targetStudent.accountStatus || "Active",
       });
     } catch (error: any) {
       console.error("Failed to lookup student for lecturer:", error);
@@ -4167,6 +4872,9 @@ app.get("/api/finance/students", async (req, res) => {
         name: s.name,
         admissionNo: s.admissionNo,
         cohort: s.cohort,
+        courseId: s.courseId,
+        programme: s.programme,
+        department: s.department,
         outstandingBalance,
         status
       };
@@ -4187,7 +4895,7 @@ app.post("/api/finance/bill", async (req, res) => {
     return res.status(400).json({ error: "Missing required billing fields or invalid amount" });
   }
 
-  const invoiceNo = `INV-${Math.floor(100000 + Math.random() * 900000)}`;
+  const invoiceNo = await generateInvoiceNumber();
   const dateStr = new Date().toISOString().substring(0, 10);
   const formattedDesc = `[${voteHead}] ${description || "Semester Fees"}`;
 
@@ -4208,6 +4916,8 @@ app.post("/api/finance/bill", async (req, res) => {
       description: formattedDesc,
       amount: String(amount),
       date: dateStr,
+      dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+      outstandingBalance: String(amount),
       status: "unpaid",
     });
 
@@ -4274,7 +4984,7 @@ app.post("/api/finance/grant", async (req, res) => {
     return res.status(400).json({ error: "Missing required grant fields or credit value must be greater than zero" });
   }
 
-  const creditNo = `CRD-${Math.floor(100000 + Math.random() * 900000)}`;
+  const creditNo = await generateInvoiceNumber();
   const dateStr = new Date().toISOString().substring(0, 10);
   const formattedDesc = `[${discountTypology} Approved] ${description || "Waiver allocation"}`;
 
@@ -4295,6 +5005,8 @@ app.post("/api/finance/grant", async (req, res) => {
         description: formattedDesc,
         amount: String(-creditAmount),
         date: dateStr,
+        dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+        outstandingBalance: '0.00',
         status: "paid",
       });
 
@@ -5103,6 +5815,9 @@ app.get("/api/students", async (req, res) => {
         phone: s.phone,
         admissionNo: s.admissionNo,
         cohort: s.cohort,
+        courseId: s.courseId,
+        programme: s.programme,
+        department: s.department,
         avatar: s.avatar ?? "",
         accountStatus: s.accountStatus,
         createdAt: s.createdAt,
@@ -5234,66 +5949,45 @@ app.get("/api/students", async (req, res) => {
   }
 });
 
-app.post("/api/students", async (req, res) => {
+app.post("/api/students", async (req: any, res: any) => {
+  // Student creation is Admissions-owned. Keep this path as a compatibility alias
+  // of POST /api/admin/admissions/enroll — never invent a second student identity.
+  if (!requireAdminRole(req, res)) return;
   try {
-    const studentData = req.body;
-
-    if (
-      !studentData?.name ||
-      !studentData?.email 
-    ) {
-      return res.status(400).json({
-        error: "Name and email required",
-      });
+    const studentData = req.body || {};
+    if (!studentData?.name || !studentData?.email || !studentData?.phone || !studentData?.courseId || !studentData?.cohort) {
+      return res.status(400).json({ error: "Name, email, phone, programme, and intake are required for student admission." });
     }
-    
-    const rawPass = studentData.passcode || "student123";
-    const hashedPasscode = (rawPass.startsWith('$2b$') || rawPass.startsWith('$2a$') || rawPass.startsWith('$2y$'))
-      ? rawPass
-      : hashPassword(rawPass);
 
-    const result = await db.transaction(async (tx) => {
-      // Create student
-      const [student] = await tx
-        .insert(students)
-        .values({
-          name: studentData.name,
-          email: studentData.email,
-          phone: studentData.phone,
-          admissionNo: studentData.admissionNo,
-          cohort: studentData.cohort,
-          avatar: studentData.avatar ?? null,
-          accountStatus: "Pending Setup",
-        })
-        .returning();
-
-      return student;
+    const enrolled = await enrollAdmittedStudentRecord({
+      name: studentData.name,
+      email: studentData.email,
+      phone: studentData.phone,
+      admissionNo: studentData.admissionNo,
+      cohort: studentData.cohort,
+      courseId: studentData.courseId,
+      department: studentData.department,
+      avatar: studentData.avatar ?? null,
+      accountStatus: studentData.accountStatus || "Pending Setup",
+      passcode: studentData.passcode,
     });
 
-    const uid = studentData.admissionNo || result.id;
     try {
-      await upsertUserAuthRecord({
-        username: uid,
-        email: studentData.email,
-        passwordHash: hashedPasscode,
-        role: "student",
-        roleId: result.id,
-        isActive: true,
-        mustChangePassword: true,
-      });
-    } catch (e) {}
+      const fullDb = await loadFullDatabaseState();
+      saveDatabase(fullDb);
+    } catch {}
 
-    // Sync database cache
-    const fullDb = await loadFullDatabaseState();
-    saveDatabase(fullDb);
-
-    res.status(201).json(result);
+    res.status(enrolled.created ? 201 : 200).json({
+      ...enrolled.student,
+      id: enrolled.student.id,
+      admissionNo: enrolled.student.admission_no || enrolled.student.admissionNo,
+      accountStatus: enrolled.student.account_status || enrolled.student.accountStatus,
+      created: enrolled.created,
+      defaultPassword: enrolled.defaultPassword,
+    });
   } catch (error: any) {
     console.error("Registration failed:", error);
-
-    res.status(500).json({
-      error: error.message,
-    });
+    res.status(500).json({ error: clientSafeDbError("Failed to enroll student.", error) });
   }
 });
 
@@ -5371,39 +6065,22 @@ app.delete(["/api/admin/users/:id", "/api/admin/users/[id]", "/api/students/:id"
 });
 
 // Admin Route: Generate temporary activation credentials / password reset
-app.post("/api/students/:id/reset-password", async (req, res) => {
+app.post("/api/students/:id/reset-password", checkRBAC(["admin", "super_admin"]), async (req: any, res: any) => {
   try {
     const studentId = req.params.id;
-    if (!studentId) {
-      return res.status(400).json({ error: "Student ID required" });
-    }
-
-    const dbVal = getDatabase();
-    const studentIdx = (dbVal.students || []).findIndex((s: any) => s.id === studentId);
-    if (studentIdx === -1) {
-      return res.status(404).json({ error: "Student not found" });
-    }
-
-    // Generate a temporary, single-use activation credential passcode
-    const temporaryPasscode = "ZENTI-" + Math.floor(100000 + Math.random() * 900000).toString();
-
-    // Update in memory cache and flag as pending setup
-    dbVal.students[studentIdx].passcode = temporaryPasscode;
-    dbVal.students[studentIdx].accountStatus = "Pending Setup";
-
-    // Save database (hashes passcode automatically and writes to PG / fallback)
-    saveDatabase(dbVal);
-
-    res.status(200).json({
+    const result = await resetStudentPassword(studentId);
+    await writeAdminAudit(req, "student.password_reset", "student", studentId, { temporaryPasscodeIssued: true });
+    return res.status(200).json({
       success: true,
       message: "Student passcode reset successfully.",
-      temporaryPasscode
+      temporaryPasscode: result.temporaryPasscode,
     });
   } catch (error: any) {
+    if (error instanceof PasswordResetError) {
+      return res.status(error.statusCode).json({ error: error.message, code: error.code });
+    }
     console.error("Password reset failed:", error);
-    res.status(500).json({
-      error: error.message,
-    });
+    return res.status(500).json({ error: clientSafeDbError("Failed to reset student password.", error) });
   }
 });
 
@@ -5444,6 +6121,18 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
       .select()
       .from(studentEnrollments)
       .where(eq(studentEnrollments.studentId, studentId));
+
+    const rawAssessmentRows = await db
+      .select({
+        subjectCode: studentAssessmentMarks.subjectCode,
+        rawMark: studentAssessmentMarks.rawMark,
+        maxMarks: studentAssessmentMarks.maxMarks,
+        weight: studentAssessmentMarks.weight,
+        assessmentKind: studentAssessmentMarks.assessmentKind,
+        recordedAt: studentAssessmentMarks.recordedAt,
+      })
+      .from(studentAssessmentMarks)
+      .where(eq(studentAssessmentMarks.studentId, studentId));
 
     const gradeRows = await db
       .select()
@@ -5490,6 +6179,14 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
       return 0.0;
     };
 
+    const gradePointForPercent = (percent: number): number => {
+      if (percent >= 70) return 4.0;
+      if (percent >= 60) return 3.0;
+      if (percent >= 50) return 2.0;
+      if (percent >= 40) return 1.0;
+      return 0.0;
+    };
+
     const gpaStanding = (value: number): string => {
       if (value >= 3.7) return "Excellent";
       if (value >= 3.0) return "Good";
@@ -5498,53 +6195,104 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
       return "N/A";
     };
 
-    let gpa: number | null = null;
-    let gpaLabel = "N/A";
-    if (gradeRows.length > 0) {
-      const total = gradeRows.reduce((sum, g) => {
-        const mark = Number(g.catScore || 0) + Number(g.examScore || 0);
-        return sum + markToGpa(mark);
-      }, 0);
-      gpa = Number((total / gradeRows.length).toFixed(2));
-      gpaLabel = gpaStanding(gpa);
+    const publishedSummary = computePublishedAssessmentSummary(rawAssessmentRows, enrollmentRows, {
+      courseTitle: studentRow.programme || studentRow.department || null,
+      courseCode: studentRow.programme || studentRow.department || null,
+      department: studentRow.department || null,
+    });
+
+    // Build per-subject published details including grade rows and amendment detection
+    const gradeBySubject = new Map<string, any>();
+    for (const g of gradeRows) gradeBySubject.set(g.subjectCode, g);
+
+    const latestUpdateBySubject = new Map<string, string>();
+    for (const r of rawAssessmentRows) {
+      const code = r.subjectCode;
+      const prev = latestUpdateBySubject.get(code);
+      if (!prev || (r.updatedAt && String(r.updatedAt) > prev)) latestUpdateBySubject.set(code, String(r.updatedAt));
     }
 
-    const sortedGrades = [...gradeRows].sort((a, b) =>
-      String(a.gradedAt || "").localeCompare(String(b.gradedAt || ""))
-    );
-    let runningGpaSum = 0;
-    const gpaTrend = sortedGrades.map((g, index) => {
-      const mark = Number(g.catScore || 0) + Number(g.examScore || 0);
-      runningGpaSum += markToGpa(mark);
-      const pointGpa = Number((runningGpaSum / (index + 1)).toFixed(2));
-      const dateLabel = g.gradedAt
-        ? new Date(g.gradedAt).toLocaleDateString("en-GB", { month: "short", year: "2-digit" })
-        : g.subjectCode;
+    const publishedSubjectsDetailed = (publishedSummary.subjects || []).map((s: any) => {
+      const gradeRow = gradeBySubject.get(s.subjectCode) || null;
+      const gradedAt = gradeRow ? String(gradeRow.gradedAt) : null;
+      const latestUpdate = latestUpdateBySubject.get(s.subjectCode) || null;
+      const status = gradeRow ? ((latestUpdate && gradedAt && latestUpdate > gradedAt) ? 'Amended' : 'Published') : 'Published';
       return {
-        label: dateLabel,
-        semester: dateLabel,
-        GPA: pointGpa,
-        subjectCode: g.subjectCode,
-        gradedAt: g.gradedAt || null,
+        subjectCode: s.subjectCode,
+        overallPercent: s.overallPercent,
+        grade: s.grade,
+        passed: s.passed,
+        totalWeight: s.totalWeight,
+        catScore: gradeRow ? Number(gradeRow.catScore) : null,
+        examScore: gradeRow ? Number(gradeRow.examScore) : null,
+        gradedAt,
+        status,
       };
     });
 
+    // Also provide entries for enrolled units with no published results
     const enrolledCodes = enrollmentRows.map((e) => e.courseCode);
-    const attendanceByCode = new Map(
-      attendanceRows.map((a) => [a.subjectCode, Number(a.attendanceRate)])
-    );
-    const attendanceValues = enrolledCodes
-      .map((code) => attendanceByCode.get(code))
-      .filter((v): v is number => typeof v === "number" && !Number.isNaN(v));
+    for (const code of enrolledCodes) {
+      if (!publishedSubjectsDetailed.find((p: any) => p.subjectCode === code)) {
+        const hasRaw = rawAssessmentRows.some((r) => r.subjectCode === code);
+        const status = hasRaw ? 'Draft / Not Published' : 'No Result';
+        publishedSubjectsDetailed.push({ subjectCode: code, overallPercent: 0, grade: null, passed: false, totalWeight: 0, catScore: null, examScore: null, gradedAt: null, status });
+      }
+    }
 
-    const attendanceRate =
-      attendanceValues.length > 0
-        ? Number(
-            (
-              attendanceValues.reduce((s, v) => s + v, 0) / attendanceValues.length
-            ).toFixed(1)
-          )
-        : null;
+    const publishedOverallPercents = (publishedSummary.subjects || []).map((s: any) => Number(s.overallPercent || 0));
+    const semesterAverage = publishedOverallPercents.length > 0 ? Number((publishedOverallPercents.reduce((a,b) => a+b, 0)/publishedOverallPercents.length).toFixed(2)) : null;
+
+    let gpa: number | null = publishedSummary.gpa;
+    let gpaLabel = gpa === null ? "N/A" : deriveAcademicStanding(gpa);
+
+    const gpaTrend = (publishedSummary.subjects || []).map((entry, index) => ({
+      label: entry.subjectCode,
+      semester: entry.subjectCode,
+      GPA: Number((gradePointForPercent(entry.overallPercent) || 0).toFixed(2)),
+      subjectCode: entry.subjectCode,
+      gradedAt: null,
+    }));
+
+    // Build detailed attendance by querying per-session roll-call records
+    const sessionRows = await db
+      .select()
+      .from(classAttendanceSessions)
+      .where(inArray(classAttendanceSessions.subjectCode, enrolledCodes));
+
+    const modulesAttendanceMap = new Map<string, { totalSessions: number; present: number; late: number; absent: number }>();
+    for (const s of sessionRows) {
+      const code = s.subjectCode;
+      const entry = modulesAttendanceMap.get(code) || { totalSessions: 0, present: 0, late: 0, absent: 0 };
+      entry.totalSessions += 1;
+      const presentIds: string[] = Array.isArray(s.presentStudentIds) ? s.presentStudentIds : (s.presentStudentIds || []);
+      const lateIds: string[] = Array.isArray(s.lateStudentIds) ? s.lateStudentIds : (s.lateStudentIds || []);
+      const absentIds: string[] = Array.isArray(s.absentStudentIds) ? s.absentStudentIds : (s.absentStudentIds || []);
+      if (presentIds.includes(profile.id)) entry.present += 1;
+      if (lateIds.includes(profile.id)) entry.late += 1;
+      if (absentIds.includes(profile.id)) entry.absent += 1;
+      modulesAttendanceMap.set(code, entry);
+    }
+
+    const modulesAttendance = Array.from(modulesAttendanceMap.entries()).map(([subjectCode, v]) => {
+      const total = v.totalSessions;
+      const attended = v.present + v.late;
+      const rate = total > 0 ? Math.round((attended / total) * 100) : null;
+      return {
+        subjectCode,
+        attendanceRate: rate,
+        present: v.present,
+        late: v.late,
+        absent: v.absent,
+        totalSessions: v.totalSessions,
+      };
+    });
+
+    const totalPresent = modulesAttendance.reduce((s, m) => s + (m.present || 0) + (m.late || 0), 0);
+    const totalLate = modulesAttendance.reduce((s, m) => s + (m.late || 0), 0);
+    const totalAbsent = modulesAttendance.reduce((s, m) => s + (m.absent || 0), 0);
+    const totalSessions = modulesAttendance.reduce((s, m) => s + (m.totalSessions || 0), 0);
+    const attendanceRate = totalSessions > 0 ? Math.round((totalPresent / totalSessions) * 100) : null;
 
     const outstandingFees = invoiceRows
       .filter((i) => i.status === "unpaid")
@@ -5577,15 +6325,28 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
       status: "Active",
     }));
 
-    const completedUnits = gradeRows.filter((g) => {
-      const mark = Number(g.catScore || 0) + Number(g.examScore || 0);
-      return mark >= 40 && enrolledCodes.includes(g.subjectCode);
-    }).length;
+    const completedUnits = publishedSummary.modulesPassed ?? 0;
 
     const requiredUnits = Math.max(activeCourseCount, completedUnits, 1);
     const degreePercent = Math.min(100, Math.round((completedUnits / requiredUnits) * 100));
 
-    const gradedCodes = new Set(gradeRows.map((g) => g.subjectCode));
+    const gradedCodes = new Set(rawAssessmentRows.map((g) => g.subjectCode));
+
+    // Identify subjects where marks exist but no weights have been configured
+    const unpublishedSubjects: string[] = [];
+    try {
+      const weightBySubject = new Map<string, number>();
+      for (const r of rawAssessmentRows) {
+        const code = r.subjectCode;
+        const w = Number(r.weight || 0) || 0;
+        weightBySubject.set(code, (weightBySubject.get(code) || 0) + w);
+      }
+      for (const [code, totalWeight] of weightBySubject.entries()) {
+        if ((Number(totalWeight) || 0) <= 0) unpublishedSubjects.push(code);
+      }
+    } catch (err) {
+      console.warn('Failed to compute unpublishedSubjects', err);
+    }
     const deliverables: Array<{
       id: string;
       title: string;
@@ -5626,8 +6387,14 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
       });
     }
 
+    // Build a simple attendance map from `student_attendance` as a fallback
+    const attendanceMap = new Map(attendanceRows.map((a: any) => [a.subjectCode, Number(a.attendanceRate)]));
+
     for (const code of enrolledCodes) {
-      const rate = attendanceByCode.get(code);
+      const moduleStats = modulesAttendanceMap.get(code);
+      const rate = moduleStats && moduleStats.totalSessions > 0
+        ? Math.round(((moduleStats.present || 0) + (moduleStats.late || 0)) / moduleStats.totalSessions * 100)
+        : attendanceMap.get(code);
       if (typeof rate === "number" && rate < 75) {
         deliverables.push({
           id: `att-${code}`,
@@ -5662,7 +6429,13 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
       gpaLabel,
       creditsEarned: null,
       modulesPassed: completedUnits,
+      attendance: attendanceRate,
       attendanceRate,
+      presentCount: totalPresent,
+      lateCount: totalLate,
+      absentCount: totalAbsent,
+      totalSessions,
+      attendanceModules: modulesAttendance,
       activeModules: enrolledCodes.length,
       requiredUnits: null,
       outstandingFees,
@@ -5675,6 +6448,10 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
       gpaTrend,
       todaySchedule,
       registeredUnits,
+      unpublishedSubjects,
+      publishedSubjects: publishedSummary.subjects || [],
+      publishedSubjectsDetailed,
+      semesterAverage,
       notifications: notificationRows.map((notification) => ({
         id: notification.id,
         title: notification.title,
@@ -5696,6 +6473,72 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
   } catch (error: any) {
     console.error("Failed to build student dashboard summary:", error);
     res.status(500).json({ error: error.message || "Failed to load dashboard summary" });
+  }
+});
+
+// GET assessment breakdown details for a published subject (student view)
+app.get("/api/student/assessment-details", checkRBAC(["student"]), async (req:any, res:any) => {
+  try {
+    const studentId = req.user?.userId;
+    const subjectCode = (req.query.subjectCode as string) || null;
+    if (!studentId || !subjectCode) return res.status(400).json({ error: 'studentId and subjectCode required' });
+
+    // Ensure student may only query their own data
+    const rows = await db.select().from(studentAssessmentMarks).where(and(eq(studentAssessmentMarks.studentId, studentId), eq(studentAssessmentMarks.subjectCode, subjectCode)));
+    if (!rows || rows.length === 0) return res.status(404).json({ error: 'No assessment breakdown found' });
+
+    // Only return published breakdowns. The authoritative published result
+    // is stored in the `grades` table (legacy published snapshot). If there
+    // is no grade row for this student+subject the lecturer has not published
+    // the results yet and we should not reveal assessment details.
+    const [gradeRow] = await db.select().from(grades).where(and(eq(grades.studentId, studentId), eq(grades.subjectCode, subjectCode))).limit(1);
+    if (!gradeRow) return res.status(404).json({ error: 'No published assessment breakdown found' });
+
+    // compute weighted contributions using authoritative backend logic
+    const configMap = new Map<string, { maxMarks:number; weight:number }>();
+    for (const r of rows) {
+      const kind = String(r.assessmentKind || '').trim();
+      if (!kind) continue;
+      const maxMarks = Number(r.maxMarks) || 0;
+      const weight = Number(r.weight) || 0;
+      if (!configMap.has(kind)) configMap.set(kind, { maxMarks, weight });
+      else {
+        const exist = configMap.get(kind)!;
+        if ((exist.maxMarks || 0) <= 0 && maxMarks > 0) exist.maxMarks = maxMarks;
+        if ((exist.weight || 0) <= 0 && weight > 0) exist.weight = weight;
+        configMap.set(kind, exist);
+      }
+    }
+
+    const assessmentList = Array.from(configMap.entries()).map(([kind, v]) => ({ kind, maxMarks: v.maxMarks, weight: v.weight }));
+    const weightTotal = assessmentList.reduce((s,a) => s + (Number(a.weight)||0),0);
+
+    const items = rows.map((r:any) => {
+      const raw = Number(r.rawMark || 0);
+      const max = Number(r.maxMarks || 0);
+      const weight = Number(r.weight || 0);
+      const percentage = (max > 0) ? Number(Math.min((raw/max) * 100, 100).toFixed(2)) : 0;
+      const contribution = weightTotal > 0 ? Number(((percentage * weight)/weightTotal).toFixed(2)) : 0;
+      return {
+        assessmentKind: r.assessmentKind,
+        assessmentName: r.assessmentName,
+        rawMark: Number(r.rawMark),
+        maxMarks: Number(r.maxMarks),
+        weight: Number(r.weight),
+        percentage,
+        contribution,
+        recordedAt: r.recordedAt,
+        updatedAt: r.updatedAt,
+      };
+    });
+
+    const publishedSummary = computePublishedAssessmentSummary(rows.map((r:any) => ({ subjectCode, rawMark: r.rawMark, maxMarks: r.maxMarks, weight: r.weight, assessmentKind: r.assessmentKind })), [], { courseTitle: null, courseCode: null });
+    const subjectEntry = (publishedSummary.subjects || []).find((s:any) => s.subjectCode === subjectCode) || null;
+
+    return res.json({ subject: subjectEntry, breakdown: items });
+  } catch (error:any) {
+    console.error('Failed to fetch assessment details:', error);
+    return res.status(500).json({ error: clientSafeDbError('Failed to fetch assessment details', error) });
   }
 });
 
@@ -5770,7 +6613,15 @@ app.get("/api/student/dashboard", async (req: any, res: any) => {
   const modulesPromise = Promise.all([
     loadModule("enrolled-units", (snapshotStudent?.enrolledUnits || []).map((courseCode: string) => ({ courseCode })), () => db.select().from(studentEnrollments).where(eq(studentEnrollments.studentId, userId))),
     loadModule("attendance", Object.entries(snapshotStudent?.attendance || {}).map(([subjectCode, attendanceRate]) => ({ subjectCode, attendanceRate })), () => db.select().from(studentAttendance).where(eq(studentAttendance.studentId, userId))),
-    loadModule("results", Object.entries(snapshotStudent?.grades || {}).map(([subjectCode, grade]: [string, any]) => ({ subjectCode, catScore: grade?.cat, examScore: grade?.exam })), () => db.select().from(grades).where(eq(grades.studentId, userId))),
+    loadModule("results", Object.entries(snapshotStudent?.grades || {}).map(([subjectCode, grade]: [string, any]) => ({ subjectCode, rawMark: grade?.cat, maxMarks: 100, weight: 100 })), () =>
+      db.select({
+        subjectCode: studentAssessmentMarks.subjectCode,
+        rawMark: studentAssessmentMarks.rawMark,
+        maxMarks: studentAssessmentMarks.maxMarks,
+        weight: studentAssessmentMarks.weight,
+        assessmentKind: studentAssessmentMarks.assessmentKind,
+      }).from(studentAssessmentMarks).where(eq(studentAssessmentMarks.studentId, userId))
+    ),
     loadModule("finance-invoices", snapshotStudent?.ledger || [], () => db.select().from(invoices).where(eq(invoices.studentId, userId))),
     loadModule("finance-payments", snapshotStudent?.payments || [], () => db.select().from(payments).where(eq(payments.studentId, userId))),
     loadModule("courses", snapshot?.courses || [], () => db.select().from(courses).where(eq(courses.active, true))),
@@ -5804,12 +6655,32 @@ app.get("/api/student/dashboard", async (req: any, res: any) => {
   attendanceRows.forEach((row: any) => {
     if (typeof row?.subjectCode === "string") attendance[row.subjectCode] = Number(row.attendanceRate) || 0;
   });
-  const gradesByUnit: Record<string, { cat: number; exam: number }> = {};
+  const rawAssessmentGroups = new Map<string, { rawMark: number; maxMarks: number; weight: number }[]>();
   gradeRows.forEach((row: any) => {
-    if (typeof row?.subjectCode === "string") {
-      gradesByUnit[row.subjectCode] = { cat: Number(row.catScore) || 0, exam: Number(row.examScore) || 0 };
-    }
+    if (typeof row?.subjectCode !== "string") return;
+    const subjectCode = row.subjectCode;
+    const entry = { rawMark: Number(row.rawMark ?? 0) || 0, maxMarks: Number(row.maxMarks ?? 0) || 0, weight: Number(row.weight ?? 0) || 0 };
+    const current = rawAssessmentGroups.get(subjectCode) || [];
+    current.push(entry);
+    rawAssessmentGroups.set(subjectCode, current);
   });
+
+  const gradesByUnit: Record<string, { cat: number; exam: number }> = {};
+  for (const [subjectCode, rows] of rawAssessmentGroups.entries()) {
+    let weightedPercentTotal = 0;
+    let totalWeight = 0;
+    for (const row of rows) {
+      if (row.maxMarks <= 0) continue;
+      if (row.weight <= 0) continue;
+      weightedPercentTotal += ((row.rawMark / row.maxMarks) * 100) * row.weight;
+      totalWeight += row.weight;
+    }
+    const overallPercent = totalWeight > 0 ? weightedPercentTotal / totalWeight : 0;
+    gradesByUnit[subjectCode] = {
+      cat: Number((overallPercent * 0.3).toFixed(2)),
+      exam: Number((overallPercent * 0.7).toFixed(2)),
+    };
+  }
 
   const dashboardStudent = {
     id: profile.id,
@@ -6353,8 +7224,26 @@ async function startServer() {
     console.log("Backend API server running in development mode (port " + PORT + ")");
   } else {
     // Production Mode: Serve compiled static frontend bundle from frontend workspace
-    const distPath = path.resolve(process.cwd(), "../frontend/dist");
-    if (fs.existsSync(distPath)) {
+    const currentDir =
+      typeof __dirname !== "undefined"
+        ? __dirname
+        : typeof import.meta !== "undefined" && import.meta.url
+          ? path.dirname(fileURLToPath(import.meta.url))
+          : process.cwd();
+    const candidates = [
+      process.env.FRONTEND_DIST_PATH,
+      path.resolve(process.cwd(), "frontend/dist"),
+      path.resolve(process.cwd(), "dist"),
+      path.resolve(process.cwd(), "../frontend/dist"),
+      path.resolve(currentDir, "../frontend/dist"),
+      path.resolve(currentDir, "./frontend/dist"),
+      path.resolve(currentDir, "../dist"),
+      path.resolve(currentDir, "./dist"),
+    ].filter(Boolean) as string[];
+
+    const distPath = candidates.find((dir) => fs.existsSync(dir) && fs.existsSync(path.join(dir, "index.html")));
+
+    if (distPath) {
       app.use(express.static(distPath));
       app.get("*", (req, res) => {
         res.sendFile(path.join(distPath, "index.html"));
@@ -6362,7 +7251,7 @@ async function startServer() {
       console.log("Production static build routing loaded from " + distPath);
     } else {
       app.get("/", (req, res) => {
-        res.json({ message: "Zenti School Portal Backend API is running." });
+        res.json({ message: "Alika Medical Training College & Medical Center Backend API is running." });
       });
       console.log("Production mode: frontend build directory not found, serving API only");
     }
@@ -6379,6 +7268,16 @@ async function startServer() {
         console.error("Server listener error:", err);
       }
     });
+
+    const cleanup = () => {
+      serverInstance.close(() => {
+        process.exit(0);
+      });
+      setTimeout(() => process.exit(0), 1000).unref();
+    };
+
+    process.once("SIGTERM", cleanup);
+    process.once("SIGINT", cleanup);
   }
 }
 

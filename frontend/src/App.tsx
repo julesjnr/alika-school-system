@@ -28,6 +28,7 @@ import DashboardShowcase from './components/DashboardShowcase';
 import SessionTimeout from './components/SessionTimeout';
 
 import { useNotification } from './components/notifications';
+import { clearPendingPasswordChange } from './authIdentity';
 
 export default function App() {
   const { showToast, showError, showSuccess, showRegistrationModal } = useNotification();
@@ -196,6 +197,9 @@ export default function App() {
     if (path === '/admin/admissions/applicants') {
       return { initialActiveTab: 'admissions' as const, initialAdmissionsSubTab: 'applicants' as const };
     }
+    if (path === '/admin/admissions/enrollment' || path === '/admin/admissions/enrolment') {
+      return { initialActiveTab: 'admissions' as const, initialAdmissionsSubTab: 'enrollment' as const };
+    }
     if (path === '/admin/admissions' || path === '/admin/admissions/dashboard') {
       return { initialActiveTab: 'admissions' as const, initialAdmissionsSubTab: 'dashboard' as const };
     }
@@ -256,6 +260,7 @@ export default function App() {
       .then((db) => {
         if (db) {
           if (db.courses) {
+            Object.keys(subjectMap).forEach((key) => delete subjectMap[key]);
             setCourses(db.courses);
             db.courses.forEach((c: any) => {
               subjectMap[c.code] = c.title;
@@ -455,7 +460,7 @@ export default function App() {
   };
 
   const triggerInvoiceAlert = (student: Student, invoice: { invoiceNo: string; description: string; amount: number; date: string }) => {
-    const to = `${student.name.toLowerCase().replace(/\s+/g, '.')}@zenti.edu`;
+    const to = `${student.name.toLowerCase().replace(/\s+/g, '.')}@alikamedical.co.ke`;
     const subject = ` [Invoice Generated] New Billing Invoice #${invoice.invoiceNo}`;
     const amountFormatted = Math.abs(invoice.amount).toLocaleString();
     const isCredit = invoice.amount < 0;
@@ -472,13 +477,13 @@ Ledger Entry Details:
 Please log in to your student portal to clear any outstanding balances before exam registration periods.
 
 Best regards,
-Zenti Finance Department`;
+Alika Medical Finance Department`;
 
     sendMockEmailAlert(to, student.name, subject, body, 'invoice');
   };
 
   const triggerGradeAlert = (student: Student, subjectCode: string, grade: Grade) => {
-    const to = `${student.name.toLowerCase().replace(/\s+/g, '.')}@zenti.edu`;
+    const to = `${student.name.toLowerCase().replace(/\s+/g, '.')}@alikamedical.co.ke`;
     const subject = ` [Grade Posted] New Grade for Unit ${subjectCode}`;
     const totalScore = (grade.cat || 0) + (grade.exam || 0);
     let letter = 'F';
@@ -499,7 +504,7 @@ Grading Summary:
 Log in to your Student Dashboard to view your full unofficial transcript.
 
 Best regards,
-Zenti Academic Registrar`;
+Alika Medical Academic Registrar`;
 
     sendMockEmailAlert(to, student.name, subject, body, 'grade_posted');
   };
@@ -513,7 +518,7 @@ Zenti Academic Registrar`;
         if (loan.patronRole === 'student') {
           const student = students.find(s => s.id === loan.patronId);
           if (student) {
-            const to = `${student.name.toLowerCase().replace(/\s+/g, '.')}@zenti.edu`;
+            const to = `${student.name.toLowerCase().replace(/\s+/g, '.')}@alikamedical.co.ke`;
             const subject = ` [Overdue Warning] Library Book: "${loan.bookTitle}" is PAST DUE`;
             
             // Check if alert for this exact loan id is already sent in mockEmails
@@ -531,7 +536,7 @@ Due Date: ${loan.dueDate} (OVERDUE)
 Overdue fines are accumulating at a rate of KES 50.00 per day. Please return the book to the Library HQ immediately to prevent account suspension.
 
 Best regards,
-Zenti Library Services`;
+Alika Medical Library Services`;
 
               sendMockEmailAlert(to, student.name, subject, body, 'book_due');
               sentCount++;
@@ -1287,38 +1292,61 @@ Zenti Library Services`;
     }));
   };
 
-  // 15c. REGISTER NEW STUDENT
+  // 15c. ADMISSIONS ENROLLMENT — creates/reuses a single students row (no Academic Allocation duplicates)
   const handleAddStudent = async (
   newStud: Omit<Student, 'id' | 'enrolledUnits' | 'grades' | 'ledger' | 'payments' | 'attendance'>
 ) => {
   try {
-    const response = await fetch("/api/students", {
+    const token = localStorage.getItem('zenti_session_token');
+    const response = await fetch("/api/admin/admissions/enroll", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify(newStud),
     });
 
     if (!response.ok) {
-      throw new Error("Failed to create student");
+      const errBody = await response.json().catch(() => ({}));
+      throw new Error(errBody.error || "Failed to create student");
     }
 
     const createdStudent = await response.json();
+    const normalizedId = createdStudent.id;
 
-    setStudents(prev => [
-      ...prev,
-      {
-        ...createdStudent,
-        enrolledUnits: [],
-        grades: {},
-        ledger: [],
-        payments: [],
-        attendance: {},
-      },
-    ]);
-  } catch (err) {
+    setStudents(prev => {
+      const alreadyPresent = prev.some((s) => s.id === normalizedId);
+      if (alreadyPresent) {
+        return prev.map((s) => (s.id === normalizedId ? {
+          ...s,
+          ...createdStudent,
+          admissionNo: createdStudent.admissionNo || createdStudent.admission_no || s.admissionNo,
+          accountStatus: createdStudent.accountStatus || createdStudent.account_status || s.accountStatus,
+        } : s));
+      }
+      return [
+        ...prev,
+        {
+          ...createdStudent,
+          admissionNo: createdStudent.admissionNo || createdStudent.admission_no,
+          accountStatus: createdStudent.accountStatus || createdStudent.account_status,
+          enrolledUnits: [],
+          grades: {},
+          ledger: [],
+          payments: [],
+          attendance: {},
+        },
+      ];
+    });
+
+    if (createdStudent.created === false) {
+      showSuccess("Existing Student", "That email/admission number already belongs to an admitted student — no duplicate was created.");
+    }
+  } catch (err: any) {
     console.error("Error creating student:", err);
+    showError("Enrollment Failed", err?.message || "Failed to enroll student through Admissions.");
+    throw err;
   }
 };
   // 15d. SYSTEM DELETE LECTURER OR FAULTY CODES
@@ -1545,6 +1573,9 @@ Zenti Library Services`;
               setCurrentPath('/');
             }}
             onCancel={() => {
+              clearPendingPasswordChange();
+              localStorage.removeItem('zenti_session_token');
+              localStorage.removeItem('zenti_refresh_token');
               window.history.pushState({}, '', '/login');
               setCurrentPath('/login');
             }}

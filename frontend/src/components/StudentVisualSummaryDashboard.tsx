@@ -14,6 +14,12 @@ interface DashboardSummary {
   creditsEarned: number | null;
   modulesPassed: number;
   attendanceRate: number | null;
+  attendance?: number | null;
+  presentCount?: number | null;
+  lateCount?: number | null;
+  absentCount?: number | null;
+  totalSessions?: number | null;
+  attendanceModules?: Array<{ subjectCode: string; attendanceRate: number | null; present: number; late: number; absent: number; totalSessions: number }>;
   activeModules: number;
   requiredUnits: number | null;
   outstandingFees: number;
@@ -26,6 +32,7 @@ interface DashboardSummary {
   registeredUnits: Array<{ courseCode: string; unitName: string; credits: number | null; lecturer: string | null; status: string }>;
   notifications: Array<{ id: string; title: string; message: string; type: string; dateTime: string }>;
   feeSummary: { total: number; paid: number; balance: number; status: string };
+  unpublishedSubjects?: string[];
 }
 
 interface StudentVisualSummaryDashboardProps {
@@ -47,6 +54,7 @@ export default function StudentVisualSummaryDashboard({ student, onNavigateTab }
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [pollIntervalId, setPollIntervalId] = useState<number | null>(null);
 
   const fetchSummary = useCallback(async () => {
     if (!student.id) return;
@@ -66,6 +74,15 @@ export default function StudentVisualSummaryDashboard({ student, onNavigateTab }
   }, [student.id]);
 
   useEffect(() => { fetchSummary(); }, [fetchSummary]);
+
+  // Poll dashboard summary periodically so published results appear promptly
+  useEffect(() => {
+    if (!student.id) return;
+    // refresh every 20 seconds
+    const id = window.setInterval(() => { fetchSummary(); }, 20000);
+    setPollIntervalId(id);
+    return () => { window.clearInterval(id); setPollIntervalId(null); };
+  }, [student.id, fetchSummary]);
 
   const firstName = student.name.trim().split(/\s+/)[0] || 'Student';
   const greeting = useMemo(() => timeGreeting(), []);
@@ -89,6 +106,8 @@ export default function StudentVisualSummaryDashboard({ student, onNavigateTab }
     { label: 'Modules Passed', value: String(summary.modulesPassed ?? 0), detail: summary.modulesPassed > 0 ? 'Published passing results' : 'No passed modules yet', icon: CheckCircle2, tone: 'text-emerald-600 bg-emerald-50' },
     { label: 'Registered Modules', value: String(summary.activeModules), detail: 'Active this semester', icon: BookOpen, tone: 'text-indigo-600 bg-indigo-50' },
     { label: 'Academic Classification', value: summary.gpa === null ? '—' : summary.gpaLabel, detail: summary.gpa === null ? 'Awaiting results' : 'Based on published marks', icon: TrendingUp, tone: 'text-blue-600 bg-blue-50' },
+    { label: 'Semester Avg', value: summary.semesterAverage === null ? '—' : (String(summary.semesterAverage) + '%'), detail: summary.semesterAverage === null ? 'No published subjects' : 'Average of published units', icon: TrendingUp, tone: 'text-sky-600 bg-sky-50' },
+    { label: 'Credits Earned', value: summary.creditsEarned === null ? '—' : String(summary.creditsEarned), detail: summary.creditsEarned === null ? 'Not available' : 'Accumulated credits', icon: Library, tone: 'text-violet-600 bg-violet-50' },
   ];
 
   return (
@@ -122,6 +141,68 @@ export default function StudentVisualSummaryDashboard({ student, onNavigateTab }
         ))}
       </section>
 
+      {/* Academic progress & Transcript */}
+      <section className="mt-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900">Academic Progress</h3>
+            <p className="text-xs text-slate-500">Programme completion and credits (server-authoritative)</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => window.dispatchEvent(new CustomEvent('openTranscript'))} className="text-xs font-semibold text-blue-700 hover:underline">View Transcript</button>
+            <button onClick={() => onNavigateTab('grades')} className="text-xs font-semibold text-slate-600 hover:underline">View Grades</button>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="rounded-lg border border-slate-100 p-3">
+            <div className="text-[11px] text-slate-500">Completed modules</div>
+            <div className="mt-1 text-lg font-semibold text-slate-900">{summary.degreeProgress?.completed ?? '—'}</div>
+          </div>
+          <div className="rounded-lg border border-slate-100 p-3">
+            <div className="text-[11px] text-slate-500">Remaining modules</div>
+            <div className="mt-1 text-lg font-semibold text-slate-900">{Math.max((summary.degreeProgress?.required ?? 0) - (summary.degreeProgress?.completed ?? 0), 0)}</div>
+          </div>
+          <div className="rounded-lg border border-slate-100 p-3">
+            <div className="text-[11px] text-slate-500">Programme completion</div>
+            <div className="mt-1 text-lg font-semibold text-slate-900">{summary.degreeProgress?.percent ?? '—'}%</div>
+          </div>
+        </div>
+      </section>
+
+      {/* Attendance summary */}
+      <section className="mt-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900">Attendance Summary</h3>
+            <p className="text-xs text-slate-500">Aggregated attendance across your registered units</p>
+          </div>
+        </div>
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="rounded-lg border border-slate-100 p-3">
+            <div className="text-[11px] text-slate-500">Attendance rate</div>
+            <div className="mt-1 text-lg font-semibold text-slate-900">{summary.attendance === null || summary.attendance === undefined ? '—' : `${summary.attendance}%`}</div>
+          </div>
+          <div className="rounded-lg border border-slate-100 p-3">
+            <div className="text-[11px] text-slate-500">Present / Late / Absent</div>
+            {((summary.presentCount ?? null) !== null || (Array.isArray(summary.attendanceModules) && summary.attendanceModules.length > 0)) ? (
+              <div className="mt-1 text-sm text-slate-700">
+                <div>Present: <strong className="text-slate-900">{summary.presentCount ?? summary.attendanceModules?.reduce((s, m) => s + (m.present || 0), 0) ?? 0}</strong></div>
+                <div>Late: <strong className="text-slate-900">{summary.lateCount ?? summary.attendanceModules?.reduce((s, m) => s + (m.late || 0), 0) ?? 0}</strong></div>
+                <div>Absent: <strong className="text-slate-900">{summary.absentCount ?? summary.attendanceModules?.reduce((s, m) => s + (m.absent || 0), 0) ?? 0}</strong></div>
+                <div>Total sessions: <strong className="text-slate-900">{summary.totalSessions ?? summary.attendanceModules?.reduce((s, m) => s + (m.totalSessions || 0), 0) ?? 0}</strong></div>
+              </div>
+            ) : (
+              <div className="mt-1 text-sm text-slate-700">No attendance records yet.</div>
+            )}
+          </div>
+          <div className="rounded-lg border border-slate-100 p-3">
+            <div className="text-[11px] text-slate-500">Attendance warning</div>
+            <div className="mt-1 text-sm font-semibold text-rose-700">{(typeof summary.attendance === 'number' && summary.attendance < 75) ? 'Attendance below 75% — exam eligibility may be affected' : 'No warnings'}</div>
+          </div>
+        </div>
+      </section>
+
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
         <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
           <div className="mb-4 flex items-center justify-between">
@@ -153,7 +234,7 @@ export default function StudentVisualSummaryDashboard({ student, onNavigateTab }
           <div className="mb-4 flex items-center justify-between">
             <div>
               <h2 className="text-sm font-semibold text-slate-900">Notifications</h2>
-              <p className="mt-0.5 text-xs text-slate-500">Latest university updates</p>
+              <p className="mt-0.5 text-xs text-slate-500">Latest institutional updates</p>
             </div>
             <Bell className="h-5 w-5 text-blue-600" />
           </div>
@@ -204,7 +285,13 @@ export default function StudentVisualSummaryDashboard({ student, onNavigateTab }
                       <td className="px-3 py-3 text-slate-700">{unit.unitName}</td>
                       <td className="px-3 py-3 text-slate-600">{unit.credits ?? '—'}</td>
                       <td className="px-3 py-3 text-slate-600">{unit.lecturer || 'Not assigned'}</td>
-                      <td className="px-3 py-3"><span className="rounded-full bg-emerald-50 px-2 py-1 font-medium text-emerald-700">{unit.status}</span></td>
+                      <td className="px-3 py-3">
+                        {summary.unpublishedSubjects && summary.unpublishedSubjects.includes(unit.courseCode) ? (
+                          <span className="rounded-full bg-amber-50 px-2 py-1 font-medium text-amber-800">Pending publication</span>
+                        ) : (
+                          <span className="rounded-full bg-emerald-50 px-2 py-1 font-medium text-emerald-700">{unit.status}</span>
+                        )}
+                      </td>
                       <td className="px-3 py-3 text-right">
                         <button onClick={() => onNavigateTab('units')} className="mr-3 font-semibold text-blue-700 hover:underline">View</button>
                         <button onClick={() => onNavigateTab('units')} className="font-semibold text-rose-700 hover:underline">Drop / request drop</button>

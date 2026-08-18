@@ -251,17 +251,18 @@ export default function StudentLookupPage({ lecturer }: StudentLookupPageProps) 
           </div>
 
           <div className="p-5 bg-slate-50/50 dark:bg-slate-900/30 space-y-5">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <MetaChip label="Course / Programme" value={selected.course} />
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <MetaChip label="Course / Programme" value={selected.course || 'Not recorded'} />
+              <MetaChip label="Course Code" value={selected.courseCode || 'Not recorded'} />
               <MetaChip
                 label="Department"
-                value={selected.department || '—'}
+                value={selected.department || 'Not recorded'}
               />
               <MetaChip
                 label="Year of Study"
-                value={selected.yearOfStudy ? `Year ${selected.yearOfStudy}` : '—'}
+                value={selected.yearOfStudy ? `Year ${selected.yearOfStudy}` : 'Not recorded'}
               />
-              <MetaChip label="Semester" value={selected.semester || '—'} />
+              <MetaChip label="Semester" value={selected.semester || 'Not recorded'} />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -274,7 +275,7 @@ export default function StudentLookupPage({ lecturer }: StudentLookupPageProps) 
                     GPA
                   </span>
                   <span className="text-lg font-black text-slate-800 dark:text-white font-mono">
-                    {selected.gpa != null ? selected.gpa.toFixed(2) : 'N/A'}
+                    {selected.gpa != null ? selected.gpa.toFixed(2) : '—'}
                   </span>
                 </div>
               </div>
@@ -287,7 +288,7 @@ export default function StudentLookupPage({ lecturer }: StudentLookupPageProps) 
                     Academic Standing
                   </span>
                   <span className="text-sm font-bold text-slate-800 dark:text-white">
-                    {selected.academicStanding}
+                    {selected.academicStanding || 'Awaiting results'}
                   </span>
                 </div>
               </div>

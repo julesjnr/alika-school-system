@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ShieldCheck, LockKeyhole, KeyRound, ArrowRight, Eye, EyeOff, CheckCircle2, AlertCircle } from 'lucide-react';
+import { KeyRound, ArrowRight, Eye, EyeOff, CheckCircle2, AlertCircle } from 'lucide-react';
 import { UserRole } from '../types';
 import {
   clearPendingPasswordChange,
@@ -17,6 +17,12 @@ interface ChangePasswordPageProps {
   onCancel?: () => void;
 }
 
+const SESSION_EXPIRED_MESSAGE = 'Your session has expired. Please sign in again.';
+
+function isMissingAuthError(message: string): boolean {
+  return /authentication token required|invalid or expired authentication token|session is no longer valid|session has expired|sign in again/i.test(message);
+}
+
 export default function ChangePasswordPage({
   initialIdentifier,
   initialRole,
@@ -32,6 +38,7 @@ export default function ChangePasswordPage({
   const [email, setEmail] = useState<string>('');
   // Set once, from the resolved login state: keeps the field visible while it is typed in.
   const [needsIdentifierInput, setNeedsIdentifierInput] = useState<boolean>(false);
+  const [isSessionReady, setIsSessionReady] = useState<boolean>(false);
 
   const [currentPassword, setCurrentPassword] = useState<string>('');
   const [newPassword, setNewPassword] = useState<string>('');
@@ -45,20 +52,31 @@ export default function ChangePasswordPage({
   const [successText, setSuccessText] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
+  const redirectToLogin = (message = SESSION_EXPIRED_MESSAGE) => {
+    clearPendingPasswordChange();
+    window.dispatchEvent(new CustomEvent('zenti-session-expired', { detail: { message } }));
+  };
+
   useEffect(() => {
+    const token = localStorage.getItem('zenti_session_token');
     let targetIdentifier = pickLoginIdentifier(initialIdentifier);
     let targetRole = initialRole;
     let targetEmail = initialEmail;
     let targetProfileId = '';
 
-    if (!targetIdentifier || !targetRole) {
-      const pending = getPendingPasswordChange();
-      if (pending) {
-        targetIdentifier = targetIdentifier || pending.identifier;
-        targetRole = targetRole || pending.role;
-        targetEmail = targetEmail || pending.email;
-        targetProfileId = pending.userId;
-      }
+    const pending = getPendingPasswordChange();
+    if ((!targetIdentifier || !targetRole) && pending) {
+      targetIdentifier = targetIdentifier || pending.identifier;
+      targetRole = targetRole || pending.role;
+      targetEmail = targetEmail || pending.email;
+      targetProfileId = pending.userId;
+    }
+
+    // Forced password-change requires the authenticated session from login.
+    // Without a token, do not show the form — send the user back to sign in.
+    if (!token || (!targetIdentifier && !pending)) {
+      redirectToLogin(SESSION_EXPIRED_MESSAGE);
+      return;
     }
 
     if (targetIdentifier) setIdentifier(targetIdentifier);
@@ -66,6 +84,7 @@ export default function ChangePasswordPage({
     if (targetRole) setRole(targetRole);
     if (targetEmail) setEmail(targetEmail);
     if (targetProfileId) setProfileUserId(targetProfileId);
+    setIsSessionReady(true);
   }, [initialIdentifier, initialRole, initialEmail]);
 
   const validatePassword = () => {
@@ -101,6 +120,12 @@ export default function ChangePasswordPage({
       return;
     }
 
+    const token = localStorage.getItem('zenti_session_token');
+    if (!token) {
+      redirectToLogin(SESSION_EXPIRED_MESSAGE);
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -108,6 +133,7 @@ export default function ChangePasswordPage({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           role: role || 'student',
@@ -121,10 +147,17 @@ export default function ChangePasswordPage({
       const data = await response.json();
 
       if (!response.ok || !data.success) {
-        throw new Error(data.error || 'Failed to update password.');
+        const apiError = data.error || 'Failed to update password.';
+        if (response.status === 401 && isMissingAuthError(apiError)) {
+          redirectToLogin(SESSION_EXPIRED_MESSAGE);
+          return;
+        }
+        throw new Error(
+          isMissingAuthError(apiError) ? SESSION_EXPIRED_MESSAGE : apiError
+        );
       }
 
-      // Store new JWT session token
+      // Store new JWT session token (session_version was incremented server-side)
       if (data.token) {
         localStorage.setItem('zenti_session_token', data.token);
       }
@@ -147,7 +180,12 @@ export default function ChangePasswordPage({
       }, 1200);
 
     } catch (err: any) {
-      setErrorText(err.message || 'An error occurred while updating your password.');
+      const message = err.message || 'An error occurred while updating your password.';
+      if (isMissingAuthError(message)) {
+        redirectToLogin(SESSION_EXPIRED_MESSAGE);
+        return;
+      }
+      setErrorText(message);
     } finally {
       setIsSubmitting(false);
     }
@@ -156,6 +194,14 @@ export default function ChangePasswordPage({
   const isMinLength = newPassword.length >= 6;
   const isDifferent = newPassword !== currentPassword && newPassword.length > 0;
   const isMatch = newPassword === confirmPassword && confirmPassword.length > 0;
+
+  if (!isSessionReady) {
+    return (
+      <div className="min-h-screen bg-slate-900 text-slate-100 flex items-center justify-center p-4">
+        <p className="text-sm text-slate-400">{SESSION_EXPIRED_MESSAGE}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex items-center justify-center p-4 relative overflow-hidden">

@@ -8,7 +8,8 @@ import {
   BookOpen, Users, DollarSign, Package, FileText, Plus, CheckCircle2, 
   AlertCircle, Bookmark, ClipboardCheck, ArrowRight, Save, Trash2, Check, X,
   Shield, Lock, Fingerprint, Library, Link, Copy, KeyRound, RefreshCw,
-  TrendingUp, Calendar, Clock, MapPin, UserCheck, AlertTriangle, Info, School, Landmark, Sliders, Award, Activity, User, LogOut, Menu
+  TrendingUp, Calendar, Clock, MapPin, UserCheck, AlertTriangle, Info, School, Landmark, Sliders, Award, Activity, User, LogOut, Menu,
+  Eye, Download, Search, FileCheck, ExternalLink, GraduationCap, Building2
 } from 'lucide-react';
 import { subjectMap } from '../data';
 import GlobalSearchBar from './GlobalSearchBar';
@@ -63,11 +64,36 @@ interface ApplicationRecord {
   phone: string;
   status: string;
   first_choice_course_id?: string;
+  approved_course_id?: string;
+  second_choice_course_id?: string;
+  first_choice_course_title?: string;
+  first_choice_course_code?: string;
+  approved_course_title?: string;
+  second_choice_course_title?: string;
+  second_choice_course_code?: string;
   preferred_intake?: string;
   created_at: string;
   updated_at?: string;
   internal_notes?: string;
   national_id?: string;
+  date_of_birth?: string;
+  gender?: string;
+  nationality?: string;
+  postal_address?: string;
+  previous_school?: string;
+  highest_qualification?: string;
+  mean_grade?: string;
+  graduation_year?: number;
+  admission_no?: string;
+  documents?: {
+    id: string;
+    document_type: string;
+    file_name: string;
+    mime_type: string;
+    file_url: string;
+    size_bytes: number;
+    created_at?: string;
+  }[];
 }
 
 interface AdminDashboardProps {
@@ -110,7 +136,7 @@ interface AdminDashboardProps {
   onTriggerOverdueScan?: () => number;
   currentUserRole?: string;
   initialActiveTab?: 'overview' | 'academics' | 'finances' | 'payroll' | 'inventory' | 'roles' | 'library' | 'diagnostics' | 'admissions';
-  initialAdmissionsSubTab?: 'dashboard' | 'consultations' | 'applications' | 'applicants';
+  initialAdmissionsSubTab?: 'dashboard' | 'consultations' | 'applications' | 'applicants' | 'enrollment';
   onNavigateRoute?: (path: string) => void;
 }
 
@@ -163,7 +189,7 @@ export default function AdminDashboard({
     if (isAccountantView) return 'finances';
     return 'overview';
   });
-  const [admissionsSubTab, setAdmissionsSubTab] = useState<'dashboard' | 'consultations' | 'applications' | 'applicants'>(() => initialAdmissionsSubTab || 'dashboard');
+  const [admissionsSubTab, setAdmissionsSubTab] = useState<'dashboard' | 'consultations' | 'applications' | 'applicants' | 'enrollment'>(() => initialAdmissionsSubTab || 'dashboard');
   const [consultations, setConsultations] = useState<ConsultationRecord[]>([]);
   const [consultationMessages, setConsultationMessages] = useState<ConsultationMessageRecord[]>([]);
   const [consultationsLoading, setConsultationsLoading] = useState(false);
@@ -176,6 +202,9 @@ export default function AdminDashboard({
   const [updatingConsultation, setUpdatingConsultation] = useState(false);
   const [applications, setApplications] = useState<ApplicationRecord[]>([]);
   const [applicationsLoading, setApplicationsLoading] = useState(false);
+  const [applicationSearch, setApplicationSearch] = useState('');
+  const [applicationStatusFilter, setApplicationStatusFilter] = useState('all');
+  const [selectedApplicationId, setSelectedApplicationId] = useState<string | null>(null);
   const [applicationNoteMap, setApplicationNoteMap] = useState<Record<string, string>>({});
   const [updatingApplication, setUpdatingApplication] = useState(false);
   const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
@@ -402,7 +431,7 @@ export default function AdminDashboard({
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
-          // Trigger the parent props callbacks to update state across Zenti
+          // Trigger the parent props callbacks to update state across Alika School Portal
           const finalPass = data.request.temporaryPasscode || passcode || 'default123';
           if (reqItem.role === 'student') {
             if (onUpdateStudent) {
@@ -557,7 +586,10 @@ export default function AdminDashboard({
   const [regStudentEmail, setRegStudentEmail] = useState('');
   const [regStudentPhone, setRegStudentPhone] = useState('');
   const [regStudentAdmission, setRegStudentAdmission] = useState('');
-  const [regStudentCohort, setRegStudentCohort] = useState('2026 Intake');
+  const [regStudentCohort, setRegStudentCohort] = useState('');
+  const [regStudentCourseId, setRegStudentCourseId] = useState('');
+  const [enrollmentApplicationId, setEnrollmentApplicationId] = useState('');
+  const [confirmProgrammeChange, setConfirmProgrammeChange] = useState(false);
   const [regStudentPasscode, setRegStudentPasscode] = useState('');
 
   // Academic form states
@@ -993,7 +1025,11 @@ export default function AdminDashboard({
       const res = await fetch('/api/admin/applications', { headers: getAuthHeaders(false) });
       if (!res.ok) throw new Error('Unable to load applications.');
       const data = await res.json();
-      setApplications(Array.isArray(data) ? data : []);
+      const loadedApps = Array.isArray(data) ? data : [];
+      setApplications(loadedApps);
+      if (loadedApps.length > 0) {
+        setSelectedApplicationId((prev) => (prev && loadedApps.some((a: ApplicationRecord) => a.id === prev) ? prev : loadedApps[0].id));
+      }
     } catch (error) {
       console.error(error);
       showError('Admissions Error', 'Unable to load applications.');
@@ -1015,7 +1051,12 @@ export default function AdminDashboard({
       const updated = await res.json();
       setApplications(prev => prev.map(item => item.id === applicationId ? { ...item, ...updated } : item));
       setApplicationNoteMap(prev => ({ ...prev, [applicationId]: '' }));
-      showSuccess('Application Updated', 'The application was updated successfully.');
+      if (status === 'approved') {
+        setStudentTableRefetchTrigger((prev) => prev + 1);
+        showSuccess('Applicant Admitted', 'Application approved. The student admission record is available for Academic Allocation under the same student ID.');
+      } else {
+        showSuccess('Application Updated', 'The application was updated successfully.');
+      }
     } catch (error) {
       console.error(error);
       showError('Admissions Error', 'The application could not be updated.');
@@ -1024,35 +1065,66 @@ export default function AdminDashboard({
     }
   };
 
-  const handleAddStudentSubmit = (e: React.FormEvent) => {
+  const handleAddStudentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!regStudentName || !regStudentEmail || !regStudentAdmission) {
-      triggerToast('Please fill out all student profile credentials.', 'error');
+    if (!regStudentName || !regStudentEmail || !regStudentPhone || !regStudentCourseId || !regStudentCohort) {
+      triggerToast('Please complete the student, programme, and intake details.', 'error');
       return;
     }
-    onAddStudent({
+    const selectedApplication = applications.find((application) => application.id === enrollmentApplicationId);
+    const approvedCourseId = selectedApplication?.approved_course_id || selectedApplication?.first_choice_course_id;
+    if (selectedApplication && regStudentCourseId !== approvedCourseId && !confirmProgrammeChange) {
+      triggerToast('Confirm the programme change before enrolling this approved application.', 'error');
+      return;
+    }
+    const payload = {
       name: regStudentName,
       email: regStudentEmail,
       phone: regStudentPhone,
       admissionNo: regStudentAdmission,
       cohort: regStudentCohort,
-      passcode: regStudentPasscode || 'student123'
-    });
-    setRegStudentName('');
-    setRegStudentEmail('');
-    setRegStudentPhone('');
-    setRegStudentAdmission('');
-    setRegStudentCohort('2026 Intake');
-    setRegStudentPasscode('');
-    setStudentTableRefetchTrigger(prev => prev + 1);
-    showRegistrationModal({
-      name: regStudentName,
-      idOrAdmissionNo: regStudentAdmission || 'STU-REG',
-      temporaryPasscode: regStudentPasscode || 'student123',
-      role: 'Student',
-      department: regStudentCohort,
-      email: regStudentEmail
-    });
+      courseId: regStudentCourseId,
+      applicationId: enrollmentApplicationId || undefined,
+      confirmProgrammeChange,
+      passcode: regStudentPasscode || undefined
+    };
+    try {
+      await Promise.resolve(onAddStudent(payload as any));
+      const shownAdmission = regStudentAdmission || '(auto-generated on save)';
+      showRegistrationModal({
+        name: regStudentName,
+        idOrAdmissionNo: shownAdmission,
+        temporaryPasscode: regStudentPasscode || 'issued on save',
+        role: 'Student',
+        department: courses.find((course) => course.id === regStudentCourseId)?.title || regStudentCohort,
+        email: regStudentEmail
+      });
+      setRegStudentName('');
+      setRegStudentEmail('');
+      setRegStudentPhone('');
+      setRegStudentAdmission('');
+      setRegStudentCohort('');
+      setRegStudentCourseId('');
+      setEnrollmentApplicationId('');
+      setConfirmProgrammeChange(false);
+      setRegStudentPasscode('');
+      setStudentTableRefetchTrigger(prev => prev + 1);
+    } catch {
+      // Parent surfaces enrollment errors.
+    }
+  };
+
+  const selectEnrollmentApplication = (applicationId: string) => {
+    setEnrollmentApplicationId(applicationId);
+    setConfirmProgrammeChange(false);
+    const application = applications.find((item) => item.id === applicationId);
+    if (!application) return;
+    setRegStudentName(application.full_name || '');
+    setRegStudentEmail(application.email || '');
+    setRegStudentPhone(application.phone || '');
+    setRegStudentAdmission(application.admission_no || '');
+    setRegStudentCohort(application.preferred_intake || '');
+    setRegStudentCourseId(application.approved_course_id || application.first_choice_course_id || '');
   };
 
   const handleAddLecturer = (e: React.FormEvent) => {
@@ -1107,7 +1179,7 @@ export default function AdminDashboard({
       name: newItemName,
       quantity: qtyVal,
       category: newItemCate,
-      location: newItemLoc || 'Main Campus Cupboards',
+      location: newItemLoc || 'Wangige Facility Cupboards',
       lowestThreshold: threshVal
     });
     setNewItemName('');
@@ -1161,7 +1233,7 @@ export default function AdminDashboard({
                 <School className="w-5 h-5 text-white" />
               </div>
               <div>
-                <span className="text-sm font-black tracking-tight text-white block uppercase leading-none">ZENTI</span>
+                <span className="text-sm font-black tracking-tight text-white block uppercase leading-none">ALIKA</span>
                 <span className="text-[8px] text-slate-500 font-bold uppercase tracking-widest block">Admin Console</span>
               </div>
             </div>
@@ -1205,6 +1277,7 @@ export default function AdminDashboard({
                           <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('consultations'); setMobileMenuOpen(false); if (onNavigateRoute) onNavigateRoute('/admin/admissions/consultations'); }} className={`w-full text-left py-1.5 px-3 rounded text-xs font-semibold ${admissionsSubTab === 'consultations' ? 'text-blue-400 bg-slate-800/80 font-bold' : 'text-slate-400 hover:text-white'}`}>Consultations</button>
                           <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('applications'); setMobileMenuOpen(false); if (onNavigateRoute) onNavigateRoute('/admin/admissions/applications'); }} className={`w-full text-left py-1.5 px-3 rounded text-xs font-semibold ${admissionsSubTab === 'applications' ? 'text-blue-400 bg-slate-800/80 font-bold' : 'text-slate-400 hover:text-white'}`}>Applications</button>
                           <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('applicants'); setMobileMenuOpen(false); if (onNavigateRoute) onNavigateRoute('/admin/admissions/applicants'); }} className={`w-full text-left py-1.5 px-3 rounded text-xs font-semibold ${admissionsSubTab === 'applicants' ? 'text-blue-400 bg-slate-800/80 font-bold' : 'text-slate-400 hover:text-white'}`}>Applicants</button>
+                          <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('enrollment'); setMobileMenuOpen(false); if (onNavigateRoute) onNavigateRoute('/admin/admissions/enrollment'); }} className={`w-full text-left py-1.5 px-3 rounded text-xs font-semibold ${admissionsSubTab === 'enrollment' ? 'text-blue-400 bg-slate-800/80 font-bold' : 'text-slate-400 hover:text-white'}`}>Enrollment</button>
                         </div>
                       )}
                     </div>
@@ -1269,7 +1342,7 @@ export default function AdminDashboard({
             <School className="w-5 h-5 text-white" />
           </div>
           <div>
-            <span className="text-sm font-black tracking-tight text-white block uppercase leading-none">ZENTI</span>
+            <span className="text-sm font-black tracking-tight text-white block uppercase leading-none">ALIKA</span>
             <span className="text-[8px] text-slate-500 font-bold uppercase tracking-widest block">Admin Console</span>
           </div>
         </div>
@@ -1331,6 +1404,10 @@ export default function AdminDashboard({
                       <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('applicants'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/applicants'); }} className={`w-full text-left px-3 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-2 ${admissionsSubTab === 'applicants' ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
                         <div className={`w-1.5 h-1.5 rounded-full ${admissionsSubTab === 'applicants' ? 'bg-blue-400' : 'bg-slate-600'}`} />
                         <span>Applicants</span>
+                      </button>
+                      <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('enrollment'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/enrollment'); }} className={`w-full text-left px-3 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-2 ${admissionsSubTab === 'enrollment' ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                        <div className={`w-1.5 h-1.5 rounded-full ${admissionsSubTab === 'enrollment' ? 'bg-blue-400' : 'bg-slate-600'}`} />
+                        <span>Enrollment</span>
                       </button>
                     </div>
                   )}
@@ -1616,10 +1693,10 @@ export default function AdminDashboard({
                     <div className="relative">
                       <span className="absolute -left-[30px] top-1 w-2.5 h-2.5 bg-emerald-600 border-2 border-white dark:border-slate-900 rounded-full" />
                       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1">
-                        <h4 className="text-xs font-bold text-slate-850 dark:text-slate-100">Zenti Annual Hackathon 2026 Pitching</h4>
+                        <h4 className="text-xs font-bold text-slate-850 dark:text-slate-100">Alika Medical Healthcare Symposium & Practical Clinic</h4>
                         <span className="text-[9px] font-mono text-slate-400 bg-slate-50 px-2 py-0.5 rounded border border-slate-200/50">July 18, 2026</span>
                       </div>
-                      <p className="text-[10px] text-slate-500 mt-0.5 font-sans">Student development project panels present before guest judges. Awards ceremony starts at 04:00 PM.</p>
+                      <p className="text-[10px] text-slate-500 mt-0.5 font-sans">Caregiver and Nurse Assistant trainees present clinical case studies before external examiners.</p>
                     </div>
                     <div className="relative">
                       <span className="absolute -left-[30px] top-1 w-2.5 h-2.5 bg-purple-600 border-2 border-white dark:border-slate-900 rounded-full" />
@@ -1962,8 +2039,8 @@ export default function AdminDashboard({
                       required
                     >
                       <option value="">-- Choose Class code --</option>
-                      {Object.entries(subjectMap).map(([code, name]) => (
-                        <option key={code} value={code}>{code} - {name}</option>
+                      {courses.filter((course) => course.active !== false).map((course) => (
+                        <option key={course.code} value={course.code}>{course.code} - {course.title}</option>
                       ))}
                     </select>
                   </div>
@@ -2030,97 +2107,22 @@ export default function AdminDashboard({
               </div>
             </div>
 
-            {/*  REGISTER NEW STUDENT ACCOUNT UNIT */}
-            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 space-y-4 shadow-sm animate-fadeIn mt-6">
-              <div className="flex items-center gap-2.5 border-b border-slate-100 dark:border-slate-800 pb-3">
-                <div className="p-2 bg-indigo-50 dark:bg-slate-820 text-indigo-600 dark:text-indigo-400 rounded-xl">
-                  <Plus className="w-5 h-5 animate-pulse" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-black text-slate-900 dark:text-slate-100">Enrol New Undergraduate Student Account</h3>
-                  <p className="text-[11px] text-slate-500">Newly added student records will instantly appear below, enabled for complete ledger tracking and instant credential lookup.</p>
-                </div>
+            {/* Admitted students available for academic allocation (read from same PostgreSQL students table) */}
+            <div className="mt-6 space-y-3">
+              <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 p-4">
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Academic Allocation operates on students already admitted by Admissions. New student accounts are created under
+                  <span className="font-bold"> Admissions → Enrollment</span>, not here. The roster below uses the same student IDs from PostgreSQL.
+                </p>
               </div>
-
-              <form onSubmit={handleAddStudentSubmit} className="grid grid-cols-1 md:grid-cols-6 gap-4 items-end">
-                <div className="space-y-1">
-                  <label htmlFor="reg-std-name" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Full Student Name</label>
-                  <input
-                    id="reg-std-name"
-                    type="text"
-                    placeholder="Mary Wambui"
-                    value={regStudentName}
-                    onChange={(e) => setRegStudentName(e.target.value)}
-                    className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100"
-                    required
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label htmlFor="reg-std-email" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Email Address</label>
-                  <input
-                    id="reg-std-email"
-                    type="email"
-                    placeholder="m.wambui@student.edu"
-                    value={regStudentEmail}
-                    onChange={(e) => setRegStudentEmail(e.target.value)}
-                    className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100"
-                    required
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label htmlFor="reg-std-adm" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Admission No (ED-X)</label>
-                  <input
-                    id="reg-std-adm"
-                    type="text"
-                    placeholder="ED-CS-2026-048"
-                    value={regStudentAdmission}
-                    onChange={(e) => setRegStudentAdmission(e.target.value)}
-                    className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100"
-                    required
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label htmlFor="reg-std-cohort" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Intake Cohort</label>
-                  <select
-                    id="reg-std-cohort"
-                    value={regStudentCohort}
-                    onChange={(e) => setRegStudentCohort(e.target.value)}
-                    className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100 h-9"
-                  >
-                    <option>2026 Intake</option>
-                    <option>2025 Intake</option>
-                    <option>2024 Intake</option>
-                    <option>Graduating cohort</option>
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <label htmlFor="reg-std-passcode" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Account Passcode</label>
-                  <input
-                    id="reg-std-passcode"
-                    type="password"
-                    placeholder="Default: student123"
-                    value={regStudentPasscode}
-                    onChange={(e) => setRegStudentPasscode(e.target.value)}
-                    className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100 font-mono"
-                  />
-                </div>
-                <div>
-                  <button
-                    type="submit"
-                    className="w-full bg-indigo-600 hover:bg-indigo-750 text-white font-extrabold py-2 px-3 rounded-lg text-xs tracking-wider uppercase transition-colors cursor-pointer"
-                  >
-                    Enrol Student
-                  </button>
-                </div>
-              </form>
+              <StudentRecordsTable
+                onUpdateStudent={onUpdateStudent}
+                refetchTrigger={studentTableRefetchTrigger}
+                canManageRecords={false}
+                title="Registered Students Eligible for Allocation"
+                description="Admitted/registered students from Admissions. Allocate classes, cohorts, and units using these existing records — do not create duplicate students."
+              />
             </div>
-
-            {/* Registered Student Records Section with Server-Side Pagination, Filters & Sorting */}
-            <StudentRecordsTable
-              onDeleteStudent={onDeleteStudent}
-              onUpdateStudent={onUpdateStudent}
-              refetchTrigger={studentTableRefetchTrigger}
-            />
 
           </div>
         )}
@@ -2430,7 +2432,7 @@ export default function AdminDashboard({
                     <Lock className="w-3.5 h-3.5 text-slate-500" />
                     College Role Permissions Matrix
                   </h4>
-                  <p className="text-[11px] text-slate-400">Current security guidelines for the Zenti College portal system roles.</p>
+                  <p className="text-[11px] text-slate-400">Current security guidelines for the Alika Medical portal system roles.</p>
                 </div>
                 
                 <div className="space-y-3.5 text-xs">
@@ -2631,7 +2633,7 @@ export default function AdminDashboard({
                         id="acc-email"
                         name="acc-email"
                         type="email"
-                        placeholder="g.wanjiku@zenti.edu"
+                        placeholder="g.wanjiku@alikamedical.co.ke"
                         className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs focus:outline-hidden text-slate-800"
                         required
                       />
@@ -2949,9 +2951,12 @@ export default function AdminDashboard({
                     {admissionsSubTab === 'consultations' && 'Consultation Requests & Inquiries'}
                     {admissionsSubTab === 'applications' && 'Application Management'}
                     {admissionsSubTab === 'applicants' && 'Applicant Directory'}
+                    {admissionsSubTab === 'enrollment' && 'Student Admission & Enrollment'}
                   </h2>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                    Streamline prospective student consultations, track application workflows, and review applicant dossiers.
+                    {admissionsSubTab === 'enrollment'
+                      ? 'Admit students, issue admission numbers, create portal accounts, and maintain the student master registry.'
+                      : 'Streamline prospective student consultations, track application workflows, and review applicant dossiers.'}
                   </p>
                 </div>
 
@@ -2989,6 +2994,13 @@ export default function AdminDashboard({
                     className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${admissionsSubTab === 'applicants' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}
                   >
                     Applicants
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAdmissionsSubTab('enrollment'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/enrollment'); }}
+                    className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${admissionsSubTab === 'enrollment' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}
+                  >
+                    Enrollment
                   </button>
                 </div>
               </div>
@@ -3433,67 +3445,612 @@ export default function AdminDashboard({
             )}
 
             {admissionsSubTab === 'applications' && (
-              <div className="bg-white rounded-xl border p-4">
-                <div className="flex justify-between items-center mb-4">
-                  <h4 className="text-sm font-bold">Applications</h4>
-                  <button onClick={() => fetchApplications()} className="text-xs text-slate-500">Refresh</button>
-                </div>
-                {applicationsLoading ? <p className="text-xs text-slate-400">Loading...</p> : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead>
-                        <tr className="text-slate-500 font-bold uppercase text-[11px]">
-                          <th className="py-2 px-3">Ref</th>
-                          <th className="py-2 px-3">Name</th>
-                          <th className="py-2 px-3">Email</th>
-                          <th className="py-2 px-3">Status</th>
-                          <th className="py-2 px-3">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {applications.map(app => (
-                          <tr key={app.id} className="border-t">
-                            <td className="py-2 px-3 font-mono">{app.application_no}</td>
-                            <td className="py-2 px-3">{app.full_name}</td>
-                            <td className="py-2 px-3">{app.email}</td>
-                            <td className="py-2 px-3">{app.status}</td>
-                            <td className="py-2 px-3">
-                              <div className="flex gap-2">
-                                <select value={applicationNoteMap[app.id] || ''} onChange={(e) => setApplicationNoteMap(prev => ({ ...prev, [app.id]: e.target.value }))} className="text-xs p-1 border rounded">
-                                  <option value="">--internal note--</option>
-                                </select>
-                                <button onClick={() => updateApplicationStatus(app.id, 'under_review')} className="text-xs bg-blue-600 text-white px-2 py-1 rounded">Under Review</button>
-                                <button onClick={() => updateApplicationStatus(app.id, 'approved')} className="text-xs bg-emerald-600 text-white px-2 py-1 rounded">Approve</button>
-                                <button onClick={() => updateApplicationStatus(app.id, 'rejected')} className="text-xs bg-rose-600 text-white px-2 py-1 rounded">Reject</button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+              <div className="space-y-4">
+                {/* Search & Filter Toolbar */}
+                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-xs flex flex-col md:flex-row items-center justify-between gap-3">
+                  {/* Search box */}
+                  <div className="relative w-full md:w-80">
+                    <input
+                      type="text"
+                      value={applicationSearch}
+                      onChange={(e) => setApplicationSearch(e.target.value)}
+                      placeholder="Search name, email, phone, ref, ID..."
+                      className="w-full pl-3 pr-3 py-2 text-xs bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white"
+                    />
                   </div>
-                )}
+
+                  {/* Status filter pills */}
+                  <div className="flex items-center gap-1 overflow-x-auto w-full md:w-auto pb-1 md:pb-0">
+                    {['all', 'submitted', 'under_review', 'additional_documents_requested', 'approved', 'rejected', 'waitlisted'].map((statusKey) => {
+                      const count = statusKey === 'all' 
+                        ? applications.length 
+                        : applications.filter(a => a.status === statusKey).length;
+                      return (
+                        <button
+                          key={statusKey}
+                          type="button"
+                          onClick={() => setApplicationStatusFilter(statusKey)}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider cursor-pointer whitespace-nowrap flex items-center gap-1.5 transition-all ${
+                            applicationStatusFilter === statusKey
+                              ? 'bg-slate-900 text-white dark:bg-blue-600 shadow-xs'
+                              : 'bg-slate-100 dark:bg-slate-850 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                          }`}
+                        >
+                          <span>{statusKey.replaceAll('_', ' ')}</span>
+                          <span className="px-1.5 py-0.2 text-[10px] rounded-full bg-slate-200/80 dark:bg-slate-700 font-mono">
+                            {count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => fetchApplications()}
+                    className="p-2 text-slate-500 hover:text-slate-900 dark:hover:text-white bg-slate-100 dark:bg-slate-850 rounded-xl transition-colors cursor-pointer shrink-0"
+                    title="Refresh Applications"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${applicationsLoading ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+
+                {/* 2-Column Split: Applications List & Dossier Workspace */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                  {/* Column 1: Application List */}
+                  <div className="lg:col-span-5 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-xs space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
+                      <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                        Applications ({applications.filter(a => {
+                          const matchesSearch = !applicationSearch ||
+                            a.full_name?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                            a.email?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                            a.phone?.includes(applicationSearch) ||
+                            a.application_no?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                            (a.national_id && a.national_id.includes(applicationSearch)) ||
+                            (a.first_choice_course_title && a.first_choice_course_title.toLowerCase().includes(applicationSearch.toLowerCase()));
+                          const matchesStatus = applicationStatusFilter === 'all' || a.status === applicationStatusFilter;
+                          return matchesSearch && matchesStatus;
+                        }).length})
+                      </h4>
+                      <span className="text-[11px] text-slate-400 font-medium">Select to review dossier</span>
+                    </div>
+
+                    {applicationsLoading ? (
+                      <div className="py-12 text-center text-slate-400 text-xs">
+                        <RefreshCw className="w-5 h-5 mx-auto mb-2 animate-spin text-blue-500" />
+                        Loading applications...
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-[620px] overflow-y-auto pr-1">
+                        {(() => {
+                          const filtered = applications.filter(a => {
+                            const matchesSearch = !applicationSearch ||
+                              a.full_name?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                              a.email?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                              a.phone?.includes(applicationSearch) ||
+                              a.application_no?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                              (a.national_id && a.national_id.includes(applicationSearch)) ||
+                              (a.first_choice_course_title && a.first_choice_course_title.toLowerCase().includes(applicationSearch.toLowerCase()));
+                            const matchesStatus = applicationStatusFilter === 'all' || a.status === applicationStatusFilter;
+                            return matchesSearch && matchesStatus;
+                          });
+
+                          if (filtered.length === 0) {
+                            return (
+                              <div className="py-12 text-center text-slate-400 text-xs italic">
+                                No applications match the current filter.
+                              </div>
+                            );
+                          }
+
+                          return filtered.map(app => {
+                            const isSelected = (selectedApplicationId === app.id) || (!selectedApplicationId && filtered[0]?.id === app.id);
+                            return (
+                              <div
+                                key={app.id}
+                                onClick={() => setSelectedApplicationId(app.id)}
+                                className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
+                                  isSelected
+                                    ? 'bg-blue-50/70 dark:bg-blue-950/40 border-blue-500/50 shadow-sm'
+                                    : 'bg-slate-50/50 dark:bg-slate-850/40 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+                                }`}
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <div className="font-bold text-xs text-slate-900 dark:text-white flex items-center gap-1.5">
+                                      <span>{app.full_name}</span>
+                                      {app.admission_no && (
+                                        <span className="text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 px-1.5 py-0.2 rounded">
+                                          {app.admission_no}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono mt-0.5">
+                                      {app.application_no}
+                                    </div>
+                                  </div>
+                                  <span
+                                    className={`px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-md border ${
+                                      app.status === 'approved'
+                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800'
+                                        : app.status === 'under_review'
+                                        ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800'
+                                        : app.status === 'additional_documents_requested'
+                                        ? 'bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/60 dark:text-purple-300 dark:border-purple-800'
+                                        : app.status === 'waitlisted'
+                                        ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800'
+                                        : app.status === 'rejected'
+                                        ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/60 dark:text-rose-300 dark:border-rose-800'
+                                        : 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+                                    }`}
+                                  >
+                                    {app.status.replaceAll('_', ' ')}
+                                  </span>
+                                </div>
+
+                                <div className="mt-2 text-[11px] text-slate-600 dark:text-slate-300 line-clamp-1 flex items-center gap-1.5">
+                                  <GraduationCap className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                  <span>{app.first_choice_course_title || 'Course choice'}</span>
+                                </div>
+
+                                <div className="mt-2 flex items-center justify-between text-[10px] text-slate-400">
+                                  <span>{app.email}</span>
+                                  <span>{app.created_at ? new Date(app.created_at).toLocaleDateString() : ''}</span>
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Column 2: Application Dossier & Action Workspace */}
+                  <div className="lg:col-span-7 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
+                    {(() => {
+                      const filtered = applications.filter(a => {
+                        const matchesSearch = !applicationSearch ||
+                          a.full_name?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                          a.email?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                          a.phone?.includes(applicationSearch) ||
+                          a.application_no?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                          (a.national_id && a.national_id.includes(applicationSearch)) ||
+                          (a.first_choice_course_title && a.first_choice_course_title.toLowerCase().includes(applicationSearch.toLowerCase()));
+                        const matchesStatus = applicationStatusFilter === 'all' || a.status === applicationStatusFilter;
+                        return matchesSearch && matchesStatus;
+                      });
+
+                      const selectedApp = applications.find(a => a.id === selectedApplicationId) || filtered[0] || null;
+
+                      if (!selectedApp) {
+                        return (
+                          <div className="py-16 text-center text-slate-400 text-xs space-y-2">
+                            <FileText className="w-8 h-8 mx-auto text-slate-300 dark:text-slate-700" />
+                            <p>Select an application to view full dossier details and process admissions action.</p>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="space-y-6">
+                          {/* Dossier Header */}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-4">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h3 className="text-lg font-black text-slate-900 dark:text-white">
+                                  {selectedApp.full_name}
+                                </h3>
+                                <span
+                                  className={`px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-md border ${
+                                    selectedApp.status === 'approved'
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800'
+                                      : selectedApp.status === 'under_review'
+                                      ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800'
+                                      : selectedApp.status === 'additional_documents_requested'
+                                      ? 'bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/60 dark:text-purple-300 dark:border-purple-800'
+                                      : selectedApp.status === 'waitlisted'
+                                      ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800'
+                                      : selectedApp.status === 'rejected'
+                                      ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/60 dark:text-rose-300 dark:border-rose-800'
+                                      : 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+                                  }`}
+                                >
+                                  {selectedApp.status.replaceAll('_', ' ')}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 mt-1 text-xs text-slate-500 font-mono">
+                                <span>Ref: {selectedApp.application_no}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(selectedApp.application_no);
+                                    showSuccess('Copied', `Copied ${selectedApp.application_no}`);
+                                  }}
+                                  className="text-blue-500 hover:text-blue-600 cursor-pointer"
+                                  title="Copy reference"
+                                >
+                                  <Copy className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="text-right text-xs text-slate-400">
+                              <div>Submitted: {selectedApp.created_at ? new Date(selectedApp.created_at).toLocaleString() : 'N/A'}</div>
+                              {selectedApp.admission_no && (
+                                <div className="text-emerald-600 dark:text-emerald-400 font-mono font-bold mt-0.5">
+                                  Admission No: {selectedApp.admission_no}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Dossier Information Grid */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                            <div className="bg-slate-50 dark:bg-slate-850 p-3 rounded-xl border border-slate-100 dark:border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Identity & Contact</span>
+                              <p><strong>National ID:</strong> {selectedApp.national_id || 'N/A'}</p>
+                              <p><strong>DOB:</strong> {selectedApp.date_of_birth || 'N/A'} • <strong>Gender:</strong> {selectedApp.gender || 'N/A'}</p>
+                              <p><strong>Email:</strong> {selectedApp.email}</p>
+                              <p><strong>Phone:</strong> {selectedApp.phone}</p>
+                              <p><strong>Address:</strong> {selectedApp.postal_address || 'N/A'}</p>
+                            </div>
+
+                            <div className="bg-slate-50 dark:bg-slate-850 p-3 rounded-xl border border-slate-100 dark:border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Academic Background</span>
+                              <p><strong>Previous School:</strong> {selectedApp.previous_school || 'N/A'}</p>
+                              <p><strong>Qualification:</strong> {selectedApp.highest_qualification || 'N/A'}</p>
+                              <p><strong>KCSE Grade:</strong> <span className="font-bold text-blue-600 dark:text-blue-400">{selectedApp.mean_grade || 'N/A'}</span></p>
+                              <p><strong>Graduation Year:</strong> {selectedApp.graduation_year || 'N/A'}</p>
+                            </div>
+
+                            <div className="bg-slate-50 dark:bg-slate-850 p-3 rounded-xl border border-slate-100 dark:border-slate-800 space-y-1 md:col-span-2">
+                              <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Course Selection</span>
+                              <p><strong>1st Choice:</strong> {selectedApp.first_choice_course_title || courses.find(c => c.id === selectedApp.first_choice_course_id)?.title || 'N/A'} {selectedApp.first_choice_course_code ? `(${selectedApp.first_choice_course_code})` : ''}</p>
+                              {selectedApp.second_choice_course_id && (
+                                <p><strong>2nd Choice:</strong> {selectedApp.second_choice_course_title || courses.find(c => c.id === selectedApp.second_choice_course_id)?.title || 'N/A'}</p>
+                              )}
+                              <p><strong>Preferred Intake:</strong> {selectedApp.preferred_intake || 'N/A'}</p>
+                            </div>
+                          </div>
+
+                          {/* Documents Section */}
+                          <div className="space-y-2">
+                            <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                              <FileCheck className="w-4 h-4 text-emerald-500" />
+                              <span>Attached Documents ({selectedApp.documents?.length || 0})</span>
+                            </h4>
+                            
+                            {selectedApp.documents && selectedApp.documents.length > 0 ? (
+                              <div className="space-y-1.5">
+                                {selectedApp.documents.map((doc: any, i: number) => (
+                                  <div key={doc.id || i} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 text-xs">
+                                    <div className="flex items-center gap-2">
+                                      <FileText className="w-4 h-4 text-blue-500" />
+                                      <div>
+                                        <div className="font-bold capitalize">{doc.document_type?.replaceAll('_', ' ')}</div>
+                                        <div className="text-[10px] text-slate-400">{doc.file_name} • {(Number(doc.size_bytes) / 1024).toFixed(1)} KB</div>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <a
+                                        href={doc.file_url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                                      >
+                                        <Eye className="w-3.5 h-3.5 text-blue-500" /> View
+                                      </a>
+                                      <a
+                                        href={doc.file_url}
+                                        download={doc.file_name}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-xs font-bold text-white shadow-xs"
+                                      >
+                                        <Download className="w-3.5 h-3.5" /> Download
+                                      </a>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-xs text-slate-400 italic p-3 bg-slate-50 dark:bg-slate-850 rounded-xl">No documents recorded.</p>
+                            )}
+                          </div>
+
+                          {/* Decision & Action Panel */}
+                          <div className="bg-slate-50 dark:bg-slate-850 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
+                            <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                              Admissions Decision & Internal Review
+                            </h4>
+
+                            <div className="space-y-1">
+                              <label className="text-[11px] font-bold text-slate-500">Internal Review Note</label>
+                              <input
+                                type="text"
+                                value={applicationNoteMap[selectedApp.id] || ''}
+                                onChange={(e) => setApplicationNoteMap(prev => ({ ...prev, [selectedApp.id]: e.target.value }))}
+                                placeholder="Enter rationale or review note for this application..."
+                                className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white"
+                              />
+                            </div>
+
+                            <div className="flex flex-wrap gap-2 pt-1">
+                              <button
+                                type="button"
+                                disabled={updatingApplication}
+                                onClick={() => updateApplicationStatus(selectedApp.id, 'under_review')}
+                                className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+                              >
+                                Move to Under Review
+                              </button>
+                              <button
+                                type="button"
+                                disabled={updatingApplication}
+                                onClick={() => updateApplicationStatus(selectedApp.id, 'approved')}
+                                className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+                              >
+                                Approve & Admit Student
+                              </button>
+                              <button
+                                type="button"
+                                disabled={updatingApplication}
+                                onClick={() => updateApplicationStatus(selectedApp.id, 'additional_documents_requested')}
+                                className="px-3 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+                              >
+                                Request Additional Docs
+                              </button>
+                              <button
+                                type="button"
+                                disabled={updatingApplication}
+                                onClick={() => updateApplicationStatus(selectedApp.id, 'waitlisted')}
+                                className="px-3 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+                              >
+                                Waitlist
+                              </button>
+                              <button
+                                type="button"
+                                disabled={updatingApplication}
+                                onClick={() => updateApplicationStatus(selectedApp.id, 'rejected')}
+                                className="px-3 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+                              >
+                                Reject
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
               </div>
             )}
 
             {admissionsSubTab === 'applicants' && (
-              <div className="bg-white rounded-xl border p-4">
-                <h4 className="text-sm font-bold mb-3">Applicants</h4>
-                {applicationsLoading ? <p className="text-xs text-slate-400">Loading...</p> : (
-                  <div className="space-y-2">
-                    {applications.map(a => (
-                      <div key={a.id} className="p-3 border rounded">
-                        <div className="flex justify-between items-center">
-                          <div>
-                            <div className="font-bold">{a.full_name}</div>
-                            <div className="text-xs text-slate-500">{a.application_no} • {a.email}</div>
-                          </div>
-                          <div className="text-sm font-bold">{a.status}</div>
-                        </div>
-                      </div>
-                    ))}
+              <div className="space-y-4">
+                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-xs flex flex-col md:flex-row items-center justify-between gap-3">
+                  <div className="relative w-full md:w-80">
+                    <input
+                      type="text"
+                      value={applicationSearch}
+                      onChange={(e) => setApplicationSearch(e.target.value)}
+                      placeholder="Search applicant directory..."
+                      className="w-full pl-3 pr-3 py-2 text-xs bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white"
+                    />
                   </div>
-                )}
+                  <button
+                    type="button"
+                    onClick={() => fetchApplications()}
+                    className="p-2 text-slate-500 hover:text-slate-900 dark:hover:text-white bg-slate-100 dark:bg-slate-850 rounded-xl transition-colors cursor-pointer shrink-0"
+                    title="Refresh Directory"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${applicationsLoading ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+
+                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-xs">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-3">
+                    Applicant Directory ({applications.length})
+                  </h4>
+                  {applicationsLoading ? (
+                    <div className="py-12 text-center text-slate-400 text-xs">
+                      <RefreshCw className="w-5 h-5 mx-auto mb-2 animate-spin text-blue-500" />
+                      Loading applicant directory...
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {applications.filter(a => {
+                        return !applicationSearch ||
+                          a.full_name?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                          a.email?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                          a.phone?.includes(applicationSearch) ||
+                          a.application_no?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                          (a.national_id && a.national_id.includes(applicationSearch));
+                      }).map(a => (
+                        <div key={a.id} className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/40 space-y-2">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <div className="font-bold text-xs text-slate-900 dark:text-white">{a.full_name}</div>
+                              <div className="text-[11px] text-slate-500 font-mono">{a.application_no}</div>
+                            </div>
+                            <span
+                              className={`px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-md border ${
+                                a.status === 'approved'
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800'
+                                  : a.status === 'under_review'
+                                  ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800'
+                                  : 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+                              }`}
+                            >
+                              {a.status.replaceAll('_', ' ')}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-500 space-y-0.5">
+                            <div>📧 {a.email}</div>
+                            <div>📞 {a.phone}</div>
+                            {a.national_id && <div>🪪 ID: {a.national_id}</div>}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedApplicationId(a.id);
+                              setAdmissionsSubTab('applications');
+                            }}
+                            className="w-full mt-2 py-1.5 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold transition text-center cursor-pointer"
+                          >
+                            View Full Dossier →
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {admissionsSubTab === 'enrollment' && (
+              <div className="space-y-6">
+                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 space-y-4 shadow-sm">
+                  <div className="flex items-center gap-2.5 border-b border-slate-100 dark:border-slate-800 pb-3">
+                    <div className="p-2 bg-indigo-50 dark:bg-slate-820 text-indigo-600 dark:text-indigo-400 rounded-xl">
+                      <Plus className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-black text-slate-900 dark:text-slate-100">Enrol New Undergraduate Student Account</h3>
+                      <p className="text-[11px] text-slate-500">
+                        Admissions-owned enrollment creates the student record, admission number, and portal credentials. Academic Allocation then assigns classes/units to the same student ID.
+                      </p>
+                    </div>
+                  </div>
+
+                  <form onSubmit={handleAddStudentSubmit} className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4 items-end">
+                    <div className="space-y-1 xl:col-span-2">
+                      <label htmlFor="adm-reg-application" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Approved Application</label>
+                      <select
+                        id="adm-reg-application"
+                        value={enrollmentApplicationId}
+                        onChange={(e) => selectEnrollmentApplication(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100 h-9"
+                      >
+                        <option value="">Manual enrollment</option>
+                        {applications.filter((application) => application.status === 'approved').map((application) => (
+                          <option key={application.id} value={application.id}>
+                            {application.application_no} — {application.full_name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="adm-reg-std-name" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Full Student Name</label>
+                      <input
+                        id="adm-reg-std-name"
+                        type="text"
+                        placeholder="Mary Wambui"
+                        value={regStudentName}
+                        onChange={(e) => setRegStudentName(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="adm-reg-std-email" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Email Address</label>
+                      <input
+                        id="adm-reg-std-email"
+                        type="email"
+                        placeholder="m.wambui@student.edu"
+                        value={regStudentEmail}
+                        onChange={(e) => setRegStudentEmail(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="adm-reg-std-phone" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Phone Number</label>
+                      <input
+                        id="adm-reg-std-phone"
+                        type="tel"
+                        placeholder="+254 700 000 000"
+                        value={regStudentPhone}
+                        onChange={(e) => setRegStudentPhone(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="adm-reg-std-adm" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Admission No</label>
+                      <input
+                        id="adm-reg-std-adm"
+                        type="text"
+                        placeholder="Auto if blank"
+                        value={regStudentAdmission}
+                        onChange={(e) => setRegStudentAdmission(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="adm-reg-std-programme" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Programme</label>
+                      <select
+                        id="adm-reg-std-programme"
+                        value={regStudentCourseId}
+                        onChange={(e) => setRegStudentCourseId(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100 h-9"
+                        required
+                      >
+                        <option value="">Select programme</option>
+                        {courses.map((c) => (
+                          <option key={c.id} value={c.id}>{c.code} — {c.title}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="adm-reg-std-cohort" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Intake Cohort</label>
+                      <input
+                        id="adm-reg-std-cohort"
+                        type="text"
+                        placeholder="Provided by approved application"
+                        value={regStudentCohort}
+                        onChange={(e) => setRegStudentCohort(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100 h-9"
+                        required
+                      />
+                    </div>
+                    {enrollmentApplicationId && regStudentCourseId !== (applications.find((application) => application.id === enrollmentApplicationId)?.approved_course_id || applications.find((application) => application.id === enrollmentApplicationId)?.first_choice_course_id) && (
+                      <label className="md:col-span-3 xl:col-span-6 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300">
+                        <input type="checkbox" checked={confirmProgrammeChange} onChange={(e) => setConfirmProgrammeChange(e.target.checked)} />
+                        I confirm changing the programme selected on this approved application.
+                      </label>
+                    )}
+                    <div className="space-y-1">
+                      <label htmlFor="adm-reg-std-passcode" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Account Passcode</label>
+                      <input
+                        id="adm-reg-std-passcode"
+                        type="password"
+                        placeholder="Optional default"
+                        value={regStudentPasscode}
+                        onChange={(e) => setRegStudentPasscode(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100 font-mono"
+                      />
+                    </div>
+                    <div className="md:col-span-3 xl:col-span-6">
+                      <button
+                        type="submit"
+                        className="w-full md:w-auto bg-indigo-600 hover:bg-indigo-750 text-white font-extrabold py-2.5 px-5 rounded-lg text-xs tracking-wider uppercase transition-colors cursor-pointer"
+                      >
+                        Enrol Student
+                      </button>
+                    </div>
+                  </form>
+                </div>
+
+                <StudentRecordsTable
+                  onDeleteStudent={onDeleteStudent}
+                  onUpdateStudent={onUpdateStudent}
+                  refetchTrigger={studentTableRefetchTrigger}
+                  canManageRecords={true}
+                  title="Student Master Registry"
+                  description="Admitted student records from PostgreSQL — admission numbers, account status, and credentials managed by Admissions."
+                />
               </div>
             )}
           </div>

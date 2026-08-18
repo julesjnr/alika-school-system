@@ -8,13 +8,15 @@ import {
 } from 'recharts';
 import { Grade, LecturerAssignedSubject, Student } from '../types';
 import {
-  AGGREGATE_CAT_MAX,
-  AGGREGATE_EXAM_MAX,
+  calculateOverallPercentage,
   continuousAssessmentTotal,
+  configuredAggregateLimits,
+  letterGradeFromOverallPercentage,
   maxMarksForField,
   parseMarkInput,
   sumValidMarks,
   validateAggregateGrade,
+  validateAssessmentWeights,
   validateMarkBreakdown,
   type MarkBreakdown,
   type MarkField,
@@ -27,6 +29,7 @@ interface AssessmentDef {
   kind: AssessmentKind;
   name: string;
   maxMarks: number;
+  weight: number;
   published: boolean;
 }
 
@@ -53,17 +56,17 @@ interface LecturerAssessmentWorkspaceProps {
 }
 
 const DEFAULT_ASSESSMENTS: AssessmentDef[] = [
-  { id: 'cat1', kind: 'CAT1', name: 'CAT 1', maxMarks: AGGREGATE_CAT_MAX, published: false },
-  { id: 'cat2', kind: 'CAT2', name: 'CAT 2', maxMarks: AGGREGATE_CAT_MAX, published: false },
-  { id: 'assignment', kind: 'Assignment', name: 'Assignment', maxMarks: AGGREGATE_CAT_MAX, published: false },
-  { id: 'final', kind: 'FinalExam', name: 'Final Exam', maxMarks: AGGREGATE_EXAM_MAX, published: false },
+  { id: 'cat1', kind: 'CAT1', name: 'CAT 1', maxMarks: 0, weight: 10, published: false },
+  { id: 'cat2', kind: 'CAT2', name: 'CAT 2', maxMarks: 0, weight: 10, published: false },
+  { id: 'assignment', kind: 'Assignment', name: 'Assignment', maxMarks: 0, weight: 10, published: false },
+  { id: 'final', kind: 'FinalExam', name: 'Final Exam', maxMarks: 0, weight: 70, published: false },
 ];
 
 const KIND_OPTIONS: Array<{ kind: AssessmentKind; label: string; defaultMax: number }> = [
-  { kind: 'CAT1', label: 'CAT 1', defaultMax: AGGREGATE_CAT_MAX },
-  { kind: 'CAT2', label: 'CAT 2', defaultMax: AGGREGATE_CAT_MAX },
-  { kind: 'Assignment', label: 'Assignment', defaultMax: AGGREGATE_CAT_MAX },
-  { kind: 'FinalExam', label: 'Final Exam', defaultMax: AGGREGATE_EXAM_MAX },
+  { kind: 'CAT1', label: 'CAT 1', defaultMax: 0 },
+  { kind: 'CAT2', label: 'CAT 2', defaultMax: 0 },
+  { kind: 'Assignment', label: 'Assignment', defaultMax: 0 },
+  { kind: 'FinalExam', label: 'Final Exam', defaultMax: 0 },
 ];
 
 const MARK_FIELDS: MarkField[] = ['cat1', 'cat2', 'assignment', 'exam'];
@@ -73,15 +76,11 @@ function getDefaultMaxForKind(kind: AssessmentKind, existingAssessments: Assessm
   if (configured && Number.isFinite(configured.maxMarks) && configured.maxMarks > 0) {
     return configured.maxMarks;
   }
-  return kind === 'FinalExam' ? AGGREGATE_EXAM_MAX : AGGREGATE_CAT_MAX;
+  return 0;
 }
 
 function letterGrade(total: number): string {
-  if (total >= 70) return 'A';
-  if (total >= 60) return 'B';
-  if (total >= 50) return 'C';
-  if (total >= 40) return 'D';
-  return 'E/F';
+  return letterGradeFromOverallPercentage(total);
 }
 
 function assessmentsKey(lecturerId: string, subject: string) {
@@ -120,12 +119,17 @@ function loadBreakdowns(lecturerId: string, subject: string): Record<string, Mar
   }
 }
 
-function splitCat(cat: number): Pick<MarkBreakdown, 'cat1' | 'cat2' | 'assignment'> {
-  const safe = Math.max(0, Math.min(AGGREGATE_CAT_MAX, Number(cat) || 0));
-  const cat1 = Math.min(10, safe);
-  const remaining = safe - cat1;
-  const cat2 = Math.min(10, remaining);
-  const assignment = Math.max(0, remaining - cat2);
+function splitCat(cat: number, assessments: AssessmentDef[] = []): Pick<MarkBreakdown, 'cat1' | 'cat2' | 'assignment'> {
+  const catFields = ['cat1', 'cat2', 'assignment'] as MarkField[];
+  const configuredTotal = catFields.reduce((sum, field) => sum + maxMarksForField(assessments, field), 0);
+  const safe = Math.max(0, Number(cat) || 0);
+  if (configuredTotal <= 0 || safe <= 0) return { cat1: 0, cat2: 0, assignment: 0 };
+
+  const shares = catFields.map((field) => maxMarksForField(assessments, field) / configuredTotal);
+  const cat1 = Math.min(maxMarksForField(assessments, 'cat1'), safe * shares[0]);
+  const remaining = Math.max(0, safe - cat1);
+  const cat2 = Math.min(maxMarksForField(assessments, 'cat2'), remaining * (maxMarksForField(assessments, 'cat2') / Math.max(1, maxMarksForField(assessments, 'cat2') + maxMarksForField(assessments, 'assignment'))));
+  const assignment = Math.max(0, safe - cat1 - cat2);
   return { cat1, cat2, assignment };
 }
 
@@ -139,17 +143,28 @@ export default function LecturerAssessmentWorkspace({
   showToast,
   showWarning,
 }: LecturerAssessmentWorkspaceProps) {
+  const ASSESSMENT_DEFAULTS: Record<AssessmentKind, { weight: number; max: number }> = {
+    CAT1: { weight: 15, max: 50 },
+    CAT2: { weight: 15, max: 50 },
+    Assignment: { weight: 10, max: 100 },
+    FinalExam: { weight: 60, max: 100 },
+  };
   const [assessments, setAssessments] = useState<AssessmentDef[]>(() => loadAssessments(lecturerId, selectedSubject));
   const [breakdowns, setBreakdowns] = useState<Record<string, MarkBreakdown>>(() => loadBreakdowns(lecturerId, selectedSubject));
-  const [drafts, setDrafts] = useState<Record<string, Partial<MarkBreakdown>>>({});
+  // drafts: studentId -> { [assessmentId]: numericValue }
+  const [drafts, setDrafts] = useState<Record<string, Record<string, number>>>({});
   const [searchQuery, setSearchQuery] = useState('');
   const [editingAssessmentId, setEditingAssessmentId] = useState<string | null>(null);
   const [newKind, setNewKind] = useState<AssessmentKind>('CAT1');
   const [newName, setNewName] = useState('');
-  const [newMax, setNewMax] = useState(10);
+  const [newMax, setNewMax] = useState(0);
+  const [newWeight, setNewWeight] = useState(10);
   const [saveFlash, setSaveFlash] = useState<string | null>(null);
   const [analytics, setAnalytics] = useState<AssessmentAnalytics | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [assessmentErrors, setAssessmentErrors] = useState<Record<string, { name?: boolean; maxMarks?: boolean; weight?: boolean }>>({});
+  const [newFieldErrors, setNewFieldErrors] = useState<{ name?: boolean; maxMarks?: boolean; weight?: boolean }>({});
+  const [publishModal, setPublishModal] = useState<{ open: boolean; student?: Student | null }>({ open: false, student: null });
 
   useEffect(() => {
     setAssessments(loadAssessments(lecturerId, selectedSubject));
@@ -158,6 +173,34 @@ export default function LecturerAssessmentWorkspace({
     setSearchQuery('');
     setEditingAssessmentId(null);
   }, [lecturerId, selectedSubject]);
+
+  // Ensure the Type dropdown defaults to CAT1 on mount
+  useEffect(() => {
+    setNewKind((prev) => prev || 'CAT1');
+  }, []);
+
+  // Fetch persisted assessment config from backend when subject selected
+  useEffect(() => {
+    if (!selectedSubject) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = localStorage.getItem('zenti_session_token');
+        const resp = await fetch(`/api/lecturer/assessment-config?subjectCode=${encodeURIComponent(selectedSubject)}`, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (cancelled) return;
+        if (Array.isArray(data) && data.length > 0) {
+          const mapped: AssessmentDef[] = data.map((d: any) => ({ id: `${d.assessmentKind}-${selectedSubject}`, kind: d.assessmentKind, name: d.assessmentName, maxMarks: Number(d.maxMarks), weight: Number(d.weight), published: false }));
+          setAssessments(mapped);
+          return;
+        }
+      } catch (err) {
+        // ignore and keep local state
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedSubject]);
 
   useEffect(() => {
     if (!selectedSubject) {
@@ -192,13 +235,15 @@ export default function LecturerAssessmentWorkspace({
     () => students.filter((student) => student.enrolledUnits.includes(selectedSubject)),
     [students, selectedSubject],
   );
-  const visibleMarkFields = useMemo(() => {
-    const configuredKinds = new Set(assessments.map((assessment) => assessment.kind));
-    return MARK_FIELDS.filter((field) => {
-      const kind = field === 'cat1' ? 'CAT1' : field === 'cat2' ? 'CAT2' : field === 'assignment' ? 'Assignment' : 'FinalExam';
-      return configuredKinds.has(kind as AssessmentKind);
-    });
-  }, [assessments]);
+  
+
+  const assessmentFieldForKind = (kind: AssessmentKind): MarkField => (
+    kind === 'CAT1' ? 'cat1' : kind === 'CAT2' ? 'cat2' : kind === 'Assignment' ? 'assignment' : 'exam'
+  );
+
+  const activeAssessments = useMemo(() => (
+    assessments.map((a) => ({ ...a }))
+  ), [assessments]);
 
   const filteredStudents = useMemo(() => {
     const term = searchQuery.trim().toLowerCase();
@@ -209,29 +254,78 @@ export default function LecturerAssessmentWorkspace({
     );
   }, [searchQuery, subjectStudents]);
 
+  // Build a MarkBreakdown (cat1/cat2/assignment/exam) for a student by combining persisted breakdowns,
+  // student grades and any per-assessment drafts stored under drafts[studentId][assessmentId].
   const resolveBreakdown = (student: Student): MarkBreakdown => {
-    if (drafts[student.id]) {
-      const base = breakdowns[student.id] || (() => {
-        const grade = student.grades[selectedSubject];
-        if (!grade) return { cat1: 0, cat2: 0, assignment: 0, exam: 0 };
-        return { ...splitCat(grade.cat), exam: grade.exam };
-      })();
-      return {
-        cat1: drafts[student.id].cat1 ?? base.cat1,
-        cat2: drafts[student.id].cat2 ?? base.cat2,
-        assignment: drafts[student.id].assignment ?? base.assignment,
-        exam: drafts[student.id].exam ?? base.exam,
-      };
+    const base = breakdowns[student.id] || (() => {
+      const grade = student.grades[selectedSubject];
+      if (!grade) return { cat1: 0, cat2: 0, assignment: 0, exam: 0 };
+      return { ...splitCat(grade.cat, assessments), exam: grade.exam };
+    })();
+
+    // Start from base
+    const result: MarkBreakdown = { cat1: base.cat1 ?? 0, cat2: base.cat2 ?? 0, assignment: base.assignment ?? 0, exam: base.exam ?? 0 };
+
+    // If there are per-assessment drafts for this student, overlay them mapped by assessment kind -> mark field
+    const studentDrafts = drafts[student.id];
+    if (studentDrafts && Object.keys(studentDrafts).length > 0) {
+      for (const a of activeAssessments) {
+        const field = assessmentFieldForKind(a.kind);
+        const val = studentDrafts[a.id];
+        if (val !== undefined && Number.isFinite(val)) {
+          result[field] = val;
+        }
+      }
     }
-    if (breakdowns[student.id]) return breakdowns[student.id];
-    const grade = student.grades[selectedSubject];
-    if (!grade) return { cat1: 0, cat2: 0, assignment: 0, exam: 0 };
-    return { ...splitCat(grade.cat), exam: grade.exam };
+
+    return result;
   };
 
   const persistAssessments = (next: AssessmentDef[]) => {
-    setAssessments(next);
-    if (selectedSubject) localStorage.setItem(assessmentsKey(lecturerId, selectedSubject), JSON.stringify(next));
+    // Normalize and validate assessments before persisting
+    const normalized = next.map((a) => ({
+      ...a,
+      name: String(a.name ?? '').trim(),
+      maxMarks: Number(a.maxMarks ?? 0),
+      weight: Number(a.weight ?? 0),
+    }));
+
+    const errors: Record<string, { name?: boolean; maxMarks?: boolean; weight?: boolean }> = {};
+    for (const a of normalized) {
+      const e: { name?: boolean; maxMarks?: boolean; weight?: boolean } = {};
+      if (!a.kind || String(a.kind).trim() === '') e.name = true; // kind missing - mark name to draw attention
+      if (!a.name || a.name === '') e.name = true;
+      if (!Number.isFinite(a.maxMarks) || a.maxMarks <= 0) e.maxMarks = true;
+      if (!Number.isFinite(a.weight) || a.weight < 0) e.weight = true;
+      if (e.name || e.maxMarks || e.weight) errors[a.id] = e;
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setAssessmentErrors(errors);
+      showWarning('Invalid assessment(s)', 'Each assessment requires a non-empty name, maxMarks > 0 and weight >= 0. Fix highlighted fields before saving.');
+      return;
+    }
+
+    // Clear any previous errors and persist
+    setAssessmentErrors({});
+    setAssessments(normalized);
+    if (selectedSubject) localStorage.setItem(assessmentsKey(lecturerId, selectedSubject), JSON.stringify(normalized));
+    // Also persist to backend so weights are canonical
+    (async () => {
+      try {
+        const token = localStorage.getItem('zenti_session_token');
+        const resp = await fetch('/api/lecturer/assessment-config', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify({ subjectCode: selectedSubject, assessments: normalized.map((a) => ({ assessmentKind: a.kind, assessmentName: a.name, maxMarks: a.maxMarks, weight: a.weight })) }),
+        });
+        if (!resp.ok) {
+          const body = await resp.json().catch(() => ({}));
+          showWarning('Save failed', body.error || 'Unable to persist assessment configuration.');
+        }
+      } catch (err: any) {
+        // ignore
+      }
+    })();
   };
 
   const persistBreakdowns = (next: Record<string, MarkBreakdown>) => {
@@ -239,19 +333,25 @@ export default function LecturerAssessmentWorkspace({
     if (selectedSubject) localStorage.setItem(marksKey(lecturerId, selectedSubject), JSON.stringify(next));
   };
 
-  const updateDraft = (studentId: string, field: MarkField, value: string) => {
+  // Update a draft entry for a specific student and assessment id (not the field name)
+  const updateDraft = (studentId: string, assessmentId: string, value: string) => {
     const numeric = parseMarkInput(value);
     setDrafts((prev) => ({
       ...prev,
       [studentId]: {
         ...prev[studentId],
-        [field]: Number.isNaN(numeric) ? Number.NaN : numeric,
+        [assessmentId]: Number.isNaN(numeric) ? Number.NaN : numeric,
       },
     }));
   };
 
   const saveStudentMarks = async (student: Student) => {
     if (!selectedSubject) return;
+    const weightError = validateAssessmentWeights(assessments);
+    if (weightError) {
+      showWarning('Assessment weights invalid', weightError);
+      return;
+    }
     const marks = resolveBreakdown(student);
     const fieldErrors = validateMarkBreakdown(marks, assessments);
     const firstError = Object.values(fieldErrors)[0];
@@ -260,9 +360,15 @@ export default function LecturerAssessmentWorkspace({
       return;
     }
     const catTotal = continuousAssessmentTotal(marks, assessments);
-    const aggregate = validateAggregateGrade(catTotal, marks.exam);
+    const aggregate = validateAggregateGrade(catTotal, marks.exam, assessments);
     if (aggregate.ok === false) {
       showWarning('Grade invalid', aggregate.error);
+      return;
+    }
+
+    const hasConfiguredMaxima = assessments.some((assessment) => assessment.maxMarks > 0);
+    if (!hasConfiguredMaxima) {
+      showWarning('Set assessment maxima', 'Create a valid CAT/Assignment/Final Exam maximum for this module before saving marks.');
       return;
     }
 
@@ -274,8 +380,8 @@ export default function LecturerAssessmentWorkspace({
           lecturerId,
           studentId: student.id,
           subjectCode: selectedSubject,
-          cat: aggregate.cat,
-          exam: aggregate.exam,
+          marks,
+          assessments,
         }),
       });
       const body = await response.json().catch(() => ({}));
@@ -286,6 +392,8 @@ export default function LecturerAssessmentWorkspace({
 
       const nextBreakdowns = { ...breakdowns, [student.id]: marks };
       persistBreakdowns(nextBreakdowns);
+      const overallPct = body.overallPercent ?? calculateOverallPercentage(marks, assessments);
+      const gradeLetter = body.gradeLetter ?? letterGradeFromOverallPercentage(overallPct);
       onUpdateGrades(student.id, selectedSubject, {
         cat: body.grade?.cat ?? aggregate.cat,
         exam: body.grade?.exam ?? aggregate.exam,
@@ -314,18 +422,45 @@ export default function LecturerAssessmentWorkspace({
   const createAssessment = () => {
     const option = KIND_OPTIONS.find((item) => item.kind === newKind);
     const name = newName.trim() || option?.label || newKind;
-    const kindCap = newKind === 'FinalExam' ? AGGREGATE_EXAM_MAX : AGGREGATE_CAT_MAX;
-    const defaultMax = getDefaultMaxForKind(newKind, assessments);
-    const maxMarks = Math.max(1, Math.min(kindCap, Number(newMax) || defaultMax));
+    const trimmedMax = Number(newMax);
+    const trimmedWeight = Number(newWeight);
+    const fieldErrors: { name?: boolean; maxMarks?: boolean; weight?: boolean } = {};
+    if (!name) fieldErrors.name = true;
+    if (!Number.isFinite(trimmedMax) || trimmedMax <= 0) fieldErrors.maxMarks = true;
+    if (!Number.isFinite(trimmedWeight) || trimmedWeight < 0) fieldErrors.weight = true;
+
+    if (fieldErrors.name || fieldErrors.maxMarks || fieldErrors.weight) {
+      setNewFieldErrors(fieldErrors);
+      showWarning('Invalid input', 'Please fix the highlighted fields before creating the assessment.');
+      return;
+    }
     if (assessments.some((item) => item.kind === newKind)) {
       showWarning('Assessment exists', `${option?.label || newKind} is already configured for this module.`);
       return;
     }
-    const next = [...assessments, { id: `${newKind.toLowerCase()}-${Date.now()}`, kind: newKind, name, maxMarks, published: false }];
+    const maxMarks = trimmedMax;
+    const weight = trimmedWeight;
+    const next = [...assessments, { id: `${newKind.toLowerCase()}-${Date.now()}`, kind: newKind, name, maxMarks, weight, published: false }];
+    const weightWarning = validateAssessmentWeights(next);
+    if (weightWarning) {
+      showWarning('Weights invalid', weightWarning);
+      return;
+    }
     persistAssessments(next);
     setNewName('');
+    setNewMax(0);
+    setNewWeight(10);
+    setNewFieldErrors({});
     showToast('Assessment created.', 'success');
   };
+
+  const isCreateInvalid = (() => {
+    const option = KIND_OPTIONS.find((item) => item.kind === newKind);
+    const name = newName.trim() || option?.label || newKind;
+    const trimmedMax = Number(newMax);
+    const trimmedWeight = Number(newWeight);
+    return !name || !Number.isFinite(trimmedMax) || trimmedMax <= 0 || !Number.isFinite(trimmedWeight) || trimmedWeight < 0;
+  })();
 
   const deleteAssessment = (id: string) => {
     persistAssessments(assessments.filter((item) => item.id !== id));
@@ -337,15 +472,51 @@ export default function LecturerAssessmentWorkspace({
     showToast('Results marked as published for this assessment.', 'success');
   };
 
+  const confirmPublish = async () => {
+    const student = publishModal.student;
+    if (!student || !selectedSubject) {
+      setPublishModal({ open: false, student: null });
+      return;
+    }
+    try {
+      const token = localStorage.getItem('zenti_session_token');
+      const resp = await fetch('/api/lecturer/publish-result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ studentId: student.id, subjectCode: selectedSubject }),
+      });
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        showWarning('Publish failed', body.error || 'Unable to publish result.');
+        setPublishModal({ open: false, student: null });
+        return;
+      }
+      if (body && body.catScore !== undefined) {
+        onUpdateGrades(student.id, selectedSubject, { cat: Number(body.catScore), exam: Number(body.examScore) });
+      }
+      showToast('Result published successfully.', 'success');
+    } catch (err: any) {
+      showWarning('Publish failed', err?.message || 'Unable to publish result.');
+    } finally {
+      setPublishModal({ open: false, student: null });
+    }
+  };
+
   const reportRows = () => subjectStudents.map((student) => {
     const marks = resolveBreakdown(student);
     const total = sumValidMarks(marks, assessments);
+    const totalMax = activeAssessments.reduce((sum, a) => sum + Number(a.maxMarks || 0), 0);
+    const overallPct = calculateOverallPercentage(marks, assessments);
     const row = [
       student.admissionNo,
       student.name,
-      ...visibleMarkFields.map((field) => String(Number.isFinite(marks[field]) ? marks[field] : '')),
-      String(total),
-      letterGrade(total),
+      ...activeAssessments.map((a) => {
+        const field = assessmentFieldForKind(a.kind);
+        return String(Number.isFinite(marks[field]) ? marks[field] : '');
+      }),
+      `${total} / ${totalMax || 0}`,
+      `${overallPct.toFixed(2)}%`,
+      letterGrade(overallPct),
       student.grades[selectedSubject] ? 'Graded' : 'Pending',
     ];
     return row;
@@ -357,7 +528,7 @@ export default function LecturerAssessmentWorkspace({
       return;
     }
     const rows = [
-      ['Admission Number', 'Student Name', ...visibleMarkFields.map((field) => ({ cat1: 'CAT 1', cat2: 'CAT 2', assignment: 'Assignment', exam: 'Final Exam' }[field] || field)), 'Total', 'Grade', 'Status'],
+      ['Admission Number', 'Student Name', ...activeAssessments.map((a) => a.name), 'Total', 'Overall %', 'Grade', 'Status'],
       ...reportRows(),
     ];
     const tsv = rows.map((row) => row.map((cell) => String(cell).replace(/\t|\r?\n/g, ' ')).join('\t')).join('\n');
@@ -387,7 +558,7 @@ export default function LecturerAssessmentWorkspace({
       return;
     }
 
-    const headerCells = ['Admission Number', 'Student Name', ...visibleMarkFields.map((field) => ({ cat1: 'CAT 1', cat2: 'CAT 2', assignment: 'Assignment', exam: 'Final Exam' }[field] || field)), 'Total', 'Grade', 'Status'];
+    const headerCells = ['Admission Number', 'Student Name', ...activeAssessments.map((a) => a.name), 'Total', 'Overall %', 'Grade', 'Status'];
     reportWindow.document.write(`<!doctype html><html><head><title>${escapeHtml(selectedSubject)} Grade Sheet</title><style>body{font-family:Arial,sans-serif;color:#172033;margin:32px}h1{font-size:20px;margin:0 0 4px}p{color:#526176;margin:0 0 20px}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:left}th{background:#eff6ff;font-weight:700}@media print{body{margin:16px}}</style></head><body><h1>${escapeHtml(selectedMeta ? `${selectedMeta.code} – ${selectedMeta.title}` : selectedSubject)} Grade Sheet</h1><p>Generated ${new Date().toLocaleString()}</p><table><thead><tr>${headerCells.map((cell) => `<th>${escapeHtml(cell)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></body></html>`);
     reportWindow.document.close();
     reportWindow.focus();
@@ -486,8 +657,8 @@ export default function LecturerAssessmentWorkspace({
             <p className="mt-1 text-[11px] text-slate-500">Saved grades for this module will appear here.</p>
           </div>
         ) : (
-          <div className="h-56">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="w-full" style={{ width: '100%', height: 224, minHeight: 200 }}>
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200}>
               <BarChart layout="vertical" data={analytics?.distribution || []} margin={{ top: 10, right: 40, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
                 <XAxis type="number" allowDecimals={false} fontSize={11} />
@@ -524,6 +695,22 @@ export default function LecturerAssessmentWorkspace({
             <p className="text-xs text-slate-500">Configure CAT 1, CAT 2, Assignments, and Final Exam for this module.</p>
           </div>
         </div>
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900">Assessment management</h3>
+            <p className="text-xs text-slate-500">Configure CAT 1, CAT 2, Assignments, and Final Exam for this module.</p>
+          </div>
+          <div className="text-right text-sm text-slate-600">
+            <div>Total Weight: <span className={`font-semibold ${assessments.reduce((s, a) => s + Number(a.weight || 0), 0) !== 100 ? 'text-rose-600' : 'text-emerald-700'}`}>{assessments.reduce((s, a) => s + Number(a.weight || 0), 0)}%</span></div>
+            {(() => {
+              const total = assessments.reduce((s, a) => s + Number(a.weight || 0), 0);
+              if (total > 100) return <div className="text-rose-600 text-xs">Total weight exceeds 100% by {total - 100}%.</div>;
+              if (total < 100) return <div className="text-amber-600 text-xs">Total weight is short by {100 - total}% (suggested remaining weight for next assessment).</div>;
+              return <div className="text-emerald-600 text-xs">Total weight is 100% — good.</div>;
+            })()}
+          </div>
+        </div>
+
         {assessments.length === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 py-8 text-center text-xs text-slate-600">No assessments created.</div>
         ) : (
@@ -545,8 +732,11 @@ export default function LecturerAssessmentWorkspace({
                       {editingAssessmentId === assessment.id ? (
                         <input
                           value={assessment.name}
-                          onChange={(event) => persistAssessments(assessments.map((item) => item.id === assessment.id ? { ...item, name: event.target.value } : item))}
-                          className="w-full rounded border border-slate-200 px-2 py-1"
+                          onChange={(event) => {
+                            setAssessmentErrors((prev) => { const copy = { ...prev }; delete copy[assessment.id]; return copy; });
+                            persistAssessments(assessments.map((item) => item.id === assessment.id ? { ...item, name: event.target.value } : item));
+                          }}
+                          className={`w-full rounded px-2 py-1 ${assessmentErrors[assessment.id]?.name ? 'border-rose-400 bg-rose-50' : 'border-slate-200'}`}
                         />
                       ) : (
                         <span className="font-semibold text-slate-800">{assessment.name}</span>
@@ -558,10 +748,12 @@ export default function LecturerAssessmentWorkspace({
                         <input
                           type="number"
                           min={1}
-                          max={assessment.kind === 'FinalExam' ? AGGREGATE_EXAM_MAX : AGGREGATE_CAT_MAX}
-                          value={assessment.maxMarks}
-                          onChange={(event) => persistAssessments(assessments.map((item) => item.id === assessment.id ? { ...item, maxMarks: Number(event.target.value) || 1 } : item))}
-                          className="w-20 rounded border border-slate-200 px-2 py-1"
+                            value={assessment.maxMarks}
+                            onChange={(event) => {
+                              setAssessmentErrors((prev) => { const copy = { ...prev }; delete copy[assessment.id]; return copy; });
+                              persistAssessments(assessments.map((item) => item.id === assessment.id ? { ...item, maxMarks: Number(event.target.value) || 1 } : item));
+                            }}
+                            className={`w-20 rounded px-2 py-1 ${assessmentErrors[assessment.id]?.maxMarks ? 'border-rose-400 bg-rose-50' : 'border-slate-200'}`}
                         />
                       ) : (
                         assessment.maxMarks
@@ -588,21 +780,54 @@ export default function LecturerAssessmentWorkspace({
         <div className="flex flex-col gap-2 rounded-lg border border-slate-100 bg-slate-50 p-3 sm:flex-row sm:items-end">
           <div className="flex-1">
             <label className="text-[11px] font-semibold text-slate-600">Type</label>
-            <select value={newKind} onChange={(event) => { const kind = event.target.value as AssessmentKind; setNewKind(kind); setNewMax(getDefaultMaxForKind(kind, assessments)); }} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs">
+            <select
+              value={newKind}
+              onChange={(event) => {
+                const kind = event.target.value as AssessmentKind;
+                setNewKind(kind);
+                const defaults = ASSESSMENT_DEFAULTS[kind];
+                // compute remaining weight from existing assessments
+                const currentTotal = assessments.reduce((s, a) => s + Number(a.weight || 0), 0);
+                const remaining = Math.max(0, 100 - currentTotal);
+                const suggestedWeight = remaining > 0 ? remaining : defaults.weight;
+                setNewWeight(suggestedWeight);
+                setNewMax(defaults.max);
+              }}
+              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs"
+            >
               {KIND_OPTIONS.map((option) => <option key={option.kind} value={option.kind}>{option.label}</option>)}
             </select>
           </div>
           <div className="flex-[1.4]">
             <label className="text-[11px] font-semibold text-slate-600">Name</label>
-            <input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="Optional custom name" className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs" />
+            <input value={newName} onChange={(event) => { setNewName(event.target.value); setNewFieldErrors((p) => ({ ...p, name: false })); }} placeholder="Optional custom name" className={`mt-1 w-full rounded-lg px-2 py-2 text-xs ${newFieldErrors.name ? 'border-rose-400 bg-rose-50' : 'border-slate-200'}`} />
           </div>
           <div className="w-28">
             <label className="text-[11px] font-semibold text-slate-600">Max</label>
-            <input type="number" min={1} value={newMax} onChange={(event) => setNewMax(Number(event.target.value) || 1)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs" />
+            <input type="number" min={1} value={newMax} onChange={(event) => { setNewMax(Number(event.target.value) || 0); setNewFieldErrors((p) => ({ ...p, maxMarks: false })); }} className={`mt-1 w-full rounded-lg px-2 py-2 text-xs ${newFieldErrors.maxMarks ? 'border-rose-400 bg-rose-50' : 'border-slate-200'}`} />
           </div>
-          <button type="button" onClick={createAssessment} className="inline-flex items-center justify-center gap-1 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700">
+          <div className="w-28">
+            <label className="text-[11px] font-semibold text-slate-600">Weight %</label>
+            <input type="number" min={0} max={100} value={newWeight} onChange={(event) => { setNewWeight(Number(event.target.value) || 0); setNewFieldErrors((p) => ({ ...p, weight: false })); }} className={`mt-1 w-full rounded-lg px-2 py-2 text-xs ${newFieldErrors.weight ? 'border-rose-400 bg-rose-50' : 'border-slate-200'}`} />
+          </div>
+          <button
+            type="button"
+            onClick={createAssessment}
+            disabled={isCreateInvalid}
+            className={`inline-flex items-center justify-center gap-1 rounded-lg px-3 py-2 text-xs font-semibold text-white ${isCreateInvalid ? 'bg-slate-300 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
+          >
             <Plus className="h-3.5 w-3.5" /> Create Assessment
           </button>
+          {isCreateInvalid && (
+            <div className="text-rose-600 text-xs mt-2">
+              {newFieldErrors.name && <div>Provide a valid assessment name.</div>}
+              {newFieldErrors.maxMarks && <div>Max marks must be a number greater than 0.</div>}
+              {newFieldErrors.weight && <div>Weight must be a number greater than or equal to 0.</div>}
+              {!newFieldErrors.name && !newFieldErrors.maxMarks && !newFieldErrors.weight && (
+                <div>Please ensure all fields are valid before creating an assessment.</div>
+              )}
+            </div>
+          )}
         </div>
       </section>
 
@@ -611,7 +836,7 @@ export default function LecturerAssessmentWorkspace({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-sm font-semibold text-slate-900">Marks entry</h3>
-            <p className="text-xs text-slate-500">CAT components save into continuous assessment (max {AGGREGATE_CAT_MAX}). Final Exam saves separately (max {AGGREGATE_EXAM_MAX}).</p>
+            <p className="text-xs text-slate-500">CAT components and final exam limits are taken from the lecturer-configured assessment structure for this module.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative">
@@ -644,8 +869,11 @@ export default function LecturerAssessmentWorkspace({
                 <tr>
                   <th className="px-3 py-2.5">Admission Number</th>
                   <th className="px-3 py-2.5">Student Name</th>
-                  {visibleMarkFields.map((field) => (
-                    <th key={field} className="px-3 py-2.5 text-center">{({ cat1: 'CAT 1', cat2: 'CAT 2', assignment: 'Assignment', exam: 'Final Exam' } as Record<MarkField, string>)[field]}</th>
+                  {activeAssessments.map((a) => (
+                    <th key={a.id} className="px-3 py-2.5 text-center">
+                      <div className="font-semibold">{a.name}</div>
+                      <div className="text-[11px] text-slate-400">Max {a.maxMarks}</div>
+                    </th>
                   ))}
                   <th className="px-3 py-2.5 text-center">Total</th>
                   <th className="px-3 py-2.5 text-center">Grade</th>
@@ -654,28 +882,31 @@ export default function LecturerAssessmentWorkspace({
                 </tr>
               </thead>
               <tbody>
-                {filteredStudents.map((student) => {
+                  {filteredStudents.map((student) => {
                   const marks = resolveBreakdown(student);
                   const fieldErrors = validateMarkBreakdown(marks, assessments);
                   const total = sumValidMarks(marks, assessments);
+                  const totalMax = activeAssessments.reduce((sum, a) => sum + Number(a.maxMarks || 0), 0);
+                  const overallPct = calculateOverallPercentage(marks, assessments);
                   const hasInvalid = Object.keys(fieldErrors).length > 0;
                   const graded = !!student.grades[selectedSubject];
                   return (
                     <tr key={student.id} className="border-b border-slate-100 last:border-0">
                       <td className="px-3 py-2.5 font-mono font-semibold text-slate-800">{student.admissionNo}</td>
                       <td className="px-3 py-2.5 font-medium text-slate-800">{student.name}</td>
-                      {visibleMarkFields.map((field) => {
-                        const max = maxMarksForField(assessments, field);
+                      {activeAssessments.map((a) => {
+                        const field = assessmentFieldForKind(a.kind);
+                        const max = Number(a.maxMarks || maxMarksForField(assessments, field));
                         const displayValue = Number.isFinite(marks[field]) ? marks[field] : '';
                         return (
-                          <td key={field} className="px-3 py-2.5 text-center">
+                          <td key={a.id} className="px-3 py-2.5 text-center">
                             <input
                               type="number"
                               min={0}
                               max={max}
                               step="any"
                               value={displayValue}
-                              onChange={(event) => updateDraft(student.id, field, event.target.value)}
+                              onChange={(event) => updateDraft(student.id, a.id, event.target.value)}
                               aria-invalid={Boolean(fieldErrors[field])}
                               title={fieldErrors[field]}
                               className={`w-16 rounded border px-2 py-1 text-center font-mono outline-none focus:ring-2 ${fieldErrors[field] ? 'border-rose-400 bg-rose-50 focus:ring-rose-100' : 'border-slate-200 focus:border-blue-400 focus:ring-blue-100'}`}
@@ -684,10 +915,13 @@ export default function LecturerAssessmentWorkspace({
                         );
                       })}
                       <td className={`px-3 py-2.5 text-center font-semibold ${hasInvalid ? 'text-slate-400' : 'text-slate-900'}`}>
-                        {total}
+                        {hasInvalid ? '—' : `${total} / ${totalMax || 0}`}
                       </td>
                       <td className={`px-3 py-2.5 text-center font-semibold ${hasInvalid ? 'text-slate-400' : 'text-slate-900'}`}>
-                        {hasInvalid ? '—' : letterGrade(total)}
+                        {hasInvalid ? '—' : `${overallPct.toFixed(2)}%`}
+                      </td>
+                      <td className={`px-3 py-2.5 text-center font-semibold ${hasInvalid ? 'text-slate-400' : 'text-slate-900'}`}>
+                        {hasInvalid ? '—' : letterGrade(overallPct)}
                       </td>
                       <td className="px-3 py-2.5 text-center">
                         <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${graded ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
@@ -703,6 +937,15 @@ export default function LecturerAssessmentWorkspace({
                         >
                           {saveFlash === student.id ? 'Saved' : 'Save'}
                         </button>
+                        {' '}
+                        <button
+                          type="button"
+                          onClick={() => setPublishModal({ open: true, student })}
+                          disabled={hasInvalid || Boolean(validateAssessmentWeights(assessments))}
+                          className="ml-2 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Publish Result
+                        </button>
                       </td>
                     </tr>
                   );
@@ -712,6 +955,25 @@ export default function LecturerAssessmentWorkspace({
           </div>
         )}
       </section>
+      {/* Publish confirmation modal */}
+      {publishModal.open && publishModal.student && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setPublishModal({ open: false, student: null })} />
+          <div className="relative max-w-md w-full rounded-xl p-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-lg">
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white">Confirm Publish Result</h3>
+            <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">Are you sure you want to publish this student's result? This action will make the result visible to the student.</p>
+            <div className="mt-4 text-sm">
+              <div className="text-slate-700 dark:text-slate-200"><span className="font-semibold">Student:</span> {publishModal.student.name}</div>
+              <div className="text-slate-700 dark:text-slate-200"><span className="font-semibold">Admission No:</span> {publishModal.student.admissionNo}</div>
+              <div className="text-slate-700 dark:text-slate-200"><span className="font-semibold">Module:</span> {selectedMeta ? `${selectedMeta.code} – ${selectedMeta.title}` : selectedSubject}</div>
+            </div>
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" onClick={() => setPublishModal({ open: false, student: null })} className="px-3 py-2 rounded-lg bg-white border border-slate-200 text-sm text-slate-700 hover:bg-slate-50 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300">Cancel</button>
+              <button type="button" onClick={confirmPublish} className="px-3 py-2 rounded-lg bg-emerald-600 text-sm font-semibold text-white hover:bg-emerald-700">Confirm Publish</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

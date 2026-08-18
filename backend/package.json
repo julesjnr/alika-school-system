@@ -1,5 +1,5 @@
 {
-  "name": "zenti-school-portal-backend",
+  "name": "alika-school-portal-backend",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -8,7 +8,7 @@
     "build": "esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "lint": "tsc --noEmit",
-    "test": "tsx --test src/db/sqlSafety.test.ts src/marksValidation.test.ts src/authSession.test.ts",
+    "test": "tsx --test src/db/sqlSafety.test.ts src/marksValidation.test.ts src/authSession.test.ts src/studentLookup.test.ts src/publish_workflow.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx ./src/db/migrate.ts",
     "db:push": "drizzle-kit push",

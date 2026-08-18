@@ -371,10 +371,10 @@ export default function DashboardShowcase({
                       <div className="relative">
                         <span className="absolute -left-[30px] top-1 w-2.5 h-2.5 bg-emerald-600 border-2 border-white dark:border-slate-900 rounded-full" />
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1">
-                          <h4 className="text-xs font-bold text-slate-850 dark:text-slate-100">Zenti Annual Hackathon 2026 Pitching</h4>
+                          <h4 className="text-xs font-bold text-slate-850 dark:text-slate-100">Alika Medical Healthcare Symposium & Practical Clinic</h4>
                           <span className="text-[9px] font-mono text-slate-400 bg-slate-50 px-2 py-0.5 rounded border border-slate-200/50">July 18, 2026</span>
                         </div>
-                        <p className="text-[10px] text-slate-500 mt-0.5">Student development project panels present before guest judges. Awards ceremony starts at 04:00 PM.</p>
+                        <p className="text-[10px] text-slate-500 mt-0.5">Caregiver and Nurse Assistant trainees present clinical case studies before external examiners.</p>
                       </div>
 
                       {/* Event 3 */}
@@ -1027,7 +1027,7 @@ export default function DashboardShowcase({
       {/* Footer copyright */}
       <footer className="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 py-4 mt-12 transition-colors">
         <div className="max-w-7xl mx-auto px-4 text-center text-[10px] text-slate-400 font-mono">
-          Zenti School Management System • Dashboard Layout showcase • Developed for Gemini 3.5 Flash Model Review
+          Alika Medical Training College & Medical Center • Dashboard Showcase
         </div>
       </footer>
     </div>

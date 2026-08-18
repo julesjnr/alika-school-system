@@ -1,8 +1,8 @@
-# Zenti Portal — Microsoft SQL Server Database Architecture
+# Alika School Portal — Microsoft SQL Server Database Architecture
 
 This document outlines the production-ready relational database schema design (Transact-SQL / T-SQL dialect) and analytical queries crafted specifically for **Microsoft SQL Server** and **SQL Server Management Studio (SSMS)**.
 
-The schema mirrors the core entities of the Zenti Multi-Role Institutional Management Platform, enforcing rigorous relational constraints, indexing, and high-performance querying in the SQL Server ecosystem.
+The schema mirrors the core entities of the Alika Multi-Role Institutional Management Platform, enforcing rigorous relational constraints, indexing, and high-performance querying in the SQL Server ecosystem.
 
 ---
 

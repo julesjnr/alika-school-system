@@ -182,13 +182,13 @@ export default function StudentTranscript({
                   </div>
                   <div>
                     <h1 className="text-xl font-extrabold tracking-tight uppercase text-slate-900" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
-                      Zenti Metropolitan University
+                      Alika Medical Training College &amp; Medical Center
                     </h1>
                     <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-                      Empowering Minds • Innovating Futures
+                      Training College &amp; Medical Center
                     </p>
                     <p className="text-[9px] text-slate-400 mt-1">
-                      Mombasa Road Office Park, Nairobi, Kenya | Web: zenti.ac.ke | Email: registry@zenti.ac.ke
+                      ACK St. Peters Church Ndunyu Compound, Wangige Town, Kiambu County | Web: www.alikamedical.co.ke | Email: info@alikamedical.co.ke
                     </p>
                   </div>
                 </div>
@@ -225,8 +225,8 @@ export default function StudentTranscript({
                   <span className="font-bold text-slate-900">{getProgramOfStudy(student.admissionNo)}</span>
                 </div>
                 <div className="col-span-2">
-                  <span className="text-[9px] text-slate-400 font-bold uppercase block">Enrolled Campus Faculties</span>
-                  <span className="font-bold text-slate-700">School of Computing, Artificial Intelligence & Engineering</span>
+                  <span className="text-[9px] text-slate-400 font-bold uppercase block">Enrolled Faculty</span>
+                  <span className="font-bold text-slate-700">Medical Training Faculty</span>
                 </div>
               </div>
 
@@ -316,7 +316,7 @@ export default function StudentTranscript({
                         Electronic Authentication Seal
                       </span>
                       <p className="text-[10px] text-slate-500 leading-relaxed">
-                        This document carries a digital signature of registry clearance. Scan the QR code to verify student credential integrity against university ledger databases.
+                        This document carries a digital signature of registry clearance. Scan the QR code to verify student credential integrity against institutional records.
                       </p>
                     </div>
 
@@ -384,7 +384,7 @@ export default function StudentTranscript({
                 </div>
 
                 <div className="w-full border-t border-slate-400 pt-1 text-center">
-                  <p className="font-bold text-slate-805 text-[11px]">Prof. Beatrice Wanja</p>
+                  <p className="font-bold text-slate-805 text-[11px]">Academic Registrar</p>
                   <p className="text-[9px] text-slate-400 uppercase tracking-widest font-black mt-0.5">Office of the Registrar</p>
                 </div>
               </div>

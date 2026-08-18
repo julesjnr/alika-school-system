@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  AGGREGATE_CAT_MAX,
-  AGGREGATE_EXAM_MAX,
   continuousAssessmentTotal,
   isMarkWithinMax,
   maxMarksForField,
@@ -28,6 +26,13 @@ describe("marksValidation — field max from assessments", () => {
 });
 
 describe("marksValidation — valid / boundary values", () => {
+  it("requires configured max marks before accepting entry", () => {
+    const errors = validateMarkBreakdown({ cat1: 5, cat2: 5, assignment: 5, exam: 10 }, []);
+    assert.equal(maxMarksForField([], "cat1"), 0);
+    assert.equal(errors.cat1, "Enter a mark from 0 to 0.");
+    assert.equal(errors.exam, "Enter a mark from 0 to 0.");
+  });
+
   it("accepts 0 and exact maximum", () => {
     const marks = { cat1: 0, cat2: 10, assignment: 10, exam: 70 };
     assert.deepEqual(validateMarkBreakdown(marks, assessments), {});
@@ -82,17 +87,23 @@ describe("marksValidation — invalid values do not contribute to total", () => 
 });
 
 describe("marksValidation — aggregate grade for API/DB", () => {
-  it("enforces schema aggregate bounds", () => {
-    assert.equal(validateAggregateGrade(30, 70).ok, true);
-    assert.equal(validateAggregateGrade(0, 0).ok, true);
-    assert.equal(validateAggregateGrade(31, 70).ok, false);
-    assert.equal(validateAggregateGrade(30, 71).ok, false);
-    assert.equal(validateAggregateGrade(-1, 10).ok, false);
-    assert.equal(validateAggregateGrade("x", 10).ok, false);
+  it("uses lecturer-defined aggregate bounds when configured", () => {
+    const configured = [
+      { kind: "CAT1", maxMarks: 10 },
+      { kind: "CAT2", maxMarks: 10 },
+      { kind: "Assignment", maxMarks: 10 },
+      { kind: "FinalExam", maxMarks: 70 },
+    ];
+    assert.equal(validateAggregateGrade(30, 70, configured).ok, true);
+    assert.equal(validateAggregateGrade(0, 0, configured).ok, true);
+    assert.equal(validateAggregateGrade(31, 70, configured).ok, false);
+    assert.equal(validateAggregateGrade(30, 71, configured).ok, false);
+    assert.equal(validateAggregateGrade(-1, 10, configured).ok, false);
+    assert.equal(validateAggregateGrade("x", 10, configured).ok, false);
   });
 
-  it("builds continuous total from components", () => {
-    assert.equal(continuousAssessmentTotal({ cat1: 10, cat2: 10, assignment: 10 }), AGGREGATE_CAT_MAX);
-    assert.equal(AGGREGATE_EXAM_MAX, 70);
+  it("requires explicit assessment maxima before a CAT total is accepted", () => {
+    assert.equal(continuousAssessmentTotal({ cat1: 10, cat2: 10, assignment: 10 }, []), 0);
+    assert.equal(validateAggregateGrade(10, 70, []).ok, false);
   });
 });

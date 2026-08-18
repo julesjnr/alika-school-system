@@ -1,143 +1,176 @@
-<<<<<<< HEAD
-# Zenti Portal — School Management System
-A full-stack, multi-role school management platform. It brings academics, finance, and the library under one roof, with a dashboard tailored to each type of user.
-=======
+# Alika Medical Training College & Medical Center — Portal System
 
-# Zenti Portal — School Management System
+A full-stack, multi-role institutional management platform for **Alika Medical Training College & Medical Center** located in Wangige, Kiambu County, Kenya. It brings medical training academics, community outpatient services, finance, and library services together with tailored portals for each user role.
 
-A full-stack, multi-role school management platform. It brings academics, finance, and the library under one roof, with a dashboard tailored to each type of user.
+## Institutional Overview
 
+- **Institution:** Alika Medical Training College & Medical Center
+- **Category:** Technical and Vocational College (TVC) & Licensed Outpatient Clinic
+- **Physical Address:** ACK St. Peters Church Ndunyu Compound, Wangige Town, Kabete Ward, Kabete Sub-County, Kiambu County, Kenya
+- **Telephone:** +254 721 578 290 / +254 723 940 093
+- **Email:** info@alikamedical.co.ke
+- **Website:** http://www.alikamedical.co.ke/
+- **Operating Hours:** Monday – Saturday: 9:00 AM – 5:00 PM | Sunday: Closed
 
+## Two Connected Functions
 
->>>>>>> 07d6213a18a425ef6ac2efb3aadc6974a0115e3c
+1. **Medical Training College** — Vocational and technical certificate programs in:
+   - Certificate in Caregiver (4 Months, 10 Core Modules)
+   - Certificate in Nurse Assistant (4 Months)
+   - Certificate in Homecare Assistant (4 Months)
+2. **Outpatient Medical Center** — Licensed healthcare facility providing:
+   - General Outpatient Consultation
+   - Family Planning & Reproductive Health
+   - Infection Prevention & Control
+   - Chronic Disease Management Support
+   - Triage & Vital Signs Monitoring
+   - Supervised Clinical Practical Training
 
-## What it does
+## System Capabilities
 
-Zenti Portal handles the day-to-day running of an institution:
-<<<<<<< HEAD
-=======
+- **Academics & Clinical Training** — Program catalog, student enrollment, clinical attachment tracking, attendance, grading, CAT/Exam marks, and transcript generation.
+- **Finance & Ledgers** — Student fee statements, debit/credit ledger entries, voucher tracking, and double-entry accounting.
+- **Medical Library** — Book catalog, physical turnstile gate logs, digital reading lists, reviews, and reservations.
+- **Role-Based Portals** — Dedicated access gateways for Students, Lecturers, Accountants, Librarians, and Administrators.
+- **Authentication & Security** — JWT session management, refresh token rotation, active session invalidation, RBAC authorization, and secure password recovery.
 
+## User Roles
 
-
->>>>>>> 07d6213a18a425ef6ac2efb3aadc6974a0115e3c
-
-- **Academics** — course catalog, student enrollment, attendance, grading, exam papers, and degree progress tracking
-- **Finance** — student invoices, payments, ledgers, and expense/requisition tracking for the accounts team
-- **Library** — book catalog, loans, reservations, reading lists, reviews, and gate logs
-- **Admin tools** — system stats, password reset approvals, and account management
-
-## Who uses it
-
-The system supports five roles, each with its own dashboard and permissions:
-<<<<<<< HEAD
-
-| Role | Can do |
-=======
-| what the system Can do |
->>>>>>> 07d6213a18a425ef6ac2efb3aadc6974a0115e3c
+| Role | Access & Functionality |
 |---|---|
-| **Student** | View courses, grades, invoices, attendance, and the library |
-| **Lecturer** | Manage courses, grade students, log office hours, publish research |
-| **Accountant** | Handle invoices, payments, and expenses |
-| **Librarian** | Manage the book catalog, loans, and reservations |
-| **Admin** | Oversee everything — users, system stats, and access requests |
+| **Student** | Academic progress, module grades, fee ledgers, unit registration, timetable, and library |
+| **Lecturer** | Assessment grading, attendance telemetry, class lists, and curriculum reading lists |
+| **Accountant** | Invoices, payment reconciliation, vouchers, departmental budgets, and payroll |
+| **Librarian** | Catalog management, book loans, reservations, gate logs, and digital assets |
+| **Admin** | Master control, system diagnostics, user management, audit trails, and access recovery |
 
-## Tech stack
+## Tech Stack
 
 **Frontend**
 - React 19 + TypeScript
 - Vite
 - Tailwind CSS
-- Recharts (for dashboard charts)
+- Recharts & Lucide Icons
 
 **Backend**
 - Node.js + Express
 - Drizzle ORM
-- PostgreSQL (via Supabase)
-- JWT-based authentication with role-based access control (RBAC)
+- PostgreSQL (Supabase / Cloud SQL / Self-hosted)
+- JWT + Refresh Token Authentication & RBAC
 
-**Deployment**
-- Vercel (frontend as static build, backend as a serverless function)
+---
 
-## Project structure
+## Production Deployment & Packaging
 
-```
-├── frontend/          # React + Vite client app
-│   └── src/
-│       ├── components/    # Dashboards, login, library, finance UIs
-│       ├── App.tsx
-│       └── types.ts
-├── backend/           # Express API server
-│   ├── server.ts           # All API routes
-│   ├── src/db/              # Drizzle schema & Supabase client
-│   └── database_design.md  # Full relational schema reference
-├── api/               # Vercel serverless entry point (wraps the backend)
-└── vercel.json        # Deployment/routing config
+### 1. Environment Configuration
+
+Copy the production environment template and supply real production credentials:
+
+```bash
+cp .env.example .env
 ```
 
-## Getting started
+Ensure the following critical variables are configured in `.env`:
+- `NODE_ENV=production`
+- `PORT=3000`
+- `DATABASE_URL=postgresql://<user>:<password>@<host>:5432/<dbname>?sslmode=require`
+- `JWT_SECRET=<strong-random-64-character-secret>`
+- `APP_URL=https://portal.alikamedical.co.ke`
+- `CORS_ORIGINS=https://portal.alikamedical.co.ke`
+- `RESEND_API_KEY=<your-resend-api-key>` (if email notifications/resets are enabled)
 
-**Prerequisites:** Node.js and a Supabase (PostgreSQL) project.
+---
 
-1. **Clone and install**
+### 2. Standard Production Build & Run (Node.js / VPS / Process Manager)
+
+#### Step A: Install dependencies
+```bash
+npm ci
+```
+
+#### Step B: Run database migrations
+```bash
+npm run db:migrate
+```
+
+#### Step C: Build for production
+```bash
+npm run build
+```
+This compiles the frontend single-page application into `frontend/dist` and bundles the backend server into `backend/dist/server.cjs`.
+
+#### Step D: Start production server
+```bash
+npm start
+```
+The server will start and serve both the API endpoints (`/api/*`) and the compiled frontend application on the designated `PORT` (default `3000`).
+
+---
+
+### 3. Docker Deployment
+
+#### Build & Run with Docker Compose
+```bash
+# Start application and PostgreSQL services in detached mode
+docker compose up --build -d
+
+# Check service logs
+docker compose logs -f app
+```
+
+#### Run Database Migrations in Docker
+```bash
+docker compose exec app npm run db:migrate
+```
+
+#### Standalone Docker Image Build
+```bash
+# Build production image
+docker build -t alika-school-portal:latest .
+
+# Run container with persistent uploads volume
+docker run -d \
+  --name alika_portal \
+  -p 3000:3000 \
+  --env-file .env \
+  -v alika_uploads:/app/uploads \
+  alika-school-portal:latest
+```
+
+---
+
+### 4. Health Check
+
+The backend includes an unauthenticated health check endpoint:
+```bash
+curl -i http://localhost:3000/api/health
+```
+Expected response: `HTTP 200 OK` with JSON `{ "status": "ok", "timestamp": "..." }`.
+
+---
+
+## Development Workflow
+
+1. **Install Dependencies**
    ```bash
-   git clone https://github.com/julesjnr/School-Management-System.git
-   cd School-Management-System
    npm install
    ```
 
-2. **Set up environment variables**
-
-   Copy `.env.example` to `.env` and fill in your own values:
-   ```bash
-   cp .env.example .env
-   ```
-   You'll need a Supabase URL/key and database connection details.
-
-3. **Run the app** (starts backend and frontend together)
+2. **Run in Development Mode**
    ```bash
    npm run dev
    ```
-   - Frontend runs on `http://localhost:3000`
-   - Backend API runs on `http://localhost:8000`
-   - Frontend runs on Vite's dev server, proxying API calls to the backend
+   - Frontend runs on `http://localhost:5173` (or configured dev port)
+   - Backend API runs on `http://localhost:3000`
 
-## Useful scripts
+## Useful Commands Reference
 
-| Command | What it does |
+| Command | Description |
 |---|---|
-| `npm run dev` | Run backend + frontend together |
-| `npm run dev:backend` | Run only the API server |
-| `npm run dev:frontend` | Run only the React app |
-| `npm run build` | Build both for production |
-| `npm run lint` | Type-check both frontend and backend |
-
-Inside `backend/`, you also get:
-- `npm run db:generate` — generate Drizzle migrations
-- `npm run db:push` — push schema changes to the database
-- `npm run db:studio` — open Drizzle Studio to browse your data
-
-## API overview
-
-The backend exposes a REST API under `/api`, covering:
-- `auth` — login, passcode changes, password reset requests
-- `students`, `lecturers`, `courses` — core academic data
-- `student-enrollments`, `student-attendance` — coursework tracking
-- `invoices`, `payments` — finance
-- `books`, `loans`, `gate-logs` — library
-- `admin` — system stats and reset-request approvals
-
-Full data model (tables, keys, and constraints) is documented in `backend/database_design.md`.
-
-## Notes
-
-- Data can sync to Supabase (Postgres) in addition to the local JSON store used for quick local testing (`db_store.json`).
-- Authentication uses JWTs with bcrypt-hashed passwords and role-based endpoint protection.
-<<<<<<< HEAD
-=======
-
-1. Install dependencies:
-
-3. Run the app:   `npm install`
-2. Set 
-   `npm run dev`
+| `npm run build` | Build frontend and backend distribution bundles for production |
+| `npm start` | Start the production server |
+| `npm run db:migrate` | Apply database migrations via Drizzle ORM |
+| `npm run db:push` | Push schema changes to database (development only) |
+| `npm run dev` | Start development servers concurrently |
+| `npm run lint` | TypeScript type-checking across all workspaces |
+| `npm run test` | Execute test suites across workspaces |

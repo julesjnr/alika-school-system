@@ -443,7 +443,7 @@ export default function ApplicationSubmittedPage({
                 <MapPin className="w-3.5 h-3.5 text-slate-400" /> County / Nationality
               </span>
               <p className="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">
-                {data.county || data.nationality || 'Nairobi'}
+                {data.county || data.nationality || 'Kiambu'}
               </p>
             </div>
 
@@ -497,13 +497,13 @@ export default function ApplicationSubmittedPage({
               </p>
             </div>
 
-            {/* Campus */}
+            {/* Campus / Location */}
             <div className="rounded-2xl bg-slate-50 dark:bg-slate-800/40 p-4 border border-slate-100 dark:border-slate-800/80">
               <span className="text-[11px] uppercase tracking-wider font-bold text-slate-400 dark:text-slate-500 flex items-center gap-1.5">
-                <Landmark className="w-3.5 h-3.5 text-slate-400" /> Campus
+                <Landmark className="w-3.5 h-3.5 text-slate-400" /> Location / Campus
               </span>
               <p className="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">
-                {data.campus || 'Main Campus'}
+                {data.campus || 'Wangige, Kiambu'}
               </p>
             </div>
 

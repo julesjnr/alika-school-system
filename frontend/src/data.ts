@@ -9,14 +9,11 @@ export const initialRequisitions: Requisition[] = [];
 export const initialNews: NewsPost[] = [];
 export const initialTestimonies: Testimony[] = [];
 
-export const subjectMap: Record<string, string> = {
-  'CS-101-Web': 'Web Technologies II (CS)',
-  'CS-101-Algo': 'Design & Analysis of Algorithms (CS)',
-  'DS-202-ML': 'Intro to Machine Learning (DS)',
-  'DS-202-Stats': 'Computational Statistics (DS)',
-  'CYBER-310-Crypto': 'Applied Cryptography & Signatures (CYBER)',
-  'EE-201-Circuits': 'Analog Circuit Analysis (EE)'
-};
+export const subjectMap: Record<string, string> = {};
+
+// The authoritative academic catalogue is loaded from PostgreSQL through the
+// backend API. This map is hydrated at runtime and should never contain a
+// hardcoded production curriculum list.
 
 export const initialReviews: CourseReview[] = [];
 export const initialBooks: Book[] = [];
@@ -29,3 +26,6 @@ export const initialExamPapers: ExamPaper[] = [];
 export const initialTeacherResources: TeacherResource[] = [];
 export const initialLibraryGateLogs: LibraryGateLog[] = [];
 export const initialNotifications: InAppNotification[] = [];
+
+// Do not maintain an authoritative hardcoded academic map. The PostgreSQL-backed
+// course list is the source of truth for all real academic data in the app.

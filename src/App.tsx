@@ -388,7 +388,7 @@ export default function App() {
   };
 
   const triggerInvoiceAlert = (student: Student, invoice: { invoiceNo: string; description: string; amount: number; date: string }) => {
-    const to = `${student.name.toLowerCase().replace(/\s+/g, '.')}@zenti.edu`;
+    const to = `${student.name.toLowerCase().replace(/\s+/g, '.')}@alikamedical.co.ke`;
     const subject = `⚠️ [Invoice Generated] New Billing Invoice #${invoice.invoiceNo}`;
     const amountFormatted = Math.abs(invoice.amount).toLocaleString();
     const isCredit = invoice.amount < 0;
@@ -405,13 +405,13 @@ Ledger Entry Details:
 Please log in to your student portal to clear any outstanding balances before exam registration periods.
 
 Best regards,
-Zenti Finance Department`;
+Alika Medical Finance Department`;
 
     sendMockEmailAlert(to, student.name, subject, body, 'invoice');
   };
 
   const triggerGradeAlert = (student: Student, subjectCode: string, grade: Grade) => {
-    const to = `${student.name.toLowerCase().replace(/\s+/g, '.')}@zenti.edu`;
+    const to = `${student.name.toLowerCase().replace(/\s+/g, '.')}@alikamedical.co.ke`;
     const subject = `🎓 [Grade Posted] New Grade for Unit ${subjectCode}`;
     const totalScore = (grade.cat || 0) + (grade.exam || 0);
     let letter = 'F';
@@ -432,7 +432,7 @@ Grading Summary:
 Log in to your Student Dashboard to view your full unofficial transcript.
 
 Best regards,
-Zenti Academic Registrar`;
+Alika Medical Academic Registrar`;
 
     sendMockEmailAlert(to, student.name, subject, body, 'grade_posted');
   };
@@ -446,7 +446,7 @@ Zenti Academic Registrar`;
         if (loan.patronRole === 'student') {
           const student = students.find(s => s.id === loan.patronId);
           if (student) {
-            const to = `${student.name.toLowerCase().replace(/\s+/g, '.')}@zenti.edu`;
+            const to = `${student.name.toLowerCase().replace(/\s+/g, '.')}@alikamedical.co.ke`;
             const subject = `📚 [Overdue Warning] Library Book: "${loan.bookTitle}" is PAST DUE`;
             
             // Check if alert for this exact loan id is already sent in mockEmails
@@ -464,7 +464,7 @@ Due Date: ${loan.dueDate} (OVERDUE)
 Overdue fines are accumulating at a rate of KES 50.00 per day. Please return the book to the Library HQ immediately to prevent account suspension.
 
 Best regards,
-Zenti Library Services`;
+Alika Medical Library Services`;
 
               sendMockEmailAlert(to, student.name, subject, body, 'book_due');
               sentCount++;

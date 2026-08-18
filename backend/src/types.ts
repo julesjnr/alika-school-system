@@ -117,8 +117,8 @@ export interface PayrollRecord {
 }
 
 export interface Grade {
-  cat: number;   // Max 30
-  exam: number;  // Max 70
+  cat: number;
+  exam: number;
 }
 
 export interface Student {

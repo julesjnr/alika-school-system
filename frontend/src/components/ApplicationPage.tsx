@@ -548,7 +548,7 @@ export default function ApplicationPage({ courses, onCancel, onSubmitted }: Appl
               <div className="space-y-4 text-sm text-blue-100">
                 <p className="flex items-start gap-3"><CheckCircle2 className="w-5 h-5 text-emerald-200 mt-1" /> Application review starts within 3 business days.</p>
                 <p className="flex items-start gap-3"><CheckCircle2 className="w-5 h-5 text-emerald-200 mt-1" /> Upload clear copies of your KCSE certificate and ID.</p>
-                <p className="flex items-start gap-3"><CheckCircle2 className="w-5 h-5 text-emerald-200 mt-1" /> Need help? admissions@zenti.school.</p>
+                <p className="flex items-start gap-3"><CheckCircle2 className="w-5 h-5 text-emerald-200 mt-1" /> Need help? info@alikamedical.co.ke.</p>
               </div>
             </div>
             <div className="mt-10 rounded-3xl bg-slate-950/20 border border-slate-800 p-5 text-sm text-slate-100">
@@ -557,11 +557,11 @@ export default function ApplicationPage({ courses, onCancel, onSubmitted }: Appl
               <div className="mt-5 space-y-3 text-slate-200">
                 <div>
                   <span className="block text-xs uppercase tracking-[0.2em] text-slate-400">Email</span>
-                  admissions@zenti.school
+                  info@alikamedical.co.ke
                 </div>
                 <div>
                   <span className="block text-xs uppercase tracking-[0.2em] text-slate-400">Phone</span>
-                  +254 700 000 000
+                  +254 721 578 290 / +254 723 940 093
                 </div>
                 {/* Accepted files info moved next to document upload fields */}
               </div>

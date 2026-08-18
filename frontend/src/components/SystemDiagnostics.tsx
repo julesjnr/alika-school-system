@@ -1081,8 +1081,8 @@ export default function SystemDiagnostics({
               </div>
 
               <div className="space-y-1 font-mono text-xs">
-                <div><span className="text-indigo-300 font-bold">Mail Gateway Host:</span> <span className="text-white">smtp.mockservice.zenti.edu</span></div>
-                <div><span className="text-indigo-300 font-bold">From:</span> <span className="text-white">no-reply@zenti.edu</span></div>
+                <div><span className="text-indigo-300 font-bold">Mail Gateway Host:</span> <span className="text-white">smtp.mockservice.alikamedical.co.ke</span></div>
+                <div><span className="text-indigo-300 font-bold">From:</span> <span className="text-white">no-reply@alikamedical.co.ke</span></div>
                 <div><span className="text-indigo-300 font-bold">To:</span> <span className="text-white">"{selectedEmailToView.recipientName}" &lt;{selectedEmailToView.to}&gt;</span></div>
                 <div><span className="text-indigo-300 font-bold">Timestamp:</span> <span className="text-white">{selectedEmailToView.sentAt}</span></div>
                 <div><span className="text-indigo-300 font-bold">Subject:</span> <span className="text-emerald-300 font-extrabold">{selectedEmailToView.subject}</span></div>

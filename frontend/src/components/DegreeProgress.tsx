@@ -121,7 +121,7 @@ export default function DegreeProgress({
             <GraduationCap className="w-6 h-6 text-blue-600" />
           </div>
           <div>
-            <h3 className="text-sm font-bold text-slate-850 font-display">Academic Degree Progress Summary</h3>
+            <h3 className="text-sm font-bold text-slate-850 font-display">Academic Program Progress Summary</h3>
             <p className="text-[11px] text-slate-500 font-mono font-semibold uppercase">{program.name}</p>
           </div>
         </div>
@@ -308,14 +308,14 @@ export default function DegreeProgress({
             <div className="bg-blue-50/50 rounded-xl border border-blue-100 p-3.5 flex items-start gap-3">
               <Sparkles className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
               <div className="space-y-1">
-                <span className="font-bold text-blue-800 text-[11px] block">Zenti Academic Pathways Assistant Suggestion</span>
+                <span className="font-bold text-blue-800 text-[11px] block">Alika Academic Pathways Assistant Suggestion</span>
                 <p className="text-[10.5px] leading-relaxed text-blue-700">
                   {completionPercentage < 40 ? (
-                    "Welcome to your degree pathway! Try to build solid foundational momentum. Register for required first-year core modules and keep an eye on your continuous assessment tests (CATs)."
+                    "Welcome to your certificate program pathway! Try to build solid foundational momentum. Register for required core modules and keep an eye on your continuous assessment tests (CATs)."
                   ) : completionPercentage < 75 ? (
-                    `Excellent! You have reached ${completionPercentage}% degree completion. Focus on maintaining a strong core track GPA. Schedule office hours with your lecturers for advisory consultation soon.`
+                    `Excellent! You have reached ${completionPercentage}% program completion. Focus on maintaining a strong core track GPA. Schedule office hours with your instructors for advisory consultation soon.`
                   ) : (
-                    "Almost at the finish line! You've audited and cleared the majority of your curriculum credits. Ensure your pending invoices are settled to request graduation clearance and certified transcripts."
+                    "Almost at the finish line! You've audited and cleared the majority of your curriculum credits. Ensure your pending invoices are settled to request completion clearance and certified transcripts."
                   )}
                 </p>
               </div>

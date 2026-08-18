@@ -66,7 +66,11 @@ export function getDefaultPasswordForRole(role: string): string {
   if (fromEnv && fromEnv.trim()) {
     return fromEnv.trim();
   }
-  // Never fall back to well-known demo passwords — generate a one-time secret.
+  // Intended bootstrap default for the seeded master admin only.
+  // Other roles still get a one-time secret when no env default is configured.
+  if (role === 'admin') {
+    return 'admin123';
+  }
   return crypto.randomBytes(12).toString('base64url');
 }
 
@@ -272,13 +276,13 @@ export async function migrateAuthSchemaAndData(inMemoryDb?: any): Promise<void> 
       Boolean(email && existingIdentities.has(email.trim().toLowerCase()));
 
     // 3. Migrate Master Admin User (skip if already migrated, to avoid overwriting a changed password)
-    const existingAdmin = hasExistingIdentity('admin', 'admin@zenti.edu');
+    const existingAdmin = hasExistingIdentity('admin', 'admin@alikamedical.co.ke');
     if (!existingAdmin) {
       const adminPass = getDefaultPasswordForRole('admin');
       const adminHash = hashPassword(adminPass);
       await upsertUserAuthRecord({
         username: 'admin',
-        email: 'admin@zenti.edu',
+        email: 'admin@alikamedical.co.ke',
         passwordHash: adminHash,
         role: 'admin',
         roleId: 'admin',
@@ -286,10 +290,10 @@ export async function migrateAuthSchemaAndData(inMemoryDb?: any): Promise<void> 
         mustChangePassword: !process.env.ADMIN_PASSCODE && !process.env.DEFAULT_ADMIN_PASSWORD,
       });
       existingIdentities.add('admin');
-      existingIdentities.add('admin@zenti.edu');
+      existingIdentities.add('admin@alikamedical.co.ke');
       if (!process.env.ADMIN_PASSCODE && !process.env.DEFAULT_ADMIN_PASSWORD) {
         console.warn(
-          '[auth] Admin account created with a generated password. Set ADMIN_PASSCODE (or DEFAULT_ADMIN_PASSWORD) and reset the admin user, or complete first-login password change.'
+          '[auth] Admin account created with the bootstrap default password. Set ADMIN_PASSCODE (or DEFAULT_ADMIN_PASSWORD) for production, and complete first-login password change.'
         );
       }
     }
@@ -431,6 +435,11 @@ export async function authenticateUser(params: {
   } catch (e) {}
 
   const profileId = user.role_id || user.username || String(user.id);
+  // Issue a normal authenticated session even when a password change is required.
+  // /api/auth/change-password is JWT-protected and reuses this same token/session.
+  const token = issueAccessToken(profileId, userRole, user.email, jwtSecret, user.role_id, user.session_version || 0);
+  const refreshToken = issueRefreshToken(profileId, userRole, user.email, jwtSecret, user.role_id, user.session_version || 0);
+
   // Check if password change is required on first login
   if (user.must_change_password === true) {
     return {
@@ -441,13 +450,11 @@ export async function authenticateUser(params: {
       username: user.username,
       role: userRole,
       email: user.email,
+      token,
+      refreshToken,
       message: "Password change is required on first login."
     };
   }
-
-  // Generate JWT token
-  const token = issueAccessToken(profileId, userRole, user.email, jwtSecret, user.role_id, user.session_version || 0);
-  const refreshToken = issueRefreshToken(profileId, userRole, user.email, jwtSecret, user.role_id, user.session_version || 0);
 
   // Load user profile if profile loader function is provided
   let profileObj: any = null;
@@ -640,7 +647,7 @@ export async function resetStudentPassword(
       );
     }
 
-    const temporaryPasscode = `ZENTI-${crypto.randomInt(100000, 1000000)}`;
+    const temporaryPasscode = `ALIKA-${crypto.randomInt(100000, 1000000)}`;
     const passwordHash = hashPassword(temporaryPasscode);
     const updatedAccounts = await tx
       .update(users)

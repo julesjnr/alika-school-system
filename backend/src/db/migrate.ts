@@ -1,14 +1,25 @@
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import { sql } from "drizzle-orm";
 import { db } from "./index.ts";
 
-// This module is imported by the CommonJS production bundle as well as run by
-// tsx in development. Resolve from the workspace rather than import.meta.url.
-const workspaceDrizzleDir = path.resolve(process.cwd(), "backend/drizzle");
-const drizzleDir = fs.existsSync(workspaceDrizzleDir)
-  ? workspaceDrizzleDir
-  : path.resolve(process.cwd(), "drizzle");
+const currentDir =
+  typeof __dirname !== "undefined"
+    ? __dirname
+    : typeof import.meta !== "undefined" && import.meta.url
+      ? path.dirname(fileURLToPath(import.meta.url))
+      : process.cwd();
+
+const drizzleCandidates = [
+  path.resolve(process.cwd(), "backend/drizzle"),
+  path.resolve(process.cwd(), "drizzle"),
+  path.resolve(currentDir, "../../drizzle"),
+  path.resolve(currentDir, "../drizzle"),
+  path.resolve(currentDir, "./drizzle"),
+];
+const drizzleDir = drizzleCandidates.find((dir) => fs.existsSync(dir)) || path.resolve(process.cwd(), "backend/drizzle");
+
 const studentSchemaMigrations = [
   "0004_student_registry_fields.sql",
   "0005_student_account_status.sql",
@@ -16,7 +27,12 @@ const studentSchemaMigrations = [
   "0007_attendance_late_students.sql",
   "0008_allow_negative_invoice_amounts.sql",
   "0009_admissions_academics_production.sql",
+  "0010_add_course_thumbnail.sql",
   "0011_admin_password_reset_tokens.sql",
+  "0012_student_course_id.sql",
+  "0013_student_assessment_marks.sql",
+  "0014_assessment_config.sql",
+  "0015_invoice_number_sequence.sql",
 ];
 
 export async function runMigrations(retries = 3, delayMs = 2000): Promise<void> {

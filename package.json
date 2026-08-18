@@ -1,5 +1,5 @@
 {
-  "name": "zenti-school-portal",
+  "name": "alika-school-portal",
   "private": true,
   "version": "1.0.0",
   "workspaces": [
@@ -13,6 +13,9 @@
     "build:frontend": "npm run build --workspace=frontend",
     "build:backend": "npm run build --workspace=backend",
     "build": "npm run build:frontend && npm run build:backend && rm -rf dist && cp -r frontend/dist ./dist",
+    "start": "node backend/dist/server.cjs",
+    "db:migrate": "npm run db:migrate --workspace=backend",
+    "db:push": "npm run db:push --workspace=backend",
     "lint:frontend": "npm run lint --workspace=frontend",
     "lint:backend": "npm run lint --workspace=backend",
     "lint": "npm run lint:frontend && npm run lint:backend",
@@ -25,6 +28,7 @@
     "wait-on": "^9.0.10"
   },
   "dependencies": {
+    "@xmldom/xmldom": "^0.9.11",
     "cors": "^2.8.6"
   }
 }

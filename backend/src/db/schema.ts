@@ -484,6 +484,7 @@ export const students = pgTable("students", {
 	phone: varchar({ length: 30 }).notNull(),
 	admissionNo: varchar("admission_no", { length: 50 }).notNull(),
 	cohort: varchar({ length: 50 }).notNull(),
+	courseId: uuid("course_id").references(() => courses.id, { onDelete: "restrict" }),
 	programme: varchar({ length: 255 }),
 	department: varchar({ length: 255 }),
 	avatar: text(),
@@ -494,6 +495,7 @@ export const students = pgTable("students", {
 	index("idx_students_email").using("btree", table.email.asc().nullsLast().op("text_ops")),
 	index("idx_students_name").using("btree", table.name.asc().nullsLast().op("text_ops")),
 	index("idx_students_cohort").using("btree", table.cohort.asc().nullsLast().op("text_ops")),
+	index("idx_students_course_id").using("btree", table.courseId.asc().nullsLast().op("uuid_ops")),
 	index("idx_students_account_status").using("btree", table.accountStatus.asc().nullsLast().op("text_ops")),
 	index("idx_students_created_at").using("btree", table.createdAt.desc().nullsLast().op("timestamptz_ops")),
 	unique("students_email_key").on(table.email),
@@ -536,6 +538,35 @@ export const lecturerSubjects = pgTable("lecturer_subjects", {
     .notNull(),
 });
 
+export const studentAssessmentMarks = pgTable("student_assessment_marks", {
+  id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+  studentId: uuid("student_id").notNull(),
+  subjectCode: varchar("subject_code", { length: 30 }).notNull(),
+  assessmentKind: varchar("assessment_kind", { length: 30 }).notNull(),
+  assessmentName: varchar("assessment_name", { length: 100 }).notNull(),
+  rawMark: numeric("raw_mark", { precision: 8, scale: 2 }).notNull(),
+  maxMarks: numeric("max_marks", { precision: 8, scale: 2 }).notNull(),
+  weight: numeric({ precision: 5, scale: 2 }).default('0.00').notNull(),
+  lecturerId: uuid("lecturer_id"),
+  recordedAt: timestamp("recorded_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+  foreignKey({
+      columns: [table.studentId],
+      foreignColumns: [students.id],
+      name: "student_assessment_marks_student_id_fkey"
+    }).onDelete("cascade"),
+  foreignKey({
+      columns: [table.lecturerId],
+      foreignColumns: [lecturers.id],
+      name: "student_assessment_marks_lecturer_id_fkey"
+    }).onDelete("set null"),
+  unique("uq_student_assessment_mark").on(table.studentId, table.subjectCode, table.assessmentKind),
+  check("student_assessment_marks_raw_mark_check", sql`raw_mark >= (0)::numeric`),
+  check("student_assessment_marks_max_marks_check", sql`max_marks > (0)::numeric`),
+  check("student_assessment_marks_weight_check", sql`weight >= (0)::numeric`),
+]);
+
 /** One-time password-reset credentials. The raw token is never persisted. */
 export const passwordResetTokens = pgTable("password_reset_tokens", {
 	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
@@ -566,8 +597,8 @@ export const grades = pgTable("grades", {
 			name: "grades_student_id_fkey"
 		}).onDelete("cascade"),
 	unique("uq_student_subject").on(table.studentId, table.subjectCode),
-	check("grades_cat_score_check", sql`(cat_score >= 0.00) AND (cat_score <= 30.00)`),
-	check("grades_exam_score_check", sql`(exam_score >= 0.00) AND (exam_score <= 70.00)`),
+	check("grades_cat_score_check", sql`cat_score >= 0.00`),
+	check("grades_exam_score_check", sql`exam_score >= 0.00`),
 ]);
 
 export const invoices = pgTable("invoices", {
@@ -576,8 +607,8 @@ export const invoices = pgTable("invoices", {
 	invoiceNo: varchar("invoice_no", { length: 50 }).notNull(),
 	description: text().notNull(),
 	amount: numeric({ precision: 12, scale:  2 }).notNull(),
-	date: date().notNull(),
-	dueDate: date("due_date"),
+	date: date().notNull().default(sql`CURRENT_DATE`),
+	dueDate: date("due_date").default(sql`CURRENT_DATE + INTERVAL '14 days'`),
 	outstandingBalance: numeric("outstanding_balance", { precision: 12, scale: 2 }).default('0.00').notNull(),
 	status: varchar({ length: 20 }).default('unpaid').notNull(),
 }, (table) => [
@@ -625,6 +656,21 @@ export const systemState = pgTable("system_state", {
 	data: jsonb().notNull(),
 	updatedAt: timestamp("updated_at", { mode: 'string' }).defaultNow().notNull(),
 });
+
+export const assessmentConfigurations = pgTable("assessment_configurations", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	subjectCode: varchar("subject_code", { length: 30 }).notNull(),
+	assessmentKind: varchar("assessment_kind", { length: 30 }).notNull(),
+	assessmentName: varchar("assessment_name", { length: 100 }).notNull(),
+	maxMarks: numeric("max_marks", { precision: 8, scale: 2 }).notNull(),
+	weight: numeric({ precision: 5, scale: 2 }).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	unique("uq_assessment_config_subject_kind").on(table.subjectCode, table.assessmentKind),
+	check("assessment_config_max_marks_check", sql`max_marks > (0)::numeric`),
+	check("assessment_config_weight_check", sql`weight >= (0)::numeric`),
+]);
 
 export const users = pgTable("users", {
 	id: serial().primaryKey().notNull(),

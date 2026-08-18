@@ -3641,9 +3641,9 @@ export default function StudentDashboard({
               <div className="w-6 h-6 bg-white rotate-45"></div>
             </div>
             <div>
-              <h1 className="text-2xl font-black tracking-tight uppercase text-blue-650 font-display">Zenti Academy</h1>
-              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono">Institutional Information System</p>
-              <p className="text-[9px] text-slate-400">PO Box 100-00100 Nairobi • info@zenti.edu • +254 700 000 000</p>
+              <h1 className="text-2xl font-black tracking-tight uppercase text-blue-650 font-display">Alika Medical Training College & Medical Center</h1>
+              <p className="text-[10px] text-blue-500 font-bold uppercase tracking-wider">Training College & Medical Center</p>
+              <p className="text-[9px] text-slate-400">ACK St. Peters Church Ndunyu Compound, Wangige Town, Kiambu County • info@alikamedical.co.ke • +254 721 578 290 / +254 723 940 093</p>
             </div>
           </div>
           <div className="text-right">
@@ -3790,7 +3790,7 @@ export default function StudentDashboard({
             </div>
             <div>
               <p className="text-[9px] font-bold text-slate-800">Registrar (Academic Affairs)</p>
-              <p className="text-[8px] text-slate-400 font-mono italic">Zenti Management Software verified</p>
+              <p className="text-[8px] text-slate-400 font-mono italic">Alika Portal Information System verified</p>
             </div>
           </div>
         </div>

@@ -187,7 +187,7 @@ export default function ConsultationBookingPage({
               Book an Academic Consultation
             </h1>
             <p className="text-slate-300 text-sm max-w-2xl leading-relaxed">
-              Schedule a personalized consultation session with our admissions counselors. Get expert advice on degree programs, entry requirements, fee structures, and campus life.
+              Schedule a personalized consultation session with our admissions team. Get direct guidance on certificate programs, entry requirements, fee structures, and practical clinical training.
             </p>
           </div>
         </div>

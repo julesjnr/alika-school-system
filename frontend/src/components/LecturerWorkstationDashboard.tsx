@@ -161,7 +161,7 @@ export default function LecturerWorkstationDashboard({
               </p>
             </div>
           </div>
-          <div className="h-60 w-full">
+          <div className="w-full" style={{ width: '100%', height: 240, minHeight: 200 }}>
             {weeklyHours.every((w) => w.hours === 0) ? (
               <div className="h-full flex flex-col items-center justify-center text-center gap-2 text-slate-400">
                 <Activity className="w-8 h-8 opacity-40" />
@@ -173,7 +173,7 @@ export default function LecturerWorkstationDashboard({
                 </p>
               </div>
             ) : (
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200}>
                 <AreaChart data={weeklyHours} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                   <defs>
                     <linearGradient id="colorHours" x1="0" y1="0" x2="0" y2="1">

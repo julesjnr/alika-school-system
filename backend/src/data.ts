@@ -9,14 +9,10 @@ export const initialRequisitions: Requisition[] = [];
 export const initialNews: NewsPost[] = [];
 export const initialTestimonies: Testimony[] = [];
 
-export const subjectMap: Record<string, string> = {
-  'CS-101-Web': 'Web Technologies II (CS)',
-  'CS-101-Algo': 'Design & Analysis of Algorithms (CS)',
-  'DS-202-ML': 'Intro to Machine Learning (DS)',
-  'DS-202-Stats': 'Computational Statistics (DS)',
-  'CYBER-310-Crypto': 'Applied Cryptography & Signatures (CYBER)',
-  'EE-201-Circuits': 'Analog Circuit Analysis (EE)'
-};
+export const subjectMap: Record<string, string> = {};
+
+// The authoritative academic catalogue is loaded from PostgreSQL through the
+// backend API; no production module list should be hardcoded here.
 
 export const initialReviews: CourseReview[] = [];
 export const initialBooks: Book[] = [];
@@ -29,4 +25,7 @@ export const initialExamPapers: ExamPaper[] = [];
 export const initialTeacherResources: TeacherResource[] = [];
 export const initialLibraryGateLogs: LibraryGateLog[] = [];
 export const initialNotifications: InAppNotification[] = [];
+
+// This app must not maintain a static academic code map. Real programme and
+// curriculum data comes from PostgreSQL via the backend API.
 

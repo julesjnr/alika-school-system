@@ -182,6 +182,31 @@ export default function StudentDashboard({
   const [timerActive, setTimerActive] = useState<boolean>(false);
   const [timerMode, setTimerMode] = useState<'focus' | 'break'>('focus');
 
+  // Server-authoritative published subjects for student view
+  const [publishedSubjectsDetailed, setPublishedSubjectsDetailed] = useState<any[] | null>(null);
+  const [publishedSubjects, setPublishedSubjects] = useState<any[] | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailSubjectCode, setDetailSubjectCode] = useState<string | null>(null);
+  const [detailData, setDetailData] = useState<any | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/student/dashboard-summary?studentId=${encodeURIComponent(student.id)}`);
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || 'Failed to load dashboard summary');
+        if (!mounted) return;
+        setPublishedSubjects(body.publishedSubjects || null);
+        setPublishedSubjectsDetailed(body.publishedSubjectsDetailed || null);
+      } catch (err) {
+        // ignore - keep existing UI fallback
+      }
+    };
+    if (student.id) load();
+    return () => { mounted = false; };
+  }, [student.id]);
+
   useEffect(() => {
     let interval: any = null;
     if (timerActive && timerSeconds > 0) {
@@ -696,7 +721,7 @@ export default function StudentDashboard({
                 <School className="w-5 h-5 text-white" />
               </div>
               <div>
-                <span className="text-sm font-black tracking-tight text-white block uppercase leading-none">ZENTI</span>
+                <span className="text-sm font-black tracking-tight text-white block uppercase leading-none">ALIKA</span>
                 <span className="text-[8px] text-slate-500 font-bold uppercase tracking-widest block">Student Portal</span>
               </div>
             </div>
@@ -772,7 +797,7 @@ export default function StudentDashboard({
               <School className="w-5 h-5 text-white" />
             </div>
             <div className="min-w-0">
-              <span className="text-base font-black tracking-tight text-slate-900 dark:text-white block uppercase leading-none truncate">ZENTI ACADEMY</span>
+              <span className="text-base font-black tracking-tight text-slate-900 dark:text-white block uppercase leading-none truncate">ALIKA MEDICAL</span>
               <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block mt-1">Student Portal</span>
             </div>
           </div>
@@ -1368,11 +1393,11 @@ export default function StudentDashboard({
                         <div className="flex flex-wrap items-center gap-4 text-[10px] font-bold tracking-wider uppercase text-slate-500 font-mono bg-slate-50 border border-slate-100 px-3 py-1.5 rounded-xl">
                           <div className="flex items-center gap-1.5">
                             <span className="w-2.5 h-2.5 rounded-xs bg-blue-500" />
-                            <span>CAT (Max 30)</span>
+                            <span>CAT Assessment</span>
                           </div>
                           <div className="flex items-center gap-1.5">
                             <span className="w-2.5 h-2.5 rounded-xs bg-indigo-500" />
-                            <span>Exam (Max 70)</span>
+                            <span>Semester Exam</span>
                           </div>
                           <div className="flex items-center gap-1.5">
                             <span className="w-2.5 h-2.5 rounded-xs bg-emerald-500" />
@@ -1416,11 +1441,11 @@ export default function StudentDashboard({
                                         <div className="border-t border-white/10 pt-1.5 space-y-1">
                                           <div className="flex justify-between items-center gap-6 text-[11px]">
                                             <span className="text-slate-400">CAT Assessment:</span>
-                                            <span className="font-mono font-bold text-blue-400">{data.CAT} / 30</span>
+                                            <span className="font-mono font-bold text-blue-400">{data.CAT}</span>
                                           </div>
                                           <div className="flex justify-between items-center gap-6 text-[11px]">
                                             <span className="text-slate-400">Semester Exam:</span>
-                                            <span className="font-mono font-bold text-indigo-400">{data.Exam} / 70</span>
+                                            <span className="font-mono font-bold text-indigo-400">{data.Exam}</span>
                                           </div>
                                           <div className="flex justify-between items-center gap-6 text-[11px] border-t border-white/5 pt-1">
                                             <span className="text-slate-400 font-semibold">Aggregate Total:</span>
@@ -1486,89 +1511,130 @@ export default function StudentDashboard({
                       <tr className="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wider border-b border-slate-100">
                         <th className="py-3 px-4">Subject Code</th>
                         <th className="py-3 px-4">Class Module Title</th>
-                        <th className="py-3 px-4 text-center">CAT Grade (Max 30)</th>
-                        <th className="py-3 px-4 text-center">Exam Grade (Max 70)</th>
+                        <th className="py-3 px-4 text-center">CAT Grade</th>
+                        <th className="py-3 px-4 text-center">Exam Grade</th>
                         <th className="py-3 px-4 text-center">Invoiced Total</th>
                         <th className="py-3 px-4 text-center">Grade Classification</th>
                         <th className="py-3 px-4 text-center">Syllabus Evaluation</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-xs">
-                    {student.enrolledUnits.map((code) => {
-                      const grade = student.grades[code] || { cat: 0, exam: 0 };
-                      const totalMark = grade.cat + grade.exam;
-                      const hasMarks = student.grades[code] !== undefined;
-                      const classification = getGradeClassification(grade.cat, grade.exam);
+                      {Array.isArray(publishedSubjectsDetailed) ? (
+                        publishedSubjectsDetailed.map((s) => {
+                          const code = s.subjectCode;
+                          const cat = s.catScore ?? null;
+                          const exam = s.examScore ?? null;
+                          const overall = s.overallPercent ?? null;
+                          const status = s.status || (overall === null ? 'No Result' : 'Published');
+                          return (
+                            <tr key={code} className="hover:bg-slate-50/50">
+                              <td className="py-4 px-4 font-mono font-semibold text-slate-900">{code}</td>
+                              <td className="py-4 px-4 text-slate-700">{subjectMap[code] || 'Unassigned Module'}</td>
+                              <td className="py-4 px-4 text-center text-slate-800 font-medium">{cat === null ? <span className="text-slate-400">—</span> : String(cat)}</td>
+                              <td className="py-4 px-4 text-center text-slate-800 font-medium">{exam === null ? <span className="text-slate-400">—</span> : String(exam)}</td>
+                              <td className="py-4 px-4 text-center font-bold text-slate-900 bg-slate-50/30">{overall === null ? 'N/A' : `${Number(overall).toFixed(2)}%`}</td>
+                              <td className="py-4 px-4 text-center">{s.grade ? <div className="flex items-center justify-center gap-2"><span className="font-black text-xs px-2.5 py-1 rounded-md border bg-emerald-50 text-emerald-700">{s.grade}</span><span className="text-[10px] text-slate-500 hidden lg:inline">{s.gradeDetail || ''}</span></div> : <span className="text-slate-400">—</span>}</td>
+                              <td className="py-4 px-4 text-center">
+                                <div className="flex items-center justify-center gap-2">
+                                  <span className="text-[10px] font-medium text-slate-600">{status}</span>
+                                  <button onClick={async () => {
+                                    try {
+                                      setDetailSubjectCode(code);
+                                      setDetailsOpen(true);
+                                      const resp = await fetch(`/api/student/assessment-details?subjectCode=${encodeURIComponent(code)}`);
+                                      const json = await resp.json().catch(() => ({}));
+                                      if (!resp.ok) throw new Error(json.error || 'Failed to load details');
+                                      setDetailData(json);
+                                    } catch (err:any) {
+                                      setDetailData({ error: err.message || 'Failed to load details' });
+                                    }
+                                  }} className="text-[11px] text-blue-600 hover:underline font-semibold">View Details</button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      ) : (
+                        // fallback to previous rendering when server data not available
+                        student.enrolledUnits.map((code) => {
+                          const grade = student.grades[code] || { cat: 0, exam: 0 };
+                          const totalMark = grade.cat + grade.exam;
+                          const hasMarks = student.grades[code] !== undefined;
+                          const hasUnpublished = Array.isArray((student as any).unpublishedSubjects) && (student as any).unpublishedSubjects.includes(code);
+                          const classification = getGradeClassification(grade.cat, grade.exam);
 
-                      const associatedCourse = allCourses.find(c => code.startsWith(c.code)) || allCourses.find(c => c.code === code);
-                      const existingReview = reviews.filter(Boolean).find(r => 
-                        associatedCourse && 
-                        r.studentId === student.id && 
-                        (r.courseId === associatedCourse.id || r.courseId === associatedCourse.code)
-                      );
+                          const associatedCourse = allCourses.find(c => code.startsWith(c.code)) || allCourses.find(c => c.code === code);
+                          const existingReview = reviews.filter(Boolean).find(r => 
+                            associatedCourse && 
+                            r.studentId === student.id && 
+                            (r.courseId === associatedCourse.id || r.courseId === associatedCourse.code)
+                          );
 
-                      return (
-                        <tr key={code} className="hover:bg-slate-50/50">
-                          <td className="py-4 px-4 font-mono font-semibold text-slate-900">{code}</td>
-                          <td className="py-4 px-4 text-slate-700">{subjectMap[code] || 'Unassigned Module'}</td>
-                          <td className="py-4 px-4 text-center text-slate-800 font-medium">
-                            {hasMarks ? `${grade.cat} / 30` : <span className="text-slate-400">Not Uploaded</span>}
-                          </td>
-                          <td className="py-4 px-4 text-center text-slate-800 font-medium">
-                            {hasMarks ? `${grade.exam} / 70` : <span className="text-slate-400">Not Uploaded</span>}
-                          </td>
-                          <td className="py-4 px-4 text-center font-bold text-slate-900 bg-slate-50/30">
-                            {hasMarks ? `${totalMark}%` : 'N/A'}
-                          </td>
-                          <td className="py-4 px-4 text-center">
-                            {hasMarks ? (
-                              <div className="flex items-center justify-center gap-2">
-                                <span className={`font-black text-xs px-2.5 py-1 rounded-md border ${classification.class}`}>
-                                  {classification.grade}
-                                </span>
-                                <span className="text-[10px] text-slate-500 hidden lg:inline">{classification.text}</span>
-                              </div>
-                            ) : (
-                              <span className="text-slate-350 italic">Pending lecturer upload</span>
-                            )}
-                          </td>
-                          <td className="py-4 px-4 text-center">
-                            {hasMarks ? (
-                              associatedCourse ? (
-                                existingReview ? (
-                                  <div className="flex flex-col items-center justify-center gap-0.5">
-                                    <div className="inline-flex items-center gap-1 bg-amber-50 text-amber-900 px-2 py-0.5 rounded-lg border border-amber-200">
-                                      <span className="text-amber-500 font-sans text-xs">★</span>
-                                      <span className="font-extrabold text-[10px]">{existingReview.rating} / 5</span>
-                                    </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => setActiveReviewCourse(associatedCourse)}
-                                      className="text-[9px] text-blue-600 hover:text-blue-800 hover:underline font-bold p-0.5"
-                                    >
-                                      Edit Feedback
-                                    </button>
+                          return (
+                            <tr key={code} className="hover:bg-slate-50/50">
+                              <td className="py-4 px-4 font-mono font-semibold text-slate-900">{code}</td>
+                              <td className="py-4 px-4 text-slate-700">{subjectMap[code] || 'Unassigned Module'}</td>
+                              <td className="py-4 px-4 text-center text-slate-800 font-medium">
+                                {hasMarks ? `${grade.cat}` : hasUnpublished ? <span className="text-amber-700">Result pending publication</span> : <span className="text-slate-400">Not Uploaded</span>}
+                              </td>
+                              <td className="py-4 px-4 text-center text-slate-800 font-medium">
+                                {hasMarks ? `${grade.exam}` : hasUnpublished ? <span className="text-amber-700">Result pending publication</span> : <span className="text-slate-400">Not Uploaded</span>}
+                              </td>
+                              <td className="py-4 px-4 text-center font-bold text-slate-900 bg-slate-50/30">
+                                {hasMarks ? `${totalMark}%` : 'N/A'}
+                              </td>
+                              <td className="py-4 px-4 text-center">
+                                {hasMarks ? (
+                                  <div className="flex items-center justify-center gap-2">
+                                    <span className={`font-black text-xs px-2.5 py-1 rounded-md border ${classification.class}`}>
+                                      {classification.grade}
+                                    </span>
+                                    <span className="text-[10px] text-slate-500 hidden lg:inline">{classification.text}</span>
                                   </div>
+                                ) : hasUnpublished ? (
+                                  <span className="text-amber-700 italic">Result pending publication</span>
                                 ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => setActiveReviewCourse(associatedCourse)}
-                                    className="bg-blue-50 hover:bg-blue-100 text-blue-750 hover:text-blue-800 border border-blue-200 hover:border-blue-300 font-bold px-2 py-1 rounded-lg text-[10px] flex items-center gap-1 mx-auto transition-all cursor-pointer shadow-3xs"
-                                  >
-                                    <span>Rate Course</span>
-                                  </button>
-                                )
-                              ) : (
-                                <span className="text-slate-350 italic">Modular unit</span>
-                              )
-                            ) : (
-                              <span className="text-slate-300 italic">Awaiting grade</span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
+                                  <span className="text-slate-350 italic">Pending lecturer upload</span>
+                                )}
+                              </td>
+                              <td className="py-4 px-4 text-center">
+                                {hasMarks ? (
+                                  associatedCourse ? (
+                                    existingReview ? (
+                                      <div className="flex flex-col items-center justify-center gap-0.5">
+                                        <div className="inline-flex items-center gap-1 bg-amber-50 text-amber-900 px-2 py-0.5 rounded-lg border border-amber-200">
+                                          <span className="text-amber-500 font-sans text-xs">★</span>
+                                          <span className="font-extrabold text-[10px]">{existingReview.rating} / 5</span>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          onClick={() => setActiveReviewCourse(associatedCourse)}
+                                          className="text-[9px] text-blue-600 hover:text-blue-800 hover:underline font-bold p-0.5"
+                                        >
+                                          Edit Feedback
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => setActiveReviewCourse(associatedCourse)}
+                                        className="bg-blue-50 hover:bg-blue-100 text-blue-750 hover:text-blue-800 border border-blue-200 hover:border-blue-300 font-bold px-2 py-1 rounded-lg text-[10px] flex items-center gap-1 mx-auto transition-all cursor-pointer shadow-3xs"
+                                      >
+                                        <span>Rate Course</span>
+                                      </button>
+                                    )
+                                  ) : (
+                                    <span className="text-slate-350 italic">Modular unit</span>
+                                  )
+                                ) : (
+                                  <span className="text-slate-300 italic">Awaiting grade</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
                 </table>
               </div>
             </div>
@@ -1742,6 +1808,7 @@ export default function StudentDashboard({
         {activeTab === 'units' && (
           <UnitRegister
             studentId={student.id}
+            studentCourseId={student.courseId}
             allCourses={allCourses}
             lecturers={lecturers}
             onRegisterUnit={onRegisterUnit}
@@ -2289,9 +2356,9 @@ export default function StudentDashboard({
               <div className="w-6 h-6 bg-white rotate-45"></div>
             </div>
             <div>
-              <h1 className="text-2xl font-black tracking-tight uppercase text-blue-650 font-display">Zenti Academy</h1>
+              <h1 className="text-2xl font-black tracking-tight uppercase text-blue-650 font-display">Alika Medical Training College</h1>
               <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono">Institutional Information System</p>
-              <p className="text-[9px] text-slate-400">PO Box 100-00100 Nairobi • info@zenti.edu • +254 700 000 000</p>
+              <p className="text-[9px] text-slate-400">ACK St. Peters Church Ndunyu Compound, Wangige Town, Kiambu • info@alikamedical.co.ke • +254 721 578 290</p>
             </div>
           </div>
           <div className="text-right">
@@ -2440,7 +2507,7 @@ export default function StudentDashboard({
             </div>
             <div>
               <p className="text-[9px] font-bold text-slate-800">Registrar (Academic Affairs)</p>
-              <p className="text-[8px] text-slate-400 font-mono italic">Zenti Management Software verified</p>
+              <p className="text-[8px] text-slate-400 font-mono italic">Alika Medical Management Software verified</p>
             </div>
           </div>
         </div>
@@ -2469,6 +2536,53 @@ export default function StudentDashboard({
             setActiveReviewCourse(null);
           }}
         />
+      )}
+
+      {/* ASSESSMENT DETAILS MODAL */}
+      {detailsOpen && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-slate-900/60 p-4">
+          <div className="max-w-2xl w-full rounded-2xl bg-white p-5 border border-slate-100 shadow-2xl">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Assessment breakdown — {detailSubjectCode}</h3>
+                <p className="text-xs text-slate-500">This is the server-authoritative assessment breakdown.</p>
+              </div>
+              <button onClick={() => { setDetailsOpen(false); setDetailData(null); setDetailSubjectCode(null); }} className="text-slate-500 hover:text-slate-800">Close</button>
+            </div>
+
+            <div className="mt-4">
+              {!detailData && <p className="text-xs text-slate-500">Loading…</p>}
+              {detailData && detailData.error && <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded">{String(detailData.error)}</div>}
+              {detailData && !detailData.error && (
+                <div className="space-y-3 text-xs">
+                  <div className="grid grid-cols-4 gap-2 font-bold text-slate-600 text-[12px]">
+                    <div>Component</div>
+                    <div className="text-center">Raw</div>
+                    <div className="text-center">Max</div>
+                    <div className="text-center">Contribution</div>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {Array.isArray(detailData.breakdown) && detailData.breakdown.map((it:any, idx:number) => (
+                      <div key={idx} className="grid grid-cols-4 gap-2 py-2 text-[13px] text-slate-700">
+                        <div>{it.assessmentName || it.assessmentKind}</div>
+                        <div className="text-center font-mono">{it.rawMark ?? '—'}</div>
+                        <div className="text-center">{it.maxMarks ?? '—'}</div>
+                        <div className="text-center">{it.contribution ?? '0.00'}%</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {detailData.subject && (
+                    <div className="pt-3 border-t border-slate-100 text-sm text-slate-800">
+                      <div className="flex justify-between"><span className="font-medium">Overall</span><span className="font-bold">{detailData.subject.overallPercent ?? '—'}%</span></div>
+                      <div className="flex justify-between mt-1"><span className="text-xs text-slate-500">Grade</span><span className="text-xs text-slate-500">{detailData.subject.grade ?? '—'}</span></div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* CAMERA CAPTURE PROFILE PHOTO MODAL */}

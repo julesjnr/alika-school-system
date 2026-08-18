@@ -100,7 +100,7 @@ export const PayrollReportsModal: React.FC<PayrollReportsModalProps> = ({
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `zenti_payroll_report_${selectedReport}_${selectedMonth}_${selectedYear}.csv`);
+    link.setAttribute('download', `alika_payroll_report_${selectedReport}_${selectedMonth}_${selectedYear}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -115,7 +115,7 @@ export const PayrollReportsModal: React.FC<PayrollReportsModalProps> = ({
     const blob = new Blob([tsv], { type: 'application/vnd.ms-excel' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `zenti_payroll_${selectedReport}_${selectedMonth}_${selectedYear}.xls`;
+    link.download = `alika_payroll_${selectedReport}_${selectedMonth}_${selectedYear}.xls`;
     link.click();
   };
 

@@ -255,6 +255,14 @@ export default function LoginPage({
         }
 
         if (data.status === 'REQUIRES_PASSWORD_CHANGE') {
+          // Persist the authenticated forced-change session before redirecting.
+          // /change-password and /api/auth/change-password require this JWT.
+          if (data.token) {
+            localStorage.setItem('zenti_session_token', data.token);
+          }
+          if (data.refreshToken) {
+            localStorage.setItem('zenti_refresh_token', data.refreshToken);
+          }
           setPendingPasswordChange({
             identifier: canonicalIdentifier,
             userId: data.userId,
@@ -339,8 +347,8 @@ export default function LoginPage({
               <School className="w-6 h-6" />
             </div>
             <div>
-              <span className="font-mono text-[10px] tracking-widest text-slate-350 font-bold block uppercase leading-none">Management MIS</span>
-              <span className="font-extrabold text-white text-lg leading-none tracking-tight">ZENTI UNIVERSITY</span>
+              <span className="font-mono text-[10px] tracking-widest text-blue-200 font-bold block uppercase leading-none">Training College & Medical Center</span>
+              <span className="font-extrabold text-white text-lg leading-none tracking-tight">ALIKA MEDICAL</span>
             </div>
           </div>
 
@@ -526,7 +534,7 @@ export default function LoginPage({
         </div>
 
         <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono uppercase tracking-widest text-center mt-8 pt-4 border-t border-slate-200 dark:border-slate-800/80 flex flex-col sm:flex-row items-center justify-between gap-2 shrink-0">
-          <span>ZENTI UNIVERSITY SYSTEMS</span>
+          <span>ALIKA MEDICAL TRAINING COLLEGE &amp; MEDICAL CENTER</span>
           <div className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
             <span>Secure System Active</span>

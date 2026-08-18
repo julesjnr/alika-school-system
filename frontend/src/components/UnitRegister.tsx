@@ -42,28 +42,72 @@ export interface EnrolledUnit {
   completionPercentage: number | null;
 }
 
-export interface ModuleItem {
-  code: string;
-  title: string;
-  programmeTags: string[];
-  semester: string;
-  credits: number;
+export interface StudentCurriculumResult {
+  items: string[];
+  empty: boolean;
+  message: string;
+  course?: Course | null;
 }
 
-export const CURRICULUM_MODULES: ModuleItem[] = [
-  { code: 'DS-202-ML', title: 'Intro to Machine Learning (DS)', programmeTags: ['Data Science', 'BDS', 'DS'], semester: 'Semester 1', credits: 3 },
-  { code: 'DS-202-Stats', title: 'Computational Statistics (DS)', programmeTags: ['Data Science', 'BDS', 'DS'], semester: 'Semester 1', credits: 3 },
-  { code: 'CS-101-Web', title: 'Web Technologies II (CS)', programmeTags: ['Computer Science', 'BCS', 'CS', 'Information Technology', 'BIT'], semester: 'Semester 1', credits: 3 },
-  { code: 'CS-101-Algo', title: 'Design & Analysis of Algorithms (CS)', programmeTags: ['Computer Science', 'BCS', 'CS', 'Software Engineering', 'BSE'], semester: 'Semester 1', credits: 3 },
-  { code: 'CYBER-310-Crypto', title: 'Applied Cryptography & Signatures (CYBER)', programmeTags: ['Cybersecurity', 'CYBER', 'Computer Science', 'BCS'], semester: 'Semester 1', credits: 3 },
-  { code: 'EE-201-Circuits', title: 'Analog Circuit Analysis (EE)', programmeTags: ['Electrical Engineering', 'EE'], semester: 'Semester 1', credits: 3 },
-  { code: 'BIT1101', title: 'Database Systems & Management', programmeTags: ['Information Technology', 'BIT', 'Business Information Technology', 'BBIT'], semester: 'Semester 1', credits: 3 },
-  { code: 'BSE1101', title: 'Software Requirement Engineering', programmeTags: ['Software Engineering', 'BSE'], semester: 'Semester 1', credits: 3 },
-];
+function cleanCurriculumItem(item: string): string {
+  return item
+    .replace(/^[\-•\s]+/, '')
+    .replace(/\s*;\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseCourseCurriculum(rawValue?: string | null): string[] {
+  if (!rawValue) return [];
+  return Array.from(
+    new Set(
+      rawValue
+        .split(/[\n;]+/)
+        .map(cleanCurriculumItem)
+        .filter(Boolean)
+    )
+  );
+}
+
+export function getStudentCurriculum(
+  studentCourseId?: string,
+  allCourses: Course[] = [],
+  studentProgramme?: string,
+): StudentCurriculumResult {
+  const selectedCourse =
+    allCourses.find((course) => course.id === studentCourseId) ||
+    allCourses.find((course) => {
+      const programme = (studentProgramme || '').trim();
+      if (!programme) return false;
+      const candidate = `${course.code} ${course.title}`.toLowerCase();
+      return candidate.includes(programme.toLowerCase());
+    }) ||
+    null;
+
+  const courseContent = selectedCourse?.courseContent || selectedCourse?.description || '';
+  const items = parseCourseCurriculum(courseContent);
+
+  if (items.length > 0) {
+    return {
+      items,
+      empty: false,
+      message: '',
+      course: selectedCourse,
+    };
+  }
+
+  return {
+    items: [],
+    empty: true,
+    message: 'No curriculum has been assigned to your programme yet.',
+    course: selectedCourse,
+  };
+}
 
 interface UnitRegisterProps {
   studentId: string;
   allCourses: Course[];
+  studentCourseId?: string;
   lecturers?: Lecturer[];
   onRegisterUnit?: (unitCode: string) => Promise<void> | void;
   onDeregisterUnit?: (unitCode: string) => Promise<void> | void;
@@ -86,17 +130,7 @@ function resolveLecturerName(code: string, lecturers: Lecturer[]): string {
 }
 
 function resolveUnitName(code: string, rawTitle?: string, subjectMap: Record<string, string> = {}): string {
-  const catalogMatch = CURRICULUM_MODULES.find((m) => m.code === code);
-  if (catalogMatch) return catalogMatch.title;
   if (subjectMap[code] && !subjectMap[code].startsWith('Bachelor of')) return subjectMap[code];
-  const programMap: Record<string, string> = {
-    'BDS': 'Intro to Machine Learning (DS)',
-    'BCS': 'Web Technologies II (CS)',
-    'BIT': 'Database Systems & Management',
-    'BBIT': 'Enterprise Systems & E-Commerce',
-    'BSE': 'Software Architecture & Design',
-  };
-  if (programMap[code]) return programMap[code];
   if (rawTitle && !rawTitle.startsWith('Bachelor of')) return rawTitle;
   return subjectMap[code] || code;
 }
@@ -125,6 +159,7 @@ function registrationStatusLabel(registered: number, remaining: number): {
 
 export const UnitRegister: React.FC<UnitRegisterProps> = ({
   studentId,
+  studentCourseId,
   allCourses,
   lecturers = [],
   onRegisterUnit,
@@ -350,23 +385,16 @@ export const UnitRegister: React.FC<UnitRegisterProps> = ({
     window.setTimeout(() => enrollSelectRef.current?.focus(), 280);
   };
 
-  const normalizedProg = (studentProgramme || '').toLowerCase();
-  const matchedProgramModules = CURRICULUM_MODULES.filter((m) => {
-    if (!normalizedProg) return true;
-    return m.programmeTags.some((tag) => normalizedProg.includes(tag.toLowerCase()) || tag.toLowerCase().includes(normalizedProg));
-  });
-  const candidateModules = matchedProgramModules.length > 0 ? matchedProgramModules : CURRICULUM_MODULES;
+  const programmeCurriculum = getStudentCurriculum(studentCourseId, allCourses, studentProgramme);
+  const curriculumItems = programmeCurriculum.items;
+  const hasCurriculum = !programmeCurriculum.empty && curriculumItems.length > 0;
 
   const registeredCodes = registeredUnits.map((u) => u.courseCode);
-  const availableModules = candidateModules.filter((m) => {
-    if (registeredCodes.includes(m.code)) return false;
-    if (registeredCodes.includes('BDS') && m.code === 'DS-202-ML') return false;
-    return true;
-  });
+  const availableModules: Array<{ code: string; title: string; programmeTags: string[]; semester: string; credits: number }> = [];
 
   const registeredCount = registeredUnits.length;
   const creditHours = registeredCount * CREDITS_PER_UNIT;
-  const totalProgramModules = candidateModules.length;
+  const totalProgramModules = hasCurriculum ? curriculumItems.length : 0;
   const remainingUnits = Math.max(0, totalProgramModules - registeredCount);
   const progressPct = totalProgramModules > 0 ? Math.round((registeredCount / totalProgramModules) * 100) : 0;
   const status = registrationStatusLabel(registeredCount, remainingUnits);
@@ -510,54 +538,35 @@ export const UnitRegister: React.FC<UnitRegisterProps> = ({
             </p>
           </div>
 
-          {availableModules.length === 0 ? (
-            <div className="bg-emerald-50 text-emerald-800 p-3.5 rounded-xl border border-emerald-100 text-xs space-y-1">
-              <span className="font-bold flex items-center gap-1.5">
-                <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
-                No available modules
-              </span>
-              <span className="text-emerald-700/90 block">
-                All available modules for your programme and semester are registered.
-              </span>
+          {hasCurriculum ? (
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-700">Programme curriculum</p>
+                <p className="text-xs text-slate-500">
+                  {programmeCurriculum.course?.title || studentProgramme || 'Your programme'}
+                </p>
+              </div>
+              <div className="space-y-2">
+                {curriculumItems.map((unit, index) => (
+                  <div key={`${unit}-${index}`} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                    <span className="mr-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-[10px] font-bold text-blue-700">
+                      {index + 1}
+                    </span>
+                    {unit}
+                  </div>
+                ))}
+              </div>
             </div>
           ) : (
-            <form onSubmit={handleAddUnitRegister} className="space-y-3">
-              <div className="space-y-1.5">
-                <label htmlFor="unit-selector" className="block text-xs font-semibold text-slate-700">
-                  Available module
-                </label>
-                <select
-                  id="unit-selector"
-                  ref={enrollSelectRef}
-                  value={selectedUnitCode}
-                  onChange={(e) => setSelectedUnitCode(e.target.value)}
-                  disabled={isSubmitting || availableModules.length === 0}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 disabled:opacity-60"
-                >
-                  <option value="">— Choose module —</option>
-                  {availableModules.map((m) => (
-                    <option key={m.code} value={m.code}>
-                      {m.code} — {m.title}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <button
-                type="submit"
-                disabled={!selectedUnitCode || isSubmitting}
-                className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-2.5 rounded-lg text-sm flex items-center justify-center gap-2 cursor-pointer transition-colors"
-              >
-                {isSubmitting ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Processing…
-                  </>
-                ) : (
-                  'Complete Registration'
-                )}
-              </button>
-            </form>
+            <div className="bg-amber-50 text-amber-800 p-3.5 rounded-xl border border-amber-100 text-xs space-y-1">
+              <span className="font-bold flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4 text-amber-600 shrink-0" />
+                Programme curriculum unavailable
+              </span>
+              <span className="text-amber-700/90 block">
+                No curriculum has been assigned to your programme yet.
+              </span>
+            </div>
           )}
 
           <div className="rounded-lg border border-blue-100 bg-blue-50/60 px-3.5 py-3 text-[11px] text-blue-900/80 leading-relaxed space-y-1">
