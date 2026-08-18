@@ -13,6 +13,12 @@ interface DashboardSummary {
   gpaLabel: string;
   creditsEarned: number | null;
   modulesPassed: number;
+  semesterAverage?: number | null;
+  degreeProgress?: {
+    completed?: number | null;
+    required?: number | null;
+    percent?: number | null;
+  } | null;
   attendanceRate: number | null;
   attendance?: number | null;
   presentCount?: number | null;

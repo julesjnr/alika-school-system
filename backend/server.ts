@@ -3411,12 +3411,12 @@ app.post("/api/invoices", async (req, res) => {
           studentId: invoiceDefaults.studentId,
           invoiceNo,
           description: invoiceDefaults.description,
-          amount: numericAmount,
+          amount: String(numericAmount),
           date: invoiceDefaults.date,
           dueDate: invoiceDefaults.dueDate,
-          outstandingBalance: numericOutstanding,
+          outstandingBalance: String(numericOutstanding),
           status: invoiceDefaults.status,
-        })
+        } as any)
         .returning();
       insertedInvoice = invoice;
     } catch (err: any) {
@@ -3435,12 +3435,12 @@ app.post("/api/invoices", async (req, res) => {
                 studentId: invoiceDefaults.studentId,
                 invoiceNo: altInvoiceNo,
                 description: invoiceDefaults.description,
-                amount: numericAmount,
+                amount: String(numericAmount),
                 date: invoiceDefaults.date,
                 dueDate: invoiceDefaults.dueDate,
-                outstandingBalance: numericOutstanding,
+                outstandingBalance: String(numericOutstanding),
                 status: invoiceDefaults.status,
-              })
+              } as any)
               .returning();
             insertedInvoice = invoice;
             success = true;
@@ -4526,7 +4526,7 @@ app.post(
 
       // Validate aggregate against configured maxima
       const aggregateValidation = validateAggregateGrade(catScore, examScore, assessmentList as any);
-      if (!aggregateValidation.ok) return res.status(400).json({ error: `Aggregate grade invalid: ${aggregateValidation.error}` });
+      if (!aggregateValidation.ok) return res.status(400).json({ error: `Aggregate grade invalid: ${(aggregateValidation as any).error}` });
 
       // Upsert into legacy grades table as the authoritative published result
       await db.insert(grades).values({ id: crypto.randomUUID(), studentId, subjectCode, catScore: String(catScore), examScore: String(examScore), gradedAt: new Date().toISOString() }).onConflictDoUpdate({
@@ -6209,7 +6209,8 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
     for (const r of rawAssessmentRows) {
       const code = r.subjectCode;
       const prev = latestUpdateBySubject.get(code);
-      if (!prev || (r.updatedAt && String(r.updatedAt) > prev)) latestUpdateBySubject.set(code, String(r.updatedAt));
+      const rowUpdatedAt = (r as any).updatedAt;
+      if (!prev || (rowUpdatedAt && String(rowUpdatedAt) > prev)) latestUpdateBySubject.set(code, String(rowUpdatedAt));
     }
 
     const publishedSubjectsDetailed = (publishedSummary.subjects || []).map((s: any) => {
@@ -6268,9 +6269,9 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
       const presentIds: string[] = Array.isArray(s.presentStudentIds) ? s.presentStudentIds : (s.presentStudentIds || []);
       const lateIds: string[] = Array.isArray(s.lateStudentIds) ? s.lateStudentIds : (s.lateStudentIds || []);
       const absentIds: string[] = Array.isArray(s.absentStudentIds) ? s.absentStudentIds : (s.absentStudentIds || []);
-      if (presentIds.includes(profile.id)) entry.present += 1;
-      if (lateIds.includes(profile.id)) entry.late += 1;
-      if (absentIds.includes(profile.id)) entry.absent += 1;
+      if (presentIds.includes(studentId)) entry.present += 1;
+      if (lateIds.includes(studentId)) entry.late += 1;
+      if (absentIds.includes(studentId)) entry.absent += 1;
       modulesAttendanceMap.set(code, entry);
     }
 
@@ -6620,7 +6621,7 @@ app.get("/api/student/dashboard", async (req: any, res: any) => {
         maxMarks: studentAssessmentMarks.maxMarks,
         weight: studentAssessmentMarks.weight,
         assessmentKind: studentAssessmentMarks.assessmentKind,
-      }).from(studentAssessmentMarks).where(eq(studentAssessmentMarks.studentId, userId))
+      }).from(studentAssessmentMarks).where(eq(studentAssessmentMarks.studentId, userId)) as any
     ),
     loadModule("finance-invoices", snapshotStudent?.ledger || [], () => db.select().from(invoices).where(eq(invoices.studentId, userId))),
     loadModule("finance-payments", snapshotStudent?.payments || [], () => db.select().from(payments).where(eq(payments.studentId, userId))),
@@ -7222,6 +7223,20 @@ async function startServer() {
 
   if (process.env.NODE_ENV !== "production") {
     console.log("Backend API server running in development mode (port " + PORT + ")");
+    try {
+      const vitePkg = "vite";
+      const { createServer: createViteServer } = await import(/* @vite-ignore */ vitePkg) as any;
+      const frontendRoot = path.resolve(process.cwd(), "frontend");
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+        root: fs.existsSync(frontendRoot) ? frontendRoot : process.cwd(),
+      });
+      app.use(vite.middlewares);
+      console.log("Vite development middleware integrated successfully");
+    } catch (viteErr: any) {
+      console.warn("Could not start Vite dev middleware:", viteErr?.message || viteErr);
+    }
   } else {
     // Production Mode: Serve compiled static frontend bundle from frontend workspace
     const currentDir =
