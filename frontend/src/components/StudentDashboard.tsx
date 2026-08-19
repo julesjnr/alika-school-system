@@ -18,6 +18,7 @@ import CourseReviewModal from './CourseReviewModal';
 import StudentLibraryView from './StudentLibraryView';
 import StudentVisualSummaryDashboard from './StudentVisualSummaryDashboard';
 import StudentGpaPlanner from './StudentGpaPlanner';
+import StudentAcademicMarks from './StudentAcademicMarks';
 import UnitRegister from './UnitRegister';
 import ClassAttendanceWidget from './ClassAttendanceWidget';
 import MobileTopBar from './mobile/MobileTopBar';
@@ -203,7 +204,8 @@ export default function StudentDashboard({
     let mounted = true;
     const load = async () => {
       try {
-        const res = await fetch(`/api/student/dashboard-summary?studentId=${encodeURIComponent(student.id)}`);
+        const token = localStorage.getItem('zenti_session_token');
+        const res = await fetch('/api/student/dashboard-summary', { headers: token ? { Authorization: `Bearer ${token}` } : {} });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body.error || 'Failed to load dashboard summary');
         if (!mounted) return;
@@ -1264,9 +1266,9 @@ export default function StudentDashboard({
               <div>
                 <h2 className="text-lg font-bold text-slate-800 flex items-center gap-1.5 font-display">
                   <Award className="w-5 h-5 text-blue-600" />
-                  Academic Gradebook & Transcripts
+                  Academic Records
                 </h2>
-                <p className="text-xs text-slate-500 mt-1">Supplementary Marks aggregated according to Continuous Assessments & Final exam records.</p>
+                <p className="text-xs text-slate-500 mt-1">View released marks, assessment breakdowns, and official academic records.</p>
               </div>
 
               {student.enrolledUnits.length > 0 && (
@@ -1305,7 +1307,9 @@ export default function StudentDashboard({
               )}
             </div>
 
-            {student.enrolledUnits.length === 0 ? (
+            <StudentAcademicMarks studentId={student.id} courses={allCourses} />
+
+            {false && (student.enrolledUnits.length === 0 ? (
               <div className="text-center py-12 bg-slate-50 rounded-xl border border-dashed border-slate-200">
                 <AlertCircle className="w-10 h-10 text-slate-350 mx-auto mb-2" />
                 <p className="font-semibold text-sm text-slate-700">No units currently allocated.</p>
@@ -1593,9 +1597,9 @@ export default function StudentDashboard({
                 </table>
               </div>
             </div>
-          )}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
 
         {/* TAB 2: FINANCIAL STATEMENT */}
         {activeTab === 'financials' && (

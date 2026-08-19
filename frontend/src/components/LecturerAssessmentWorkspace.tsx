@@ -438,11 +438,11 @@ export default function LecturerAssessmentWorkspace({
     }
 
     try {
+      const token = localStorage.getItem('zenti_session_token');
       const response = await fetch('/api/lecturer/grades', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({
-          lecturerId,
           studentId: student.id,
           subjectCode: selectedSubject,
           marks,
@@ -534,11 +534,6 @@ export default function LecturerAssessmentWorkspace({
   const deleteAssessment = (id: string) => {
     persistAssessments(assessments.filter((item) => item.id !== id));
     showToast('Assessment removed.', 'success');
-  };
-
-  const publishAssessment = (id: string) => {
-    persistAssessments(assessments.map((item) => (item.id === id ? { ...item, published: true } : item)));
-    showToast('Results marked as published for this assessment.', 'success');
   };
 
   const confirmPublish = async () => {
@@ -830,15 +825,14 @@ export default function LecturerAssessmentWorkspace({
                       )}
                     </td>
                     <td className="px-3 py-3">
-                      <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${assessment.published ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
-                        {assessment.published ? 'Published' : 'Draft'}
+                      <span className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-700">
+                        Configured
                       </span>
                     </td>
                     <td className="px-3 py-3 text-right space-x-2">
                       <button type="button" onClick={() => setEditingAssessmentId(editingAssessmentId === assessment.id ? null : assessment.id)} className="font-semibold text-blue-700 hover:underline">
                         {editingAssessmentId === assessment.id ? 'Done' : 'Edit'}
                       </button>
-                      <button type="button" onClick={() => publishAssessment(assessment.id)} className="font-semibold text-emerald-700 hover:underline">Publish</button>
                       <button type="button" onClick={() => deleteAssessment(assessment.id)} className="inline-flex items-center text-rose-600 hover:underline"><Trash2 className="h-3.5 w-3.5" /></button>
                     </td>
                   </tr>
@@ -942,7 +936,7 @@ export default function LecturerAssessmentWorkspace({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-sm font-semibold text-slate-900">Marks entry</h3>
-            <p className="text-xs text-slate-500">CAT components and final exam limits are taken from the lecturer-configured assessment structure for this module.</p>
+            <p className="text-xs text-slate-500">Save stores a draft. Use <strong>Publish Result</strong> for an individual student only after all components are ready; that is the action that releases marks to the Student Portal.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative">

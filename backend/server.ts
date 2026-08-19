@@ -4264,6 +4264,8 @@ app.post(
 // POST validated lecturer assessment raw marks; do not write aggregate totals into the legacy grades table.
 app.post(
   ["/api/lecturer/grades", "/api/faculty/grades"],
+  authenticateJWT,
+  checkRBAC(["lecturer", "admin", "super_admin"]),
   async (req: any, res: any) => {
     try {
       const { studentId, subjectCode, assessments, marks } = req.body || {};
@@ -4271,8 +4273,43 @@ app.post(
         return res.status(400).json({ error: "studentId and subjectCode are required." });
       }
 
+      const actorId = req.user?.userId as string | undefined;
+      const actorRole = req.user?.role as string | undefined;
+      if (!actorId || !actorRole) return res.status(403).json({ error: "Authenticated lecturer or administrator required." });
+
+      // A lecturer may only enter marks for a module explicitly assigned to them.
+      if (actorRole === "lecturer") {
+        const assigned = await db.select({ id: lecturerSubjects.id }).from(lecturerSubjects)
+          .where(and(eq(lecturerSubjects.lecturerId, actorId), eq(lecturerSubjects.subjectCode, String(subjectCode).trim())))
+          .limit(1);
+        if (assigned.length === 0) return res.status(403).json({ error: "You are not assigned to this subject." });
+      }
+
+      // Marks must belong to an active registration; a client cannot write a
+      // result for an arbitrary student/course pairing.
+      const enrolled = await db.select({ studentId: studentEnrollments.studentId }).from(studentEnrollments)
+        .where(and(
+          eq(studentEnrollments.studentId, studentId),
+          eq(studentEnrollments.courseCode, String(subjectCode).trim()),
+          eq(studentEnrollments.status, "active"),
+        ))
+        .limit(1);
+      if (enrolled.length === 0) return res.status(400).json({ error: "Student is not actively registered for this subject." });
+
       const componentMarks = marks || {};
-      const assessmentList = Array.isArray(assessments) ? assessments : [];
+      // Prefer the stored module configuration. Older modules can have marks
+      // recorded before assessment-configurations was introduced; their raw
+      // rows remain the existing authoritative assessment structure.
+      const storedConfigurations = await db.select().from(assessmentConfigurations)
+        .where(eq(assessmentConfigurations.subjectCode, String(subjectCode).trim()));
+      const assessmentList = storedConfigurations.length > 0 ? storedConfigurations.map((configuration) => ({
+        kind: configuration.assessmentKind,
+        name: configuration.assessmentName,
+        maxMarks: Number(configuration.maxMarks),
+        weight: Number(configuration.weight),
+      })) : (Array.isArray(assessments) ? assessments : []);
+      const weightError = validateAssessmentWeights(assessmentList as any);
+      if (weightError) return res.status(400).json({ error: `Assessment configuration invalid: ${weightError}` });
       const componentErrors = validateMarkBreakdown(componentMarks, assessmentList);
       if (Object.keys(componentErrors).length > 0) {
         const firstError = Object.values(componentErrors)[0];
@@ -4330,7 +4367,7 @@ app.post(
           rawMark: Number(fieldValue),
           maxMarks,
           weight: config?.weight ?? 0,
-          lecturerId: req.body?.lecturerId || null,
+          lecturerId: actorRole === "lecturer" ? actorId : null,
         });
       }
 
@@ -4493,6 +4530,15 @@ app.post(
       // Verify student exists
       const [studentRow] = await db.select().from(students).where(eq(students.id, studentId)).limit(1);
       if (!studentRow) return res.status(404).json({ error: 'Student not found.' });
+
+      const enrolled = await db.select({ studentId: studentEnrollments.studentId }).from(studentEnrollments)
+        .where(and(
+          eq(studentEnrollments.studentId, studentId),
+          eq(studentEnrollments.courseCode, String(subjectCode).trim()),
+          eq(studentEnrollments.status, "active"),
+        ))
+        .limit(1);
+      if (enrolled.length === 0) return res.status(400).json({ error: 'Student is not actively registered for this subject.' });
 
       // Verify lecturer / actor is allowed to publish this subject when role is lecturer
       if (actorRole === 'lecturer') {
@@ -6139,7 +6185,7 @@ app.post("/api/students/:id/reset-password", checkRBAC(["admin", "super_admin"])
  * Student portal visual summary used by StudentVisualSummaryDashboard.
  * Requires an authenticated student JWT; students may only load their own data.
  */
-app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: any, res: any) => {
+app.get("/api/student/dashboard-summary", authenticateJWT, checkRBAC(["student"]), async (req: any, res: any) => {
   try {
     if (req.user?.role !== "student" || !req.user?.userId) {
       return res.status(403).json({
@@ -6147,8 +6193,6 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
       });
     }
 
-    const requestedStudentId =
-      (req.query.studentId as string) || (req.headers["x-student-id"] as string);
     const studentId = req.user.userId as string;
     const roleId = (req.user.roleId as string) || studentId;
 
@@ -6163,10 +6207,6 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
     }
 
     const actualStudentId = studentRow.id;
-
-    if (requestedStudentId && requestedStudentId !== actualStudentId && requestedStudentId !== studentRow.admissionNo) {
-      return res.status(403).json({ error: "Students can only view their own dashboard." });
-    }
 
     let enrollmentRows = await db
       .select()
@@ -6193,26 +6233,26 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
         recordedAt: studentAssessmentMarks.recordedAt,
       })
       .from(studentAssessmentMarks)
-      .where(eq(studentAssessmentMarks.studentId, studentId));
+      .where(eq(studentAssessmentMarks.studentId, actualStudentId));
 
     const gradeRows = await db
       .select()
       .from(grades)
-      .where(eq(grades.studentId, studentId));
+      .where(eq(grades.studentId, actualStudentId));
 
     const attendanceRows = await db
       .select()
       .from(studentAttendance)
-      .where(eq(studentAttendance.studentId, studentId));
+      .where(eq(studentAttendance.studentId, actualStudentId));
 
     const invoiceRows = await db
       .select()
       .from(invoices)
-      .where(eq(invoices.studentId, studentId));
+      .where(eq(invoices.studentId, actualStudentId));
 
     const [paymentRows, notificationRows, scheduleRows, courseRows, lecturerRows, lecturerSubjectRows] =
       await Promise.all([
-        db.select().from(payments).where(eq(payments.studentId, studentId)),
+        db.select().from(payments).where(eq(payments.studentId, actualStudentId)),
         db
           .select()
           .from(notifications)
@@ -6256,64 +6296,79 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
       return "N/A";
     };
 
-    const publishedSummary = computePublishedAssessmentSummary(rawAssessmentRows, enrollmentRows, {
+    // Build a lookup of grades-table (published) rows by subject code.
+    const gradeBySubject = new Map<string, any>();
+    for (const g of gradeRows) gradeBySubject.set(g.subjectCode, g);
+
+    // Compute per-subject results from the live assessment rows so that
+    // subjects with marks entered but not yet formally published are visible
+    // to the student with a "Submitted" status.  Once a lecturer publishes,
+    // the grades table row takes precedence and the status becomes "Published".
+    const rawSummary = computePublishedAssessmentSummary(rawAssessmentRows, enrollmentRows, {
       courseTitle: studentRow.programme || studentRow.department || null,
       courseCode: studentRow.programme || studentRow.department || null,
       department: studentRow.department || null,
     });
 
-    // Build per-subject published details including grade rows and amendment detection
-    const gradeBySubject = new Map<string, any>();
-    for (const g of gradeRows) gradeBySubject.set(g.subjectCode, g);
-
-    const latestUpdateBySubject = new Map<string, string>();
-    for (const r of rawAssessmentRows) {
-      const code = r.subjectCode;
-      const prev = latestUpdateBySubject.get(code);
-      const rowUpdatedAt = (r as any).updatedAt;
-      if (!prev || (rowUpdatedAt && String(rowUpdatedAt) > prev)) latestUpdateBySubject.set(code, String(rowUpdatedAt));
-    }
-
-    const publishedSubjectsDetailed = (publishedSummary.subjects || []).map((s: any) => {
+    const publishedSubjectsDetailed = (rawSummary.subjects || []).map((s: any) => {
       const gradeRow = gradeBySubject.get(s.subjectCode) || null;
-      const gradedAt = gradeRow ? String(gradeRow.gradedAt) : null;
-      const latestUpdate = latestUpdateBySubject.get(s.subjectCode) || null;
-      const status = gradeRow ? ((latestUpdate && gradedAt && latestUpdate > gradedAt) ? 'Amended' : 'Published') : 'Published';
+      if (gradeRow) {
+        // Authoritative published snapshot from the grades table
+        const catScore = Number(gradeRow.catScore);
+        const examScore = Number(gradeRow.examScore);
+        const overallPercent = Number((catScore + examScore).toFixed(2));
+        const grade = letterGradeFromOverallPercentage(overallPercent);
+        return {
+          subjectCode: gradeRow.subjectCode,
+          overallPercent,
+          grade,
+          gradePoint: gradePointForPercent(overallPercent),
+          passed: overallPercent >= 40,
+          catScore,
+          examScore,
+          gradedAt: String(gradeRow.gradedAt),
+          status: 'Published',
+        };
+      }
+      // Marks have been entered but the lecturer has not yet published.
       return {
         subjectCode: s.subjectCode,
         overallPercent: s.overallPercent,
         grade: s.grade,
+        gradePoint: gradePointForPercent(s.overallPercent),
         passed: s.passed,
-        totalWeight: s.totalWeight,
-        catScore: gradeRow ? Number(gradeRow.catScore) : null,
-        examScore: gradeRow ? Number(gradeRow.examScore) : null,
-        gradedAt,
-        status,
+        catScore: null,
+        examScore: null,
+        gradedAt: null,
+        status: 'Submitted',
       };
     });
 
-    // Also provide entries for enrolled units with no published results
+    // Also provide entries for enrolled units with no marks at all.
     const enrolledCodes = enrollmentRows.map((e) => e.courseCode);
     for (const code of enrolledCodes) {
       if (!publishedSubjectsDetailed.find((p: any) => p.subjectCode === code)) {
-        const hasRaw = rawAssessmentRows.some((r) => r.subjectCode === code);
-        const status = hasRaw ? 'Draft / Not Published' : 'No Result';
-        publishedSubjectsDetailed.push({ subjectCode: code, overallPercent: 0, grade: null, passed: false, totalWeight: 0, catScore: null, examScore: null, gradedAt: null, status });
+        publishedSubjectsDetailed.push({ subjectCode: code, overallPercent: null, grade: null, gradePoint: null, passed: null, catScore: null, examScore: null, gradedAt: null, status: 'No Result' });
       }
     }
 
-    const publishedOverallPercents = (publishedSummary.subjects || []).map((s: any) => Number(s.overallPercent || 0));
-    const semesterAverage = publishedOverallPercents.length > 0 ? Number((publishedOverallPercents.reduce((a,b) => a+b, 0)/publishedOverallPercents.length).toFixed(2)) : null;
+    // Include both Published and Submitted entries when computing averages/GPA.
+    const scoredOverallPercents = publishedSubjectsDetailed
+      .filter((subject: any) => subject.status === 'Published' || subject.status === 'Submitted')
+      .map((subject: any) => Number(subject.overallPercent));
+    const semesterAverage = scoredOverallPercents.length > 0 ? Number((scoredOverallPercents.reduce((a,b) => a+b, 0)/scoredOverallPercents.length).toFixed(2)) : null;
 
-    let gpa: number | null = publishedSummary.gpa;
+    const gpa: number | null = scoredOverallPercents.length > 0
+      ? Number((scoredOverallPercents.reduce((sum, mark) => sum + gradePointForPercent(mark), 0) / scoredOverallPercents.length).toFixed(2))
+      : null;
     let gpaLabel = gpa === null ? "N/A" : deriveAcademicStanding(gpa);
 
-    const gpaTrend = (publishedSummary.subjects || []).map((entry, index) => ({
+    const gpaTrend = publishedSubjectsDetailed.filter((entry: any) => entry.status === 'Published' || entry.status === 'Submitted').map((entry: any) => ({
       label: entry.subjectCode,
       semester: entry.subjectCode,
       GPA: Number((gradePointForPercent(entry.overallPercent) || 0).toFixed(2)),
       subjectCode: entry.subjectCode,
-      gradedAt: null,
+      gradedAt: entry.gradedAt,
     }));
 
     // Build detailed attendance by querying per-session roll-call records
@@ -6387,7 +6442,7 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
       status: "Active",
     }));
 
-    const completedUnits = publishedSummary.modulesPassed ?? 0;
+    const completedUnits = publishedSubjectsDetailed.filter((subject: any) => subject.passed === true).length;
 
     const requiredUnits = Math.max(activeCourseCount, completedUnits, 1);
     const degreePercent = Math.min(100, Math.round((completedUnits / requiredUnits) * 100));
@@ -6511,7 +6566,7 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
       todaySchedule,
       registeredUnits,
       unpublishedSubjects,
-      publishedSubjects: publishedSummary.subjects || [],
+      publishedSubjects: publishedSubjectsDetailed.filter((subject: any) => subject.status === 'Published' || subject.status === 'Submitted'),
       publishedSubjectsDetailed,
       semesterAverage,
       notifications: notificationRows.map((notification) => ({
@@ -6539,11 +6594,18 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
 });
 
 // GET assessment breakdown details for a published subject (student view)
-app.get("/api/student/assessment-details", checkRBAC(["student"]), async (req:any, res:any) => {
+app.get("/api/student/assessment-details", authenticateJWT, checkRBAC(["student"]), async (req:any, res:any) => {
   try {
-    const studentId = req.user?.userId;
+    const userId = req.user?.userId as string | undefined;
     const subjectCode = (req.query.subjectCode as string) || null;
-    if (!studentId || !subjectCode) return res.status(400).json({ error: 'studentId and subjectCode required' });
+    if (!userId || !subjectCode) return res.status(400).json({ error: 'subjectCode required' });
+
+    const roleId = (req.user?.roleId as string | undefined) || userId;
+    const [studentRow] = await db.select().from(students)
+      .where(or(eq(students.id, userId), eq(students.id, roleId), eq(students.admissionNo, userId), eq(students.admissionNo, roleId)))
+      .limit(1);
+    if (!studentRow) return res.status(404).json({ error: 'Student profile not found' });
+    const studentId = studentRow.id;
 
     // Ensure student may only query their own data
     const rows = await db.select().from(studentAssessmentMarks).where(and(eq(studentAssessmentMarks.studentId, studentId), eq(studentAssessmentMarks.subjectCode, subjectCode)));
@@ -6555,6 +6617,13 @@ app.get("/api/student/assessment-details", checkRBAC(["student"]), async (req:an
     // the results yet and we should not reveal assessment details.
     const [gradeRow] = await db.select().from(grades).where(and(eq(grades.studentId, studentId), eq(grades.subjectCode, subjectCode))).limit(1);
     if (!gradeRow) return res.status(404).json({ error: 'No published assessment breakdown found' });
+
+    // Assessment rows are mutable. If they have changed after the publication
+    // snapshot, withhold the detail view until the lecturer republishes it.
+    const publishedAt = new Date(String(gradeRow.gradedAt)).getTime();
+    if (Number.isFinite(publishedAt) && rows.some((row: any) => new Date(String(row.updatedAt || row.recordedAt)).getTime() > publishedAt)) {
+      return res.status(404).json({ error: 'Assessment details are awaiting republication.' });
+    }
 
     // compute weighted contributions using authoritative backend logic
     const configMap = new Map<string, { maxMarks:number; weight:number }>();

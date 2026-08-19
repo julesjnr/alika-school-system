@@ -67,7 +67,8 @@ export default function StudentVisualSummaryDashboard({ student, onNavigateTab }
     setIsLoading(true);
     setError(null);
     try {
-      const response = await fetch(`/api/student/dashboard-summary?studentId=${encodeURIComponent(student.id)}`);
+      const token = localStorage.getItem('zenti_session_token');
+      const response = await fetch('/api/student/dashboard-summary', { headers: token ? { Authorization: `Bearer ${token}` } : {} });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error || 'Failed to load dashboard data');
       setSummary(body);
