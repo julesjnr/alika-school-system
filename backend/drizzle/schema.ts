@@ -318,7 +318,7 @@ export const notifications = pgTable("notifications", {
 	status: varchar({ length: 20 }).default('unread').notNull(),
 	dateTime: timestamp("date_time", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 }, (table) => [
-	index("idx_notifications_target").using("btree", table.targetUserId.asc().nullsLast().op("text_ops"), table.targetUserRole.asc().nullsLast().op("text_ops")),
+	index("idx_notifications_target").using("btree", table.targetUserId.asc().nullsLast().op("uuid_ops"), table.targetUserRole.asc().nullsLast().op("text_ops")),
 	check("notifications_status_check", sql`(status)::text = ANY ((ARRAY['unread'::character varying, 'read'::character varying])::text[])`),
 	check("notifications_target_user_role_check", sql`(target_user_role)::text = ANY ((ARRAY['student'::character varying, 'lecturer'::character varying, 'accountant'::character varying, 'librarian'::character varying, 'admin'::character varying, 'all'::character varying])::text[])`),
 	check("notifications_type_check", sql`(type)::text = ANY ((ARRAY['library'::character varying, 'payment'::character varying, 'announcement'::character varying])::text[])`),
@@ -508,6 +508,7 @@ export const readingListBooks = pgTable("reading_list_books", {
 export const studentEnrollments = pgTable("student_enrollments", {
 	studentId: uuid("student_id").notNull(),
 	courseCode: varchar("course_code", { length: 30 }).notNull(),
+	status: varchar({ length: 20 }).default('active').notNull(),
 	enrolledAt: timestamp("enrolled_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 }, (table) => [
 	foreignKey({

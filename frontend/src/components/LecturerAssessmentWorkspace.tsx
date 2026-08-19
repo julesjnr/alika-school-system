@@ -56,17 +56,17 @@ interface LecturerAssessmentWorkspaceProps {
 }
 
 const DEFAULT_ASSESSMENTS: AssessmentDef[] = [
-  { id: 'cat1', kind: 'CAT1', name: 'CAT 1', maxMarks: 0, weight: 10, published: false },
-  { id: 'cat2', kind: 'CAT2', name: 'CAT 2', maxMarks: 0, weight: 10, published: false },
-  { id: 'assignment', kind: 'Assignment', name: 'Assignment', maxMarks: 0, weight: 10, published: false },
-  { id: 'final', kind: 'FinalExam', name: 'Final Exam', maxMarks: 0, weight: 70, published: false },
+  { id: 'cat1', kind: 'CAT1', name: 'CAT 1', maxMarks: 50, weight: 15, published: false },
+  { id: 'cat2', kind: 'CAT2', name: 'CAT 2', maxMarks: 50, weight: 15, published: false },
+  { id: 'assignment', kind: 'Assignment', name: 'Assignment', maxMarks: 50, weight: 10, published: false },
+  { id: 'final', kind: 'FinalExam', name: 'Final Exam', maxMarks: 100, weight: 60, published: false },
 ];
 
-const KIND_OPTIONS: Array<{ kind: AssessmentKind; label: string; defaultMax: number }> = [
-  { kind: 'CAT1', label: 'CAT 1', defaultMax: 0 },
-  { kind: 'CAT2', label: 'CAT 2', defaultMax: 0 },
-  { kind: 'Assignment', label: 'Assignment', defaultMax: 0 },
-  { kind: 'FinalExam', label: 'Final Exam', defaultMax: 0 },
+const KIND_OPTIONS: Array<{ kind: AssessmentKind; label: string; defaultMax: number; defaultWeight: number }> = [
+  { kind: 'CAT1', label: 'CAT 1', defaultMax: 50, defaultWeight: 15 },
+  { kind: 'CAT2', label: 'CAT 2', defaultMax: 50, defaultWeight: 15 },
+  { kind: 'Assignment', label: 'Assignment', defaultMax: 50, defaultWeight: 10 },
+  { kind: 'FinalExam', label: 'Final Exam', defaultMax: 100, defaultWeight: 60 },
 ];
 
 const MARK_FIELDS: MarkField[] = ['cat1', 'cat2', 'assignment', 'exam'];
@@ -76,7 +76,7 @@ function getDefaultMaxForKind(kind: AssessmentKind, existingAssessments: Assessm
   if (configured && Number.isFinite(configured.maxMarks) && configured.maxMarks > 0) {
     return configured.maxMarks;
   }
-  return 0;
+  return kind === 'FinalExam' ? 100 : 50;
 }
 
 function letterGrade(total: number): string {
@@ -98,11 +98,31 @@ function loadAssessments(lecturerId: string, subject: string): AssessmentDef[] {
     if (!raw) return DEFAULT_ASSESSMENTS.map((item) => ({ ...item }));
     const parsed = JSON.parse(raw) as AssessmentDef[];
     const configured = Array.isArray(parsed) ? parsed : [];
+    if (configured.length === 0) return DEFAULT_ASSESSMENTS.map((item) => ({ ...item }));
+
     const merged = DEFAULT_ASSESSMENTS.map((item) => {
       const existing = configured.find((candidate) => candidate.kind === item.kind);
-      return { ...item, ...(existing || {}) };
+      if (!existing) return { ...item };
+      const fallbackMax = item.kind === 'FinalExam' ? 100 : 50;
+      const rawMax = Number(existing.maxMarks);
+      const maxMarks = Number.isFinite(rawMax) && rawMax > 0 ? rawMax : fallbackMax;
+      const name = String(existing.name ?? '').trim() || item.name;
+      const rawWeight = Number(existing.weight);
+      const weight = Number.isFinite(rawWeight) && rawWeight >= 0 ? rawWeight : item.weight;
+      return { ...item, ...existing, name, maxMarks, weight };
     });
-    const extras = configured.filter((item) => !DEFAULT_ASSESSMENTS.some((defaultItem) => defaultItem.kind === item.kind));
+    const extras = configured
+      .filter((item) => !DEFAULT_ASSESSMENTS.some((defaultItem) => defaultItem.kind === item.kind))
+      .filter((item) => item && String(item.name ?? '').trim() !== '')
+      .map((item) => {
+        const fallbackMax = item.kind === 'FinalExam' ? 100 : 50;
+        const rawMax = Number(item.maxMarks);
+        const maxMarks = Number.isFinite(rawMax) && rawMax > 0 ? rawMax : fallbackMax;
+        const rawWeight = Number(item.weight);
+        const weight = Number.isFinite(rawWeight) && rawWeight >= 0 ? rawWeight : 0;
+        const name = String(item.name ?? '').trim() || (item.kind === 'FinalExam' ? 'Final Exam' : 'CAT 1');
+        return { ...item, name, maxMarks, weight };
+      });
     return [...merged, ...extras];
   } catch {
     return DEFAULT_ASSESSMENTS.map((item) => ({ ...item }));
@@ -143,11 +163,11 @@ export default function LecturerAssessmentWorkspace({
   showToast,
   showWarning,
 }: LecturerAssessmentWorkspaceProps) {
-  const ASSESSMENT_DEFAULTS: Record<AssessmentKind, { weight: number; max: number }> = {
-    CAT1: { weight: 15, max: 50 },
-    CAT2: { weight: 15, max: 50 },
-    Assignment: { weight: 10, max: 100 },
-    FinalExam: { weight: 60, max: 100 },
+  const ASSESSMENT_DEFAULTS: Record<AssessmentKind, { weight: number; max: number; label: string }> = {
+    CAT1: { weight: 15, max: 50, label: 'CAT 1' },
+    CAT2: { weight: 15, max: 50, label: 'CAT 2' },
+    Assignment: { weight: 10, max: 50, label: 'Assignment' },
+    FinalExam: { weight: 60, max: 100, label: 'Final Exam' },
   };
   const [assessments, setAssessments] = useState<AssessmentDef[]>(() => loadAssessments(lecturerId, selectedSubject));
   const [breakdowns, setBreakdowns] = useState<Record<string, MarkBreakdown>>(() => loadBreakdowns(lecturerId, selectedSubject));
@@ -156,9 +176,9 @@ export default function LecturerAssessmentWorkspace({
   const [searchQuery, setSearchQuery] = useState('');
   const [editingAssessmentId, setEditingAssessmentId] = useState<string | null>(null);
   const [newKind, setNewKind] = useState<AssessmentKind>('CAT1');
-  const [newName, setNewName] = useState('');
-  const [newMax, setNewMax] = useState(0);
-  const [newWeight, setNewWeight] = useState(10);
+  const [newName, setNewName] = useState('CAT 1');
+  const [newMax, setNewMax] = useState(50);
+  const [newWeight, setNewWeight] = useState(15);
   const [saveFlash, setSaveFlash] = useState<string | null>(null);
   const [analytics, setAnalytics] = useState<AssessmentAnalytics | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
@@ -172,11 +192,20 @@ export default function LecturerAssessmentWorkspace({
     setDrafts({});
     setSearchQuery('');
     setEditingAssessmentId(null);
+    setNewKind('CAT1');
+    setNewName('CAT 1');
+    setNewMax(50);
+    setNewWeight(15);
+    setAssessmentErrors({});
+    setNewFieldErrors({});
   }, [lecturerId, selectedSubject]);
 
   // Ensure the Type dropdown defaults to CAT1 on mount
   useEffect(() => {
     setNewKind((prev) => prev || 'CAT1');
+    setNewName((prev) => prev || 'CAT 1');
+    setNewMax((prev) => (prev > 0 ? prev : 50));
+    setNewWeight((prev) => (prev > 0 ? prev : 15));
   }, []);
 
   // Fetch persisted assessment config from backend when subject selected
@@ -191,7 +220,20 @@ export default function LecturerAssessmentWorkspace({
         const data = await resp.json();
         if (cancelled) return;
         if (Array.isArray(data) && data.length > 0) {
-          const mapped: AssessmentDef[] = data.map((d: any) => ({ id: `${d.assessmentKind}-${selectedSubject}`, kind: d.assessmentKind, name: d.assessmentName, maxMarks: Number(d.maxMarks), weight: Number(d.weight), published: false }));
+          const mapped: AssessmentDef[] = data.map((d: any) => {
+            const kind = (d.assessmentKind as AssessmentKind) || 'CAT1';
+            const fallbackMax = kind === 'FinalExam' ? 100 : 50;
+            const rawMax = Number(d.maxMarks);
+            const maxMarks = Number.isFinite(rawMax) && rawMax > 0 ? rawMax : fallbackMax;
+            return {
+              id: `${d.assessmentKind}-${selectedSubject}`,
+              kind,
+              name: String(d.assessmentName ?? '').trim() || (kind === 'FinalExam' ? 'Final Exam' : 'CAT 1'),
+              maxMarks,
+              weight: Number(d.weight ?? 0),
+              published: false,
+            };
+          });
           setAssessments(mapped);
           return;
         }
@@ -235,7 +277,6 @@ export default function LecturerAssessmentWorkspace({
     () => students.filter((student) => student.enrolledUnits.includes(selectedSubject)),
     [students, selectedSubject],
   );
-  
 
   const assessmentFieldForKind = (kind: AssessmentKind): MarkField => (
     kind === 'CAT1' ? 'cat1' : kind === 'CAT2' ? 'cat2' : kind === 'Assignment' ? 'assignment' : 'exam'
@@ -281,19 +322,34 @@ export default function LecturerAssessmentWorkspace({
     return result;
   };
 
+  const sanitizeAssessments = (rawList: AssessmentDef[]): AssessmentDef[] => {
+    // 1. Filter out any blank/empty draft rows
+    const nonBlank = (rawList || []).filter((a) => a && String(a.name ?? '').trim() !== '');
+
+    // 2. Normalize and auto-fallback maxMarks for empty or 0 values
+    return nonBlank.map((a) => {
+      const fallbackMax = a.kind === 'FinalExam' ? 100 : 50;
+      const rawMax = Number(a.maxMarks);
+      const maxMarks = Number.isFinite(rawMax) && rawMax > 0 ? rawMax : fallbackMax;
+      const rawWeight = Number(a.weight);
+      const weight = Number.isFinite(rawWeight) && rawWeight >= 0 ? rawWeight : 0;
+      const name = String(a.name ?? '').trim() || (a.kind === 'FinalExam' ? 'Final Exam' : 'CAT 1');
+      return {
+        ...a,
+        name,
+        maxMarks,
+        weight,
+      };
+    });
+  };
+
   const persistAssessments = (next: AssessmentDef[]) => {
-    // Normalize and validate assessments before persisting
-    const normalized = next.map((a) => ({
-      ...a,
-      name: String(a.name ?? '').trim(),
-      maxMarks: Number(a.maxMarks ?? 0),
-      weight: Number(a.weight ?? 0),
-    }));
+    // Sanitize submission payload
+    const normalized = sanitizeAssessments(next);
 
     const errors: Record<string, { name?: boolean; maxMarks?: boolean; weight?: boolean }> = {};
     for (const a of normalized) {
       const e: { name?: boolean; maxMarks?: boolean; weight?: boolean } = {};
-      if (!a.kind || String(a.kind).trim() === '') e.name = true; // kind missing - mark name to draw attention
       if (!a.name || a.name === '') e.name = true;
       if (!Number.isFinite(a.maxMarks) || a.maxMarks <= 0) e.maxMarks = true;
       if (!Number.isFinite(a.weight) || a.weight < 0) e.weight = true;
@@ -315,8 +371,17 @@ export default function LecturerAssessmentWorkspace({
       try {
         const token = localStorage.getItem('zenti_session_token');
         const resp = await fetch('/api/lecturer/assessment-config', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-          body: JSON.stringify({ subjectCode: selectedSubject, assessments: normalized.map((a) => ({ assessmentKind: a.kind, assessmentName: a.name, maxMarks: a.maxMarks, weight: a.weight })) }),
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify({
+            subjectCode: selectedSubject,
+            assessments: normalized.map((a) => ({
+              assessmentKind: a.kind,
+              assessmentName: a.name,
+              maxMarks: a.maxMarks,
+              weight: a.weight,
+            })),
+          }),
         });
         if (!resp.ok) {
           const body = await resp.json().catch(() => ({}));
@@ -421,13 +486,18 @@ export default function LecturerAssessmentWorkspace({
 
   const createAssessment = () => {
     const option = KIND_OPTIONS.find((item) => item.kind === newKind);
-    const name = newName.trim() || option?.label || newKind;
-    const trimmedMax = Number(newMax);
-    const trimmedWeight = Number(newWeight);
+    const defaultLabel = option?.label || newKind || 'CAT 1';
+    const name = newName.trim() || defaultLabel;
+    const fallbackMax = newKind === 'FinalExam' ? 100 : 50;
+    const rawMax = Number(newMax);
+    const maxMarks = Number.isFinite(rawMax) && rawMax > 0 ? rawMax : fallbackMax;
+    const rawWeight = Number(newWeight);
+    const weight = Number.isFinite(rawWeight) && rawWeight >= 0 ? rawWeight : (option?.defaultWeight || 15);
+
     const fieldErrors: { name?: boolean; maxMarks?: boolean; weight?: boolean } = {};
     if (!name) fieldErrors.name = true;
-    if (!Number.isFinite(trimmedMax) || trimmedMax <= 0) fieldErrors.maxMarks = true;
-    if (!Number.isFinite(trimmedWeight) || trimmedWeight < 0) fieldErrors.weight = true;
+    if (!Number.isFinite(maxMarks) || maxMarks <= 0) fieldErrors.maxMarks = true;
+    if (!Number.isFinite(weight) || weight < 0) fieldErrors.weight = true;
 
     if (fieldErrors.name || fieldErrors.maxMarks || fieldErrors.weight) {
       setNewFieldErrors(fieldErrors);
@@ -438,8 +508,6 @@ export default function LecturerAssessmentWorkspace({
       showWarning('Assessment exists', `${option?.label || newKind} is already configured for this module.`);
       return;
     }
-    const maxMarks = trimmedMax;
-    const weight = trimmedWeight;
     const next = [...assessments, { id: `${newKind.toLowerCase()}-${Date.now()}`, kind: newKind, name, maxMarks, weight, published: false }];
     const weightWarning = validateAssessmentWeights(next);
     if (weightWarning) {
@@ -447,17 +515,18 @@ export default function LecturerAssessmentWorkspace({
       return;
     }
     persistAssessments(next);
-    setNewName('');
-    setNewMax(0);
-    setNewWeight(10);
+    setNewKind('CAT1');
+    setNewName('CAT 1');
+    setNewMax(50);
+    setNewWeight(15);
     setNewFieldErrors({});
     showToast('Assessment created.', 'success');
   };
 
   const isCreateInvalid = (() => {
-    const option = KIND_OPTIONS.find((item) => item.kind === newKind);
-    const name = newName.trim() || option?.label || newKind;
-    const trimmedMax = Number(newMax);
+    const name = newName.trim();
+    const fallbackMax = newKind === 'FinalExam' ? 100 : 50;
+    const trimmedMax = Number(newMax) || fallbackMax;
     const trimmedWeight = Number(newWeight);
     return !name || !Number.isFinite(trimmedMax) || trimmedMax <= 0 || !Number.isFinite(trimmedWeight) || trimmedWeight < 0;
   })();
@@ -694,12 +763,6 @@ export default function LecturerAssessmentWorkspace({
             <h3 className="text-sm font-semibold text-slate-900">Assessment management</h3>
             <p className="text-xs text-slate-500">Configure CAT 1, CAT 2, Assignments, and Final Exam for this module.</p>
           </div>
-        </div>
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold text-slate-900">Assessment management</h3>
-            <p className="text-xs text-slate-500">Configure CAT 1, CAT 2, Assignments, and Final Exam for this module.</p>
-          </div>
           <div className="text-right text-sm text-slate-600">
             <div>Total Weight: <span className={`font-semibold ${assessments.reduce((s, a) => s + Number(a.weight || 0), 0) !== 100 ? 'text-rose-600' : 'text-emerald-700'}`}>{assessments.reduce((s, a) => s + Number(a.weight || 0), 0)}%</span></div>
             {(() => {
@@ -736,7 +799,9 @@ export default function LecturerAssessmentWorkspace({
                             setAssessmentErrors((prev) => { const copy = { ...prev }; delete copy[assessment.id]; return copy; });
                             persistAssessments(assessments.map((item) => item.id === assessment.id ? { ...item, name: event.target.value } : item));
                           }}
-                          className={`w-full rounded px-2 py-1 ${assessmentErrors[assessment.id]?.name ? 'border-rose-400 bg-rose-50' : 'border-slate-200'}`}
+                          className={`w-full rounded px-2 py-1 text-xs border transition ${
+                            assessmentErrors[assessment.id]?.name ? 'border-rose-500 ring-1 ring-rose-500 bg-rose-50' : 'border-slate-200'
+                          }`}
                         />
                       ) : (
                         <span className="font-semibold text-slate-800">{assessment.name}</span>
@@ -748,12 +813,17 @@ export default function LecturerAssessmentWorkspace({
                         <input
                           type="number"
                           min={1}
-                            value={assessment.maxMarks}
-                            onChange={(event) => {
-                              setAssessmentErrors((prev) => { const copy = { ...prev }; delete copy[assessment.id]; return copy; });
-                              persistAssessments(assessments.map((item) => item.id === assessment.id ? { ...item, maxMarks: Number(event.target.value) || 1 } : item));
-                            }}
-                            className={`w-20 rounded px-2 py-1 ${assessmentErrors[assessment.id]?.maxMarks ? 'border-rose-400 bg-rose-50' : 'border-slate-200'}`}
+                          value={assessment.maxMarks}
+                          onChange={(event) => {
+                            setAssessmentErrors((prev) => { const copy = { ...prev }; delete copy[assessment.id]; return copy; });
+                            const val = Number(event.target.value);
+                            const fallbackMax = assessment.kind === 'FinalExam' ? 100 : 50;
+                            const safeMax = val > 0 ? val : fallbackMax;
+                            persistAssessments(assessments.map((item) => item.id === assessment.id ? { ...item, maxMarks: safeMax } : item));
+                          }}
+                          className={`w-20 rounded px-2 py-1 text-xs border transition ${
+                            assessmentErrors[assessment.id]?.maxMarks ? 'border-rose-500 ring-1 ring-rose-500 bg-rose-50' : 'border-slate-200'
+                          }`}
                         />
                       ) : (
                         assessment.maxMarks
@@ -785,13 +855,14 @@ export default function LecturerAssessmentWorkspace({
               onChange={(event) => {
                 const kind = event.target.value as AssessmentKind;
                 setNewKind(kind);
-                const defaults = ASSESSMENT_DEFAULTS[kind];
-                // compute remaining weight from existing assessments
+                const defaults = ASSESSMENT_DEFAULTS[kind] || { weight: 15, max: 50, label: 'CAT 1' };
                 const currentTotal = assessments.reduce((s, a) => s + Number(a.weight || 0), 0);
                 const remaining = Math.max(0, 100 - currentTotal);
                 const suggestedWeight = remaining > 0 ? remaining : defaults.weight;
+                setNewName(defaults.label);
                 setNewWeight(suggestedWeight);
                 setNewMax(defaults.max);
+                setNewFieldErrors({});
               }}
               className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs"
             >
@@ -800,35 +871,70 @@ export default function LecturerAssessmentWorkspace({
           </div>
           <div className="flex-[1.4]">
             <label className="text-[11px] font-semibold text-slate-600">Name</label>
-            <input value={newName} onChange={(event) => { setNewName(event.target.value); setNewFieldErrors((p) => ({ ...p, name: false })); }} placeholder="Optional custom name" className={`mt-1 w-full rounded-lg px-2 py-2 text-xs ${newFieldErrors.name ? 'border-rose-400 bg-rose-50' : 'border-slate-200'}`} />
+            <input
+              value={newName}
+              onChange={(event) => {
+                setNewName(event.target.value);
+                setNewFieldErrors((p) => ({ ...p, name: false }));
+              }}
+              placeholder="Assessment name (e.g. CAT 1)"
+              className={`mt-1 w-full rounded-lg border px-2 py-2 text-xs transition ${
+                newFieldErrors.name ? 'border-rose-500 ring-1 ring-rose-500 bg-rose-50' : 'border-slate-200 bg-white'
+              }`}
+            />
           </div>
           <div className="w-28">
             <label className="text-[11px] font-semibold text-slate-600">Max</label>
-            <input type="number" min={1} value={newMax} onChange={(event) => { setNewMax(Number(event.target.value) || 0); setNewFieldErrors((p) => ({ ...p, maxMarks: false })); }} className={`mt-1 w-full rounded-lg px-2 py-2 text-xs ${newFieldErrors.maxMarks ? 'border-rose-400 bg-rose-50' : 'border-slate-200'}`} />
+            <input
+              type="number"
+              min={1}
+              value={newMax || ''}
+              onChange={(event) => {
+                setNewMax(Number(event.target.value) || 0);
+                setNewFieldErrors((p) => ({ ...p, maxMarks: false }));
+              }}
+              className={`mt-1 w-full rounded-lg border px-2 py-2 text-xs transition ${
+                newFieldErrors.maxMarks ? 'border-rose-500 ring-1 ring-rose-500 bg-rose-50' : 'border-slate-200 bg-white'
+              }`}
+            />
           </div>
           <div className="w-28">
             <label className="text-[11px] font-semibold text-slate-600">Weight %</label>
-            <input type="number" min={0} max={100} value={newWeight} onChange={(event) => { setNewWeight(Number(event.target.value) || 0); setNewFieldErrors((p) => ({ ...p, weight: false })); }} className={`mt-1 w-full rounded-lg px-2 py-2 text-xs ${newFieldErrors.weight ? 'border-rose-400 bg-rose-50' : 'border-slate-200'}`} />
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={newWeight || ''}
+              onChange={(event) => {
+                setNewWeight(Number(event.target.value) || 0);
+                setNewFieldErrors((p) => ({ ...p, weight: false }));
+              }}
+              className={`mt-1 w-full rounded-lg border px-2 py-2 text-xs transition ${
+                newFieldErrors.weight ? 'border-rose-500 ring-1 ring-rose-500 bg-rose-50' : 'border-slate-200 bg-white'
+              }`}
+            />
           </div>
           <button
             type="button"
             onClick={createAssessment}
             disabled={isCreateInvalid}
-            className={`inline-flex items-center justify-center gap-1 rounded-lg px-3 py-2 text-xs font-semibold text-white ${isCreateInvalid ? 'bg-slate-300 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
+            className={`inline-flex items-center justify-center gap-1 rounded-lg px-3 py-2 text-xs font-semibold text-white ${
+              isCreateInvalid ? 'bg-slate-300 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
+            }`}
           >
             <Plus className="h-3.5 w-3.5" /> Create Assessment
           </button>
-          {isCreateInvalid && (
-            <div className="text-rose-600 text-xs mt-2">
-              {newFieldErrors.name && <div>Provide a valid assessment name.</div>}
-              {newFieldErrors.maxMarks && <div>Max marks must be a number greater than 0.</div>}
-              {newFieldErrors.weight && <div>Weight must be a number greater than or equal to 0.</div>}
-              {!newFieldErrors.name && !newFieldErrors.maxMarks && !newFieldErrors.weight && (
-                <div>Please ensure all fields are valid before creating an assessment.</div>
-              )}
-            </div>
-          )}
         </div>
+        {isCreateInvalid && (
+          <div className="text-rose-600 text-xs mt-1">
+            {newFieldErrors.name && <div>Provide a valid assessment name.</div>}
+            {newFieldErrors.maxMarks && <div>Max marks must be a number greater than 0.</div>}
+            {newFieldErrors.weight && <div>Weight must be a number greater than or equal to 0.</div>}
+            {!newFieldErrors.name && !newFieldErrors.maxMarks && !newFieldErrors.weight && (
+              <div>Please ensure name is non-empty and max marks/weight are valid numbers.</div>
+            )}
+          </div>
+        )}
       </section>
 
       {/* Marks entry */}
@@ -909,7 +1015,9 @@ export default function LecturerAssessmentWorkspace({
                               onChange={(event) => updateDraft(student.id, a.id, event.target.value)}
                               aria-invalid={Boolean(fieldErrors[field])}
                               title={fieldErrors[field]}
-                              className={`w-16 rounded border px-2 py-1 text-center font-mono outline-none focus:ring-2 ${fieldErrors[field] ? 'border-rose-400 bg-rose-50 focus:ring-rose-100' : 'border-slate-200 focus:border-blue-400 focus:ring-blue-100'}`}
+                              className={`w-16 rounded border px-2 py-1 text-center font-mono outline-none focus:ring-2 ${
+                                fieldErrors[field] ? 'border-rose-500 ring-1 ring-rose-500 bg-rose-50 focus:ring-rose-200' : 'border-slate-200 focus:border-blue-400 focus:ring-blue-100'
+                              }`}
                             />
                           </td>
                         );

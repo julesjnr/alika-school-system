@@ -1,5 +1,29 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-dotenv.config({ override: true });
+
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
+
+const resolveProjectEnvPath = () => {
+  const cwd = process.cwd();
+  const candidates = [
+    process.env.DOTENV_PATH,
+    path.resolve(cwd, '.env'),
+    path.resolve(cwd, '..', '.env'),
+    path.resolve(cwd, '..', '..', '.env'),
+    path.resolve(currentDir, '../../.env'),
+    path.resolve(currentDir, '../../../.env'),
+  ].filter(Boolean) as string[];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+};
+
+const projectEnvPath = resolveProjectEnvPath();
+if (projectEnvPath) {
+  dotenv.config({ path: projectEnvPath, override: true });
+}
+
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pkg from 'pg';
 const { Pool } = pkg;
@@ -7,13 +31,26 @@ import * as schema from './schema.ts';
 
 // Function to create a new connection pool.
 export const createPool = () => {
+  const normalizeSqlValue = (value: string | undefined) => {
+    if (!value) return undefined;
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  };
+
   const connectionString = process.env.DATABASE_URL;
-  const hasSqlConfig = Boolean(
-    process.env.SQL_HOST &&
-    process.env.SQL_USER &&
-    process.env.SQL_PASSWORD &&
-    process.env.SQL_DB_NAME
-  );
+  const sqlHost = normalizeSqlValue(process.env.SQL_HOST);
+  const sqlUser = normalizeSqlValue(process.env.SQL_USER);
+  const sqlPassword = normalizeSqlValue(process.env.SQL_PASSWORD);
+  const sqlDbName = normalizeSqlValue(process.env.SQL_DB_NAME);
+  const sqlPort = normalizeSqlValue(process.env.SQL_PORT);
+
+  const hasSqlConfig = Boolean(sqlHost && sqlUser && sqlPassword && sqlDbName);
+
+  const allowMockDatabase = process.env.ALLOW_MOCK_DATABASE === 'true';
+  const sslMode = process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false };
 
   // Supabase session poolers enforce comparatively small connection limits.  A
   // small application pool prevents concurrent startup reads/syncs from
@@ -24,14 +61,20 @@ export const createPool = () => {
   const maxLifetimeSeconds = Number(process.env.DB_MAX_LIFETIME_SECONDS) || 300;
 
   if (hasSqlConfig) {
+    console.info('[Database] Using local PostgreSQL configuration.', {
+      host: sqlHost,
+      port: sqlPort || 5432,
+      database: sqlDbName,
+      user: sqlUser,
+    });
     return new Pool({
-      host: process.env.SQL_HOST,
-      port: process.env.SQL_PORT ? Number(process.env.SQL_PORT) : 5432,
-      user: process.env.SQL_USER,
-      password: process.env.SQL_PASSWORD,
-      database: process.env.SQL_DB_NAME,
+      host: sqlHost,
+      port: sqlPort ? Number(sqlPort) : 5432,
+      user: sqlUser,
+      password: sqlPassword,
+      database: sqlDbName,
       connectionTimeoutMillis,
-      ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false },
+      ssl: sslMode,
       max,
       min: 0,
       idleTimeoutMillis,
@@ -42,10 +85,11 @@ export const createPool = () => {
   }
 
   if (connectionString) {
+    console.info('[Database] Using DATABASE_URL PostgreSQL configuration.');
     return new Pool({
       connectionString,
       connectionTimeoutMillis,
-      ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false },
+      ssl: sslMode,
       max,
       min: 0,
       idleTimeoutMillis,
@@ -55,12 +99,16 @@ export const createPool = () => {
     });
   }
 
-  console.warn('[AI Studio] No database configuration found. Using fallback connection.');
-  return new Pool({
-    connectionString: 'postgres://mock:mock@localhost:5432/mock',
-    connectionTimeoutMillis: 1000,
-    max: 1,
-  });
+  if (allowMockDatabase) {
+    console.warn('[Database] Mock database mode enabled explicitly via ALLOW_MOCK_DATABASE=true.');
+    return new Pool({
+      connectionString: 'postgres://mock:mock@localhost:5432/mock',
+      connectionTimeoutMillis: 1000,
+      max: 1,
+    });
+  }
+
+  throw new Error('Missing PostgreSQL configuration. Set SQL_* variables or DATABASE_URL in the project root .env file, or enable ALLOW_MOCK_DATABASE=true only for explicit offline/demo mode.');
 };
 
 // Create a singleton pool instance.

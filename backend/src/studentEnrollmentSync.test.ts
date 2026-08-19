@@ -44,3 +44,45 @@ test('does not create a duplicate canonical enrollment for the same course', asy
   assert.equal(created, false);
   assert.equal(insertCalls, 0);
 });
+
+test('reconcileStudentEnrollments backfills active students like ALK-001 with default module', async () => {
+  const mockStudents = [
+    { id: 'uuid-1', admissionNo: 'ALK-001', name: 'Alika Student', email: 'alk@example.com', courseId: null, programme: 'Caregiver Course' },
+  ];
+  const mockCourses = [
+    { id: 'course-uuid-1', code: 'CERT-CAREGIVER', title: 'Caregiver Course' },
+  ];
+  const mockEnrollments: any[] = [];
+
+  const runner = {
+    select: async () => ({
+      from: async (table: any) => {
+        // Distinguish by table or return corresponding mock list
+        const tableName = table?._?.name || table?.name;
+        if (tableName === 'student_enrollments') return mockEnrollments;
+        if (tableName === 'courses') return mockCourses;
+        return mockStudents;
+      },
+    }),
+    insert: () => ({
+      values: (val: any) => ({
+        onConflictDoNothing: () => ({
+          returning: async () => {
+            mockEnrollments.push(val);
+            return [val];
+          },
+        }),
+      }),
+    }),
+  } as any;
+
+  const { reconcileStudentEnrollments } = await import('./studentEnrollmentSync.ts');
+  const results = await reconcileStudentEnrollments(runner);
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0].studentId, 'uuid-1');
+  assert.equal(results[0].admissionNo, 'ALK-001');
+  assert.equal(results[0].courseCode, 'CERT-CAREGIVER');
+  assert.equal(results[0].status, 'active');
+});
+

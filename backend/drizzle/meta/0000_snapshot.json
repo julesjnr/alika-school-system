@@ -1590,7 +1590,7 @@
               "expression": "target_user_id",
               "asc": true,
               "nulls": "last",
-              "opclass": "text_ops",
+              "opclass": "uuid_ops",
               "isExpression": false
             },
             {

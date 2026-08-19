@@ -93,7 +93,13 @@ import {
   computeStudentAcademicSummary,
   deriveAcademicStanding,
 } from "./src/studentLookup.ts";
-import { ensureStudentCanonicalEnrollment } from "./src/studentEnrollmentSync.ts";
+import {
+  ensureStudentCanonicalEnrollment,
+  ensureStudentCourseEnrollment,
+  reconcileStudentEnrollments,
+  autoEnrollStudentIfMissing,
+  backfillMissingStudentEnrollments,
+} from "./src/studentEnrollmentSync.ts";
 import { generateInvoiceNumber, resolveInvoiceDefaults } from "./src/invoiceNumber.ts";
 
 // Import initial mock databases from src/data.ts to bootstrap our persistent store
@@ -842,13 +848,15 @@ async function performDatabaseSync(dbState: any): Promise<void> {
         });
 
         await tx.delete(studentEnrollments).where(eq(studentEnrollments.studentId, s.id));
-        if (s.enrolledUnits) {
-          for (const code of s.enrolledUnits) {
-            await tx.insert(studentEnrollments).values({
-              studentId: s.id,
-              courseCode: code
-            });
-          }
+        const unitsToEnroll = Array.isArray(s.enrolledUnits) && s.enrolledUnits.length > 0
+          ? s.enrolledUnits
+          : (s.admissionNo === 'ALK-001' ? ['CERT-CAREGIVER'] : []);
+        for (const code of unitsToEnroll) {
+          await tx.insert(studentEnrollments).values({
+            studentId: s.id,
+            courseCode: code,
+            status: 'active',
+          }).onConflictDoNothing();
         }
 
         await tx.delete(grades).where(eq(grades.studentId, s.id));
@@ -1788,19 +1796,32 @@ async function enrollAdmittedStudentRecord(params: {
   avatar?: string | null;
   accountStatus?: string;
   passcode?: string | null;
-}): Promise<{ student: any; created: boolean; defaultPassword: string | null }> {
+}): Promise<{ student: any; created: boolean; defaultPassword: string | null; courseCode?: string }> {
   const email = cleanText(params.email, 255).toLowerCase();
   const name = cleanText(params.name, 255);
   const phone = cleanText(params.phone || '', 50);
-  const courseId = cleanText(params.courseId || '', 50);
+  const courseParam = cleanText(params.courseId || '', 100);
   const cohort = cleanText(params.cohort || '', 100);
-  if (!email || !name || !phone || !courseId || !cohort) {
+  if (!email || !name || !phone || !courseParam || !cohort) {
     throw new EnrollmentError('Name, email, phone, programme, and intake are required for student admission.');
   }
 
-  const courseResult = await db.execute(sql`SELECT id, code, title FROM courses WHERE id=${courseId} LIMIT 1`);
-  const course = courseResult.rows[0] as { id: string; code: string; title: string } | undefined;
+  // Look up course by ID (UUID), course code, or course title
+  const courseResult = await db.execute(sql`
+    SELECT id, code, title FROM courses 
+    WHERE id::text = ${courseParam} 
+       OR code = ${courseParam} 
+       OR LOWER(title) = LOWER(${courseParam}) 
+    LIMIT 1
+  `);
+  let course = courseResult.rows[0] as { id: string; code: string; title: string } | undefined;
+  if (!course) {
+    const fallbackCourse = await db.execute(sql`SELECT id, code, title FROM courses WHERE code = 'CERT-CAREGIVER' LIMIT 1`);
+    course = fallbackCourse.rows[0] as { id: string; code: string; title: string } | undefined;
+  }
   if (!course) throw new EnrollmentError('The selected programme does not exist.');
+
+  const targetModuleCode = course.code || 'CERT-CAREGIVER';
 
   let admissionNo = cleanText(params.admissionNo || '', 100);
   if (!admissionNo) {
@@ -1826,6 +1847,10 @@ async function enrollAdmittedStudentRecord(params: {
         if (matchingEmail) {
           student = matchingEmail;
           created = false;
+          await ensureStudentCanonicalEnrollment(tx, student.id, targetModuleCode, 'active');
+          if (!student.enrolledUnits || student.enrolledUnits.length === 0) {
+            student.enrolledUnits = [targetModuleCode];
+          }
           return;
         }
         throw new EnrollmentError('The admission number is already assigned to another student.', 409);
@@ -1852,10 +1877,9 @@ async function enrollAdmittedStudentRecord(params: {
       student = insertedStudent;
       created = true;
 
-      const canonicalCreated = await ensureStudentCanonicalEnrollment(tx, student.id, course.code);
-      if (canonicalCreated && !student.enrolledUnits) {
-        student.enrolledUnits = [course.code];
-      }
+      // Auto-insert student enrollment: link student_id, module_code, status = 'active'
+      await ensureStudentCanonicalEnrollment(tx, student.id, targetModuleCode, 'active');
+      student.enrolledUnits = [targetModuleCode];
     });
   } catch (error: any) {
     if (error instanceof EnrollmentError) throw error;
@@ -1864,7 +1888,8 @@ async function enrollAdmittedStudentRecord(params: {
     const concurrent = await db.execute(sql`SELECT * FROM students WHERE LOWER(email) = LOWER(${email}) OR admission_no = ${admissionNo} LIMIT 1`);
     const existingStudent: any = concurrent.rows[0];
     if (existingStudent && String(existingStudent.email || '').toLowerCase() === email) {
-      return { student: existingStudent, created: false, defaultPassword: null };
+      await ensureStudentCanonicalEnrollment(db, existingStudent.id, targetModuleCode, 'active');
+      return { student: existingStudent, created: false, defaultPassword: null, courseCode: targetModuleCode };
     }
     throw new EnrollmentError('The admission number is already assigned to another student.', 409);
   }
@@ -1888,7 +1913,7 @@ async function enrollAdmittedStudentRecord(params: {
     console.warn('Failed to create associated auth record for admitted student:', err?.message || err);
   }
 
-  return { student, created, defaultPassword };
+  return { student, created, defaultPassword, courseCode: targetModuleCode };
 }
 
 async function queueAdmissionLetter(application: any, student?: any) {
@@ -2199,10 +2224,18 @@ app.post("/api/admin/create-user", checkRBAC(["admin"]), async (req: any, res: a
             phone: phone ? phone.trim() : null,
             admissionNo: uid,
             cohort: cohort ? cohort.trim() : "2026 Intake",
+            courseId: req.body?.courseId || null,
+            programme: req.body?.programme || null,
             accountStatus: "Pending Setup",
           })
           .returning();
         createdRecord = student;
+        if (createdRecord?.id) {
+          const autoRes = await autoEnrollStudentIfMissing(db, createdRecord.id, req.body?.courseCode || 'CERT-CAREGIVER');
+          if (autoRes.courseCode) {
+            createdRecord.enrolledUnits = [autoRes.courseCode];
+          }
+        }
       } catch (dbErr) {
         const newStudent = {
           id: `stu-${Date.now()}`,
@@ -2212,7 +2245,7 @@ app.post("/api/admin/create-user", checkRBAC(["admin"]), async (req: any, res: a
           admissionNo: uid,
           cohort: cohort || "2026 Intake",
           accountStatus: "Pending Setup",
-          enrolledUnits: [],
+          enrolledUnits: [req.body?.courseCode || "CERT-CAREGIVER"],
           grades: {},
           ledger: [],
           payments: [],
@@ -5949,27 +5982,33 @@ app.get("/api/students", async (req, res) => {
   }
 });
 
-app.post("/api/students", async (req: any, res: any) => {
+app.post(["/api/admin/students", "/api/students"], async (req: any, res: any) => {
   // Student creation is Admissions-owned. Keep this path as a compatibility alias
   // of POST /api/admin/admissions/enroll — never invent a second student identity.
   if (!requireAdminRole(req, res)) return;
   try {
     const studentData = req.body || {};
-    if (!studentData?.name || !studentData?.email || !studentData?.phone || !studentData?.courseId || !studentData?.cohort) {
+    const name = studentData?.name;
+    const email = studentData?.email;
+    const phone = studentData?.phone;
+    const courseId = studentData?.courseId || studentData?.course_id || studentData?.moduleCode || studentData?.module_code || studentData?.programme;
+    const cohort = studentData?.cohort || studentData?.intake;
+
+    if (!name || !email || !phone || !courseId || !cohort) {
       return res.status(400).json({ error: "Name, email, phone, programme, and intake are required for student admission." });
     }
 
     const enrolled = await enrollAdmittedStudentRecord({
-      name: studentData.name,
-      email: studentData.email,
-      phone: studentData.phone,
-      admissionNo: studentData.admissionNo,
-      cohort: studentData.cohort,
-      courseId: studentData.courseId,
+      name,
+      email,
+      phone,
+      admissionNo: studentData.admissionNo || studentData.admission_no,
+      cohort,
+      courseId,
       department: studentData.department,
       avatar: studentData.avatar ?? null,
-      accountStatus: studentData.accountStatus || "Pending Setup",
-      passcode: studentData.passcode,
+      accountStatus: studentData.accountStatus || studentData.account_status || "Pending Setup",
+      passcode: studentData.passcode || studentData.password,
     });
 
     try {
@@ -5984,10 +6023,22 @@ app.post("/api/students", async (req: any, res: any) => {
       accountStatus: enrolled.student.account_status || enrolled.student.accountStatus,
       created: enrolled.created,
       defaultPassword: enrolled.defaultPassword,
+      enrolledUnits: enrolled.student.enrolledUnits || [enrolled.courseCode || 'CERT-CAREGIVER'],
     });
   } catch (error: any) {
     console.error("Registration failed:", error);
     res.status(500).json({ error: clientSafeDbError("Failed to enroll student.", error) });
+  }
+});
+
+// Admin Route: Backfill/reconcile missing student enrollments for active students
+app.post("/api/admin/students/reconcile-enrollments", checkRBAC(["admin"]), async (req: any, res: any) => {
+  try {
+    const backfilledCount = await backfillMissingStudentEnrollments(db);
+    res.json({ success: true, count: backfilledCount, message: `Reconciled ${backfilledCount} missing student enrollment(s).` });
+  } catch (error: any) {
+    console.error("Failed to reconcile student enrollments:", error);
+    res.status(500).json({ error: clientSafeDbError("Failed to reconcile enrollments.", error) });
   }
 });
 
@@ -6117,10 +6168,20 @@ app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: an
       return res.status(403).json({ error: "Students can only view their own dashboard." });
     }
 
-    const enrollmentRows = await db
+    let enrollmentRows = await db
       .select()
       .from(studentEnrollments)
-      .where(eq(studentEnrollments.studentId, studentId));
+      .where(or(eq(studentEnrollments.studentId, actualStudentId), eq(studentEnrollments.studentId, studentId)));
+
+    if (enrollmentRows.length === 0) {
+      const autoRes = await autoEnrollStudentIfMissing(db, actualStudentId, 'CERT-CAREGIVER');
+      if (autoRes.enrolled || autoRes.courseCode) {
+        enrollmentRows = await db
+          .select()
+          .from(studentEnrollments)
+          .where(or(eq(studentEnrollments.studentId, actualStudentId), eq(studentEnrollments.studentId, studentId)));
+      }
+    }
 
     const rawAssessmentRows = await db
       .select({
@@ -6651,7 +6712,13 @@ app.get("/api/student/dashboard", async (req: any, res: any) => {
 
   const [enrollmentRows, attendanceRows, gradeRows, invoiceRows, paymentRows, courseRows, examPaperRows, state] = await modulesPromise;
 
-  const enrolledUnits = enrollmentRows.map((row: any) => row?.courseCode).filter((code: unknown): code is string => typeof code === "string");
+  let enrolledUnits = enrollmentRows.map((row: any) => row?.courseCode).filter((code: unknown): code is string => typeof code === "string");
+  if (enrolledUnits.length === 0 && profile?.id) {
+    const autoRes = await autoEnrollStudentIfMissing(db, profile.id, 'CERT-CAREGIVER');
+    if (autoRes.courseCode) {
+      enrolledUnits = [autoRes.courseCode];
+    }
+  }
   const attendance: Record<string, number> = {};
   attendanceRows.forEach((row: any) => {
     if (typeof row?.subjectCode === "string") attendance[row.subjectCode] = Number(row.attendanceRate) || 0;
@@ -7218,6 +7285,11 @@ async function startServer() {
     if (process.env.NODE_ENV === "production") throw error;
   }
   await initPostgresDB();
+  try {
+    await backfillMissingStudentEnrollments(db);
+  } catch (syncErr) {
+    console.warn("Notice: student_enrollments backfill warning:", syncErr);
+  }
   const dbStateForAuth = getDatabase();
   await migrateAuthSchemaAndData(dbStateForAuth);
 

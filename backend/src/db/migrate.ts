@@ -20,25 +20,47 @@ const drizzleCandidates = [
 ];
 const drizzleDir = drizzleCandidates.find((dir) => fs.existsSync(dir)) || path.resolve(process.cwd(), "backend/drizzle");
 
-const studentSchemaMigrations = [
-  "0004_student_registry_fields.sql",
-  "0005_student_account_status.sql",
-  "0006_archive_records.sql",
-  "0007_attendance_late_students.sql",
-  "0008_allow_negative_invoice_amounts.sql",
-  "0009_admissions_academics_production.sql",
-  "0010_add_course_thumbnail.sql",
-  "0011_admin_password_reset_tokens.sql",
-  "0012_student_course_id.sql",
-  "0013_student_assessment_marks.sql",
-  "0014_assessment_config.sql",
-  "0015_invoice_number_sequence.sql",
-];
+const orderedSqlMigrations = fs
+  .readdirSync(drizzleDir)
+  .filter((fileName) => fileName.endsWith(".sql") && !fileName.startsWith("meta"))
+  .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+const shouldIgnoreStatementError = (statement: string, error: any): boolean => {
+  const code = error?.code;
+  const normalizedStatement = statement.trim();
+  const isMissingRelation = code === '42P01';
+  const isDuplicateObject = code === '42P07' || code === '42710';
+
+  if (!normalizedStatement) {
+    return false;
+  }
+
+  if (isMissingRelation && normalizedStatement.includes('DISABLE ROW LEVEL SECURITY')) {
+    return true;
+  }
+
+  if (isDuplicateObject && (
+    normalizedStatement.startsWith('CREATE TABLE') ||
+    normalizedStatement.startsWith('CREATE INDEX') ||
+    normalizedStatement.startsWith('CREATE UNIQUE INDEX') ||
+    normalizedStatement.startsWith('ALTER TABLE')
+  )) {
+    return true;
+  }
+
+  if (isMissingRelation && normalizedStatement.startsWith('ALTER TABLE') && normalizedStatement.includes('ADD COLUMN')) {
+    return true;
+  }
+
+  return false;
+};
 
 export async function runMigrations(retries = 3, delayMs = 2000): Promise<void> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
+      await db.execute(sql`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
+      await db.execute(sql`CREATE EXTENSION IF NOT EXISTS "pgcrypto";`);
       await db.execute(sql`
         CREATE TABLE IF NOT EXISTS app_migrations (
           name VARCHAR(255) PRIMARY KEY,
@@ -53,7 +75,7 @@ export async function runMigrations(retries = 3, delayMs = 2000): Promise<void> 
           .filter((name: unknown): name is string => typeof name === "string"),
       );
 
-      for (const migrationFile of studentSchemaMigrations) {
+      for (const migrationFile of orderedSqlMigrations) {
         if (applied.has(migrationFile)) {
           continue;
         }
@@ -65,13 +87,22 @@ export async function runMigrations(retries = 3, delayMs = 2000): Promise<void> 
           .map((statement) => statement.trim())
           .filter(Boolean);
 
-        for (const statement of statements) {
-          await db.execute(sql.raw(statement));
-        }
+        await db.transaction(async (tx) => {
+          for (const statement of statements) {
+            try {
+              await tx.execute(sql.raw(statement));
+            } catch (error: any) {
+              if (!shouldIgnoreStatementError(statement, error)) {
+                throw error;
+              }
+              console.warn(`[Migrations] Ignoring safe no-op statement in ${migrationFile}: ${statement.split('\n')[0].slice(0, 120)}`);
+            }
+          }
 
-        await db.execute(
-          sql`INSERT INTO app_migrations (name) VALUES (${migrationFile}) ON CONFLICT (name) DO NOTHING`,
-        );
+          await tx.execute(
+            sql`INSERT INTO app_migrations (name) VALUES (${migrationFile}) ON CONFLICT (name) DO NOTHING`,
+          );
+        });
       }
       return;
     } catch (error) {
