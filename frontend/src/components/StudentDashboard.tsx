@@ -6,9 +6,10 @@ import {
   Trash2, Landmark, Smartphone, Coins, ListFilter, Plus, RefreshCw,
   Printer, Sliders, TrendingUp, TrendingDown, Gauge, Calculator, Clock, Calendar,
   GripVertical, ChevronUp, ChevronDown, ArrowRight, UserCheck, Camera, X, CameraOff,
-  Search, MapPin, ArrowUpRight, School, Library, Menu, LogOut, Bell
+  Search, MapPin, ArrowUpRight, School, Library, Menu, LogOut, Bell, Share2, Check,
+  Users, GraduationCap, Briefcase, Settings, PhoneCall, CheckSquare, Home
 } from 'lucide-react';
-import { Student, Course, Grade, Invoice, Payment, StockItem, Lecturer, CourseReview, Book, Loan, Reservation, LMSReadingList, BookReview, BookRequest, ExamPaper, LibraryGateLog, AttendanceSession } from '../types';
+import { Student, Course, Grade, Invoice, Payment, StockItem, Lecturer, CourseReview, Book, Loan, Reservation, LMSReadingList, BookReview, BookRequest, ExamPaper, LibraryGateLog, AttendanceSession, InAppNotification } from '../types';
 import { subjectMap } from '../data';
 import StudentTranscript from './StudentTranscript';
 import PerformanceInsights from './PerformanceInsights';
@@ -19,6 +20,11 @@ import StudentVisualSummaryDashboard from './StudentVisualSummaryDashboard';
 import StudentGpaPlanner from './StudentGpaPlanner';
 import UnitRegister from './UnitRegister';
 import ClassAttendanceWidget from './ClassAttendanceWidget';
+import MobileTopBar from './mobile/MobileTopBar';
+import MobileBottomNav from './mobile/MobileBottomNav';
+import MobileDrawerMenu from './mobile/MobileDrawerMenu';
+import NotificationSlideOver from './mobile/NotificationSlideOver';
+import BottomSheet from './mobile/BottomSheet';
 import {
   ResponsiveContainer,
   BarChart,
@@ -52,6 +58,7 @@ interface StudentDashboardProps {
   examPapers?: ExamPaper[];
   libraryGateLogs?: LibraryGateLog[];
   attendanceSessions?: AttendanceSession[];
+  notifications?: InAppNotification[];
   loadWarning?: string | null;
   onReserveBook?: (bookId: string, patronId: string, patronName: string) => void;
   onCancelReservation?: (resId: string) => void;
@@ -157,6 +164,7 @@ export default function StudentDashboard({
   examPapers = [],
   libraryGateLogs = [],
   attendanceSessions = [],
+  notifications = [],
   loadWarning = null,
   onReserveBook = () => {},
   onCancelReservation = () => {},
@@ -177,6 +185,8 @@ export default function StudentDashboard({
   const { showToast, showWarning, showConfirm } = useNotification();
   const [activeTab, setActiveTab] = useState<'dashboard' | 'grades' | 'financials' | 'materials' | 'units' | 'officeHours' | 'library'>('dashboard');
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+  const [showNotificationsDrawer, setShowNotificationsDrawer] = useState<boolean>(false);
+  const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null);
 
   const [timerSeconds, setTimerSeconds] = useState<number>(1500);
   const [timerActive, setTimerActive] = useState<boolean>(false);
@@ -694,102 +704,31 @@ export default function StudentDashboard({
         </div>
       )}
       {/* MOBILE NAVIGATION DRAWER */}
-      {mobileMenuOpen && (
-        <div className="fixed inset-0 z-50 flex md:hidden font-sans">
-          {/* Backdrop */}
-          <button 
-            type="button" 
-            onClick={() => setMobileMenuOpen(false)}
-            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs transition-opacity cursor-default border-none w-full h-full"
-            aria-label="Close Menu"
-          />
-          
-          {/* Drawer Content */}
-          <div className="relative flex w-full max-w-xs flex-col bg-slate-900 dark:bg-slate-950 p-6 text-slate-300 shadow-xl focus:outline-none z-10">
-            {/* Close Button */}
-            <button 
-              type="button"
-              onClick={() => setMobileMenuOpen(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-white p-2 rounded-full cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
+      <MobileDrawerMenu
+        isOpen={mobileMenuOpen}
+        onClose={() => setMobileMenuOpen(false)}
+        role="student"
+        userRoleLabel="Undergraduate Student"
+        userName={student.name}
+        userAvatar={student.avatar}
+        activeTab={activeTab}
+        onSelectTab={(tabId) => setActiveTab(tabId as any)}
+        onOpenSettings={() => setIsPasscodeModalOpen(true)}
+        onLogout={onLogout}
+        menuItems={[
+          { id: 'dashboard', label: 'Home', icon: Home, onClick: () => setActiveTab('dashboard'), isActive: activeTab === 'dashboard' },
+          { id: 'materials', label: 'Courses', icon: BookOpen, onClick: () => setActiveTab('materials'), isActive: activeTab === 'materials' },
+          { id: 'grades', label: 'Results', icon: Award, onClick: () => setActiveTab('grades'), isActive: activeTab === 'grades' },
+          { id: 'financials', label: 'Fees', icon: CreditCard, onClick: () => setActiveTab('financials'), isActive: activeTab === 'financials', badge: outstandingBal > 0 ? `KES ${outstandingBal.toLocaleString()}` : 'Cleared', badgeColor: outstandingBal > 0 ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300' },
+          { id: 'units', label: 'Unit Registration', icon: CheckSquare, onClick: () => setActiveTab('units'), isActive: activeTab === 'units' },
+          { id: 'officeHours', label: 'Consultation', icon: PhoneCall, onClick: () => setActiveTab('officeHours'), isActive: activeTab === 'officeHours' },
+          { id: 'library', label: 'Digital Library', icon: Library, onClick: () => setActiveTab('library'), isActive: activeTab === 'library' },
+          { id: 'settings', label: 'Change Password', icon: Settings, onClick: () => setIsPasscodeModalOpen(true), isActive: false },
+        ]}
+      />
 
-            {/* Brand Header */}
-            <div className="pb-6 border-b border-slate-800 flex items-center gap-2 mb-4">
-              <div className="w-8 h-8 bg-blue-650 rounded-lg flex items-center justify-center shrink-0">
-                <School className="w-5 h-5 text-white" />
-              </div>
-              <div>
-                <span className="text-sm font-black tracking-tight text-white block uppercase leading-none">ALIKA</span>
-                <span className="text-[8px] text-slate-500 font-bold uppercase tracking-widest block">Student Portal</span>
-              </div>
-            </div>
-
-            {/* Navigation Menu */}
-            <nav className="flex-1 space-y-1.5 overflow-y-auto pr-2">
-              <p className="px-2 pt-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">Dashboard</p>
-              <button type="button" onClick={() => { setActiveTab('dashboard'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'dashboard' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                <Sliders className="w-4 h-4" />
-                <span>My Dashboard</span>
-              </button>
-              <p className="px-2 pt-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Academics</p>
-              <button type="button" onClick={() => { setActiveTab('grades'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'grades' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                <Award className="w-4 h-4" />
-                <span>Academic Marks</span>
-              </button>
-              <p className="px-2 pt-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Finance</p>
-              <button type="button" onClick={() => { setActiveTab('financials'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'financials' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                <Landmark className="w-4 h-4" />
-                <span>My Financials</span>
-              </button>
-              <p className="px-2 pt-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Resources</p>
-              <button type="button" onClick={() => { setActiveTab('materials'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'materials' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                <BookOpen className="w-4 h-4" />
-                <span>Supplementary</span>
-              </button>
-              <button type="button" onClick={() => { setActiveTab('units'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'units' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                <Plus className="w-4 h-4" />
-                <span>Unit Register</span>
-              </button>
-              <button type="button" onClick={() => { setActiveTab('officeHours'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'officeHours' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                <Clock className="w-4 h-4" />
-                <span>Office Hours</span>
-              </button>
-              <button type="button" onClick={() => { setActiveTab('library'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'library' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                <Library className="w-4 h-4" />
-                <span>Library HQ</span>
-              </button>
-            </nav>
-
-            {/* Profile Info & Logout */}
-            <div className="p-4 border-t border-slate-800/60 bg-slate-950/40 space-y-3 shrink-0">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Account</p>
-              <div className="flex items-center gap-3">
-                {student.avatar ? (
-                  <img src={student.avatar} alt={student.name} className="w-9 h-9 rounded-lg object-cover border border-slate-700" referrerPolicy="no-referrer" />
-                ) : (
-                  <div className="w-9 h-9 rounded-lg bg-blue-650 text-white flex items-center justify-center font-bold text-sm shrink-0">
-                    {student.name.charAt(0)}
-                  </div>
-                )}
-                <div className="min-w-0">
-                  <h4 className="text-xs font-bold text-white leading-none truncate">{student.name}</h4>
-                  <span className="text-[9px] text-slate-500 font-mono block mt-1">{student.admissionNo}</span>
-                  <span className="text-[9px] text-slate-500 block mt-1 truncate">{programmeLabel} · {academicYear}</span>
-                </div>
-              </div>
-              <button type="button" onClick={() => { setMobileMenuOpen(false); onLogout(); }} className="w-full py-2.5 bg-slate-800 hover:bg-rose-955/30 hover:text-rose-455 text-slate-400 hover:text-white text-xs font-bold rounded-lg uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5 cursor-pointer">
-                <LogOut className="w-3.5 h-3.5" />
-                <span>Logout Portal</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* LEFT SIDEBAR NAVIGATION */}
-      <aside className="w-64 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 flex flex-col border-r border-slate-100 dark:border-slate-800 shrink-0 hidden md:flex font-sans justify-between p-4 shadow-sm z-10">
+      {/* LEFT SIDEBAR NAVIGATION (Desktop) */}
+      <aside className="w-64 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 flex flex-col border-r border-slate-100 dark:border-slate-800 shrink-0 hidden sm:flex font-sans justify-between p-4 shadow-sm z-10">
         {/* Brand Header */}
         <div className="space-y-4">
           <div className="flex items-center gap-3 px-2 py-3 border-b border-slate-100 dark:border-slate-800">
@@ -864,9 +803,21 @@ export default function StudentDashboard({
       </aside>
       
       {/* MAIN CONTAINER */}
-      <div className="flex-1 flex flex-col min-h-screen overflow-y-auto bg-[#F5F7FB] dark:bg-slate-950">
-        {/* TOP UTILITY BAR */}
-        <header className="bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 px-8 py-4 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xs shrink-0 font-sans sticky top-0 z-20">
+      <div className="flex-1 flex flex-col min-h-screen overflow-y-auto bg-[#F5F7FB] dark:bg-slate-950 pb-20 sm:pb-8">
+        {/* MOBILE TOP BAR (<640px) */}
+        <MobileTopBar
+          title="ALIKA"
+          subtitle={`${student.admissionNo} · ${programmeLabel}`}
+          userRole="student"
+          userName={student.name}
+          userAvatar={student.avatar}
+          unreadNotificationsCount={notifications.filter(n => n.status === 'unread').length}
+          onOpenDrawer={() => setMobileMenuOpen(true)}
+          onOpenNotifications={() => setShowNotificationsDrawer(true)}
+        />
+
+        {/* DESKTOP TOP UTILITY BAR (>=640px) */}
+        <header className="hidden sm:flex bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 px-8 py-4 items-center justify-between gap-4 shadow-xs shrink-0 font-sans sticky top-0 z-20">
           <div className="flex items-center gap-3">
             <button
               type="button"
@@ -892,11 +843,15 @@ export default function StudentDashboard({
             <div className="relative">
               <button 
                 type="button" 
+                onClick={() => setShowNotificationsDrawer(true)}
                 className="relative p-2.5 rounded-2xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-all cursor-pointer"
                 title="Notifications"
                 aria-label="Notifications"
               >
                 <Bell className="w-4 h-4" />
+                {notifications.filter(n => n.status === 'unread').length > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse" />
+                )}
               </button>
             </div>
 
@@ -919,9 +874,9 @@ export default function StudentDashboard({
         </header>
         
         {/* WORKSPACE CONTENT AREA */}
-        <div className="p-8 space-y-8 flex-1 flex flex-col min-h-0 bg-[#F5F7FB] dark:bg-slate-950">
+        <div className="p-4 sm:p-8 space-y-6 sm:space-y-8 flex-1 flex flex-col min-h-0 bg-[#F5F7FB] dark:bg-slate-950">
           
-          <div className="flex-1 min-h-0 w-full space-y-8">
+          <div className="flex-1 min-h-0 w-full space-y-6 sm:space-y-8">
         
         {/* MY DASHBOARD OVERVIEW (DRAG-AND-DROP WIDGETS) */}
         {activeTab === 'dashboard' && (
@@ -1645,102 +1600,217 @@ export default function StudentDashboard({
         {/* TAB 2: FINANCIAL STATEMENT */}
         {activeTab === 'financials' && (
           <div className="space-y-6">
-            <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center border-b border-slate-100 pb-3 gap-3">
+            <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center border-b border-slate-100 dark:border-slate-800 pb-3 gap-3">
               <div>
-                <h2 className="text-lg font-bold text-slate-800 flex items-center gap-1.5 animate-fade-in">
-                  <CreditCard className="w-5 h-5 text-blue-600" />
+                <h2 className="text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                  <CreditCard className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                   Student Ledger & Account Reconciliation
                 </h2>
-                <p className="text-xs text-slate-500 mt-1">Automated student bills for tuition, accommodation, and structural services.</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  Tuition invoices, clearance balance, and real-time payment transaction receipts.
+                </p>
               </div>
 
-              {outstandingBal > 0 && (
-                <div className="inline-flex items-center gap-1.5 self-start sm:self-auto bg-amber-50 text-amber-800 px-3 py-1 bg-amber-10 rounded-lg text-xs font-bold border border-amber-200">
+              {outstandingBal > 0 ? (
+                <div className="inline-flex items-center gap-1.5 self-start sm:self-auto bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 px-3 py-1.5 rounded-xl text-xs font-bold border border-amber-200 dark:border-amber-800">
                   <AlertCircle className="w-4 h-4 text-amber-600" />
                   <span>Account Arrears Notice</span>
+                </div>
+              ) : (
+                <div className="inline-flex items-center gap-1.5 self-start sm:self-auto bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 px-3 py-1.5 rounded-xl text-xs font-bold border border-emerald-200 dark:border-emerald-800">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  <span>Account Fully Cleared</span>
                 </div>
               )}
             </div>
 
-            {/* Financial Ledger statement */}
-            <div className="grid md:grid-cols-3 gap-6">
+            {/* Top Financial Breakdown Card with Percentage Bar */}
+            {(() => {
+              const safeTotal = totalInvoiced > 0 ? totalInvoiced : 1;
+              const feePct = Math.min(100, Math.round((totalPaid / safeTotal) * 100));
+
+              return (
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xs space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider font-mono">
+                        Summary Financial Standing
+                      </h3>
+                      <p className="text-sm font-bold text-slate-900 dark:text-white mt-0.5">
+                        Academic Year Fee Settlement
+                      </p>
+                    </div>
+
+                    {unpaidInvoices.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedInvoice(unpaidInvoices[0]);
+                          setShowPaymentModal(true);
+                        }}
+                        className="h-11 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-95 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-xs shadow-blue-500/20 cursor-pointer transition-all self-stretch sm:self-auto"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Record Payment (Pay Fees)</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* 3 Metric Chips */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                    <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-850/60 border border-slate-150 dark:border-slate-800">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Total Invoiced</span>
+                      <span className="text-base font-black text-slate-900 dark:text-white font-mono mt-1 block">KES {totalInvoiced.toLocaleString()}</span>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-850/60 border border-slate-150 dark:border-slate-800">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Total Paid</span>
+                      <span className="text-base font-black text-emerald-600 font-mono mt-1 block">KES {totalPaid.toLocaleString()}</span>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-850/60 border border-slate-150 dark:border-slate-800">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Outstanding Balance</span>
+                      <span className={`text-base font-black font-mono mt-1 block ${outstandingBal > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                        KES {outstandingBal.toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Visual Percentage Bar */}
+                  <div className="space-y-1.5 pt-1">
+                    <div className="flex justify-between items-center text-xs font-bold">
+                      <span className="text-slate-600 dark:text-slate-300">Tuition Clearance Progress</span>
+                      <span className="text-blue-600 dark:text-blue-400 font-mono">{feePct}% Settled</span>
+                    </div>
+                    <div className="h-3 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden p-0.5 border border-slate-200 dark:border-slate-700">
+                      <div
+                        className={`h-full rounded-full transition-all duration-500 ${feePct >= 100 ? 'bg-emerald-500' : 'bg-gradient-to-r from-blue-600 to-indigo-600'}`}
+                        style={{ width: `${feePct}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Financial Ledger & Payments Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               
               {/* Ledger breakdown detail */}
-              <div className="md:col-span-2 space-y-4">
-                <h3 className="text-xs uppercase font-bold text-slate-400 tracking-wider">Itemized Ledger Invoices</h3>
-                <div className="border border-slate-100 rounded-xl overflow-hidden divide-y divide-slate-100">
-                  {studentLedgerList.map((inv) => (
-                    <div key={inv.id} className="p-4 flex justify-between items-center bg-white hover:bg-slate-50/20 text-xs">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-slate-800 text-sm">{inv.description}</span>
-                          <span className="font-mono text-[10px] text-slate-400 bg-slate-100 px-1 py-0.5 rounded">{inv.invoiceNo}</span>
-                        </div>
-                        <p className="text-[10px] text-slate-500 mt-1">Generated: {inv.date}</p>
-                      </div>
-
-                      <div className="flex items-center gap-4">
-                        <span className="font-extrabold text-slate-900 text-sm">KES {Number(inv.amount).toLocaleString()}</span>
-                        {inv.status === 'paid' ? (
-                          <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-sm text-[10px] font-bold">Paid</span>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => { setSelectedInvoice(inv); setShowPaymentModal(true); }}
-                            className="bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-bold px-3 py-1.5 rounded-sm shadow-xs transition-colors cursor-pointer"
-                          >
-                            Pay Bill
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
+              <div className="lg:col-span-2 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs uppercase font-bold text-slate-400 tracking-wider font-mono">
+                    Itemized Invoices & Billing
+                  </h3>
+                  <span className="text-[11px] text-slate-400 font-medium font-mono">{studentLedgerList.length} Invoices</span>
                 </div>
+
+                {studentLedgerList.length === 0 ? (
+                  <div className="p-8 text-center bg-white dark:bg-slate-900 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800">
+                    <p className="text-xs text-slate-500">No invoices posted to student ledger.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {studentLedgerList.map((inv) => (
+                      <div
+                        key={inv.id}
+                        className="p-4 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-blue-300 transition-colors"
+                      >
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-slate-900 dark:text-white text-xs leading-snug">
+                              {inv.description}
+                            </span>
+                            <span className="font-mono text-[10px] text-slate-500 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md font-bold">
+                              {inv.invoiceNo}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 font-mono">
+                            Issued Date: {inv.date}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100 dark:border-slate-800">
+                          <span className="font-black text-slate-900 dark:text-white text-sm font-mono">
+                            KES {Number(inv.amount).toLocaleString()}
+                          </span>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setViewingInvoice(inv)}
+                              className="h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                            >
+                              <FileText className="w-3.5 h-3.5" />
+                              <span>View Invoice</span>
+                            </button>
+
+                            {inv.status === 'paid' ? (
+                              <span className="bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 px-2.5 py-1.5 rounded-lg text-xs font-bold">
+                                Paid
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedInvoice(inv);
+                                  setShowPaymentModal(true);
+                                }}
+                                className="h-9 px-4 rounded-lg bg-blue-600 hover:bg-blue-700 active:scale-95 text-white text-xs font-bold shadow-xs transition-all cursor-pointer"
+                              >
+                                Pay Bill
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
-              {/* Payments ledger & Statements */}
-              <div className="space-y-4 bg-slate-50 p-5 rounded-2xl border border-slate-100">
-                <h3 className="text-xs uppercase font-bold text-slate-400 tracking-wider">Account Statements Balances</h3>
-                <div className="divide-y divide-slate-200/50 text-xs text-slate-600 space-y-3 pt-1">
-                  
-                  <div className="flex justify-between pb-2">
-                    <span>Total Invoiced Obligations:</span>
-                    <span className="font-bold text-slate-900">KES {totalInvoiced.toLocaleString()}</span>
-                  </div>
-
-                  <div className="flex justify-between py-2">
-                    <span>Invoices Paid:</span>
-                    <span className="font-bold text-emerald-600">KES {totalPaid.toLocaleString()}</span>
-                  </div>
-
-                  <div className="flex justify-between pt-2">
-                    <span className="font-semibold">Outstanding Fees:</span>
-                    <span className={`text-base font-extrabold ${outstandingBal > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
-                      KES {outstandingBal.toLocaleString()}
-                    </span>
-                  </div>
+              {/* Payments ledger & Statements rendered as simplified receipts */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs uppercase font-bold text-slate-400 tracking-wider font-mono">
+                    Payment Receipts
+                  </h3>
+                  <span className="text-[11px] text-slate-400 font-medium font-mono">{student.payments.length} Logs</span>
                 </div>
 
-                {/* Simulated payment transactions history */}
-                <div className="border-t border-slate-200/60 pt-4 space-y-2">
-                  <h4 className="text-[11px] uppercase font-bold text-slate-500 tracking-wider">Payment Attempts Log</h4>
-                  
+                <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs space-y-3">
                   {student.payments.length === 0 ? (
-                    <p className="text-[10px] italic text-slate-400">No payment logs found.</p>
+                    <div className="text-center py-8 text-slate-400">
+                      <CreditCard className="w-8 h-8 mx-auto mb-2 opacity-40" />
+                      <p className="text-xs font-semibold text-slate-600 dark:text-slate-400">No payment receipts logged</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">When you record a payment, receipt details will appear here.</p>
+                    </div>
                   ) : (
-                    <div className="space-y-2 max-h-36 overflow-y-auto pr-1">
+                    <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
                       {student.payments.map((p) => {
                         const targetInvoice = student.ledger.find(i => i.id === p.invoiceId);
+                        const isReconciled = p.status === 'reconciled';
+
                         return (
-                          <div key={p.id} className="bg-white border border-slate-150 p-2.5 rounded-lg text-[10px] space-y-1">
-                            <div className="flex justify-between font-bold">
-                              <span className="text-slate-800 truncate max-w-[120px]">{targetInvoice?.description || 'Invoice Payment'}</span>
-                              <span className="text-slate-900">KES {p.amount.toLocaleString()}</span>
+                          <div
+                            key={p.id}
+                            className="bg-slate-50/80 dark:bg-slate-850/60 border border-slate-200/80 dark:border-slate-800 p-3 rounded-xl text-xs space-y-1.5 hover:border-blue-300 transition-all"
+                          >
+                            <div className="flex justify-between items-start gap-2">
+                              <span className="font-bold text-slate-900 dark:text-white truncate">
+                                {targetInvoice?.description || 'Tuition Payment'}
+                              </span>
+                              <span className="font-black text-slate-900 dark:text-white font-mono shrink-0">
+                                KES {p.amount.toLocaleString()}
+                              </span>
                             </div>
-                            <div className="flex justify-between text-slate-500 font-mono text-[9px]">
-                              <span>Tx: {p.transactionId}</span>
-                              <span className={p.status === 'reconciled' ? 'text-emerald-600 font-medium' : 'text-amber-600 font-medium'}>
-                                {p.status === 'reconciled' ? 'Reconciled' : 'Unreconciled'}
+
+                            <div className="flex justify-between items-center text-[10px] text-slate-500 dark:text-slate-400 font-mono pt-1 border-t border-slate-200/60 dark:border-slate-700/60">
+                              <span>Receipt #{p.transactionId}</span>
+                              <span className={`font-bold px-2 py-0.5 rounded-full border ${
+                                isReconciled
+                                  ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200'
+                                  : 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200'
+                              }`}>
+                                {isReconciled ? '✓ Reconciled' : 'Pending Audit'}
                               </span>
                             </div>
                           </div>
@@ -2803,6 +2873,92 @@ export default function StudentDashboard({
           </div>
         </div>
       )}
-    </div></div></div>
+
+      {/* INVOICE DETAIL BOTTOM SHEET */}
+      {viewingInvoice && (
+        <BottomSheet
+          isOpen={!!viewingInvoice}
+          onClose={() => setViewingInvoice(null)}
+          title={`Invoice ${viewingInvoice.invoiceNo}`}
+          subtitle={`Issued: ${viewingInvoice.date}`}
+        >
+          <div className="space-y-4">
+            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-850/60 border border-slate-150 dark:border-slate-800 space-y-2">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-500 dark:text-slate-400">Description</span>
+                <span className="font-bold text-slate-900 dark:text-white">{viewingInvoice.description}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-500 dark:text-slate-400">Student Ref</span>
+                <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{student.admissionNo}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-500 dark:text-slate-400">Status</span>
+                <span className={`font-bold px-2 py-0.5 rounded-full text-[10px] ${viewingInvoice.status === 'paid' ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300' : 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300'}`}>
+                  {viewingInvoice.status.toUpperCase()}
+                </span>
+              </div>
+              <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center text-sm font-black">
+                <span className="text-slate-800 dark:text-slate-200">Amount Due</span>
+                <span className="font-mono text-blue-600 dark:text-blue-400">KES {Number(viewingInvoice.amount).toLocaleString()}</span>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  showToast('Simulating official PDF invoice download...');
+                }}
+                className="h-12 flex-1 rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-95 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-xs cursor-pointer transition-all"
+              >
+                <Download className="w-4 h-4" />
+                <span>Download PDF Invoice</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (navigator.share) {
+                    navigator.share({
+                      title: `Invoice ${viewingInvoice.invoiceNo}`,
+                      text: `Alika School Invoice for ${student.name}: KES ${viewingInvoice.amount}`,
+                      url: window.location.href,
+                    }).catch(() => {});
+                  } else {
+                    navigator.clipboard?.writeText(window.location.href);
+                    showToast('Invoice link copied to clipboard');
+                  }
+                }}
+                className="h-12 flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center justify-center gap-2 cursor-pointer active:scale-95 transition-all"
+              >
+                <Share2 className="w-4 h-4" />
+                <span>Share Invoice</span>
+              </button>
+            </div>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* ROLE-AWARE STICKY BOTTOM NAVIGATION (<640px) */}
+      <MobileBottomNav
+        role="student"
+        activeTab={activeTab}
+        onSelectTab={(tab) => setActiveTab(tab as any)}
+        onOpenDrawer={() => setMobileMenuOpen(true)}
+      />
+
+      {/* NOTIFICATIONS SLIDE-OVER */}
+      <NotificationSlideOver
+        isOpen={showNotificationsDrawer}
+        onClose={() => setShowNotificationsDrawer(false)}
+        notifications={notifications}
+        onMarkAsRead={() => {}}
+        onMarkAllAsRead={() => {}}
+        onClearNotification={() => {}}
+      />
+        </div>
+      </div>
+    </div>
   );
 }

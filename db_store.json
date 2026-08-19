@@ -115,6 +115,15 @@
   ],
   "notifications": [
     {
+      "id": "31236e4e-509f-4ca1-9250-6c3ef7ab0131",
+      "targetUserRole": "all",
+      "type": "payment",
+      "title": " [Invoice Generated] New Billing Invoice #INV-2026-26194646",
+      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
+      "status": "unread",
+      "dateTime": "2026-08-19 10:24:22+03"
+    },
+    {
       "id": "90bf8028-8fad-4623-b8c5-ad477d37f288",
       "targetUserRole": "all",
       "type": "library",
@@ -131,15 +140,6 @@
       "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
       "status": "unread",
       "dateTime": "2026-08-19 11:40:07+03"
-    },
-    {
-      "id": "31236e4e-509f-4ca1-9250-6c3ef7ab0131",
-      "targetUserRole": "all",
-      "type": "payment",
-      "title": " [Invoice Generated] New Billing Invoice #INV-2026-26194646",
-      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
-      "status": "unread",
-      "dateTime": "2026-08-19 10:24:22+03"
     }
   ],
   "libraryGateLogs": [],

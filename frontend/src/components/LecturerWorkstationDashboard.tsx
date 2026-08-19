@@ -10,6 +10,9 @@ import {
   ArrowRight,
   Loader2,
   CheckCircle2,
+  UserCheck,
+  Users,
+  Search,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -31,6 +34,7 @@ interface LecturerWorkstationDashboardProps {
   setTimerActive: React.Dispatch<React.SetStateAction<boolean>>;
   setTimerSeconds: React.Dispatch<React.SetStateAction<number>>;
   onOpenAttendance: () => void;
+  onNavigateTab?: (tab: string) => void;
 }
 
 export default function LecturerWorkstationDashboard({
@@ -42,6 +46,7 @@ export default function LecturerWorkstationDashboard({
   setTimerActive,
   setTimerSeconds,
   onOpenAttendance,
+  onNavigateTab = onOpenAttendance,
 }: LecturerWorkstationDashboardProps) {
   const {
     assignedSubjectsCount,
@@ -68,82 +73,124 @@ export default function LecturerWorkstationDashboard({
 
   return (
     <div className="space-y-6">
-      {/* HIGH-DENSITY SUMMARY STRIP */}
-      <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-150 dark:border-slate-800 p-6 shadow-xs grid grid-cols-1 md:grid-cols-4 gap-6 divide-y md:divide-y-0 md:divide-x divide-slate-100 dark:divide-slate-800">
-        <div className="flex items-center justify-between pr-4 md:pr-0 md:px-4 first:pl-0">
-          <div className="space-y-1">
-            <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block font-sans">
+      {/* 2-COLUMN MOBILE METRIC CARDS (<640px 2-col, sm+ 4-col) */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {/* Metric 1 */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-150 dark:border-slate-800 p-3.5 sm:p-5 shadow-xs flex items-center justify-between gap-2">
+          <div className="space-y-1 min-w-0">
+            <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block font-sans truncate">
               Assigned Subjects
             </span>
-            <div className="flex items-center gap-2">
-              <span className="text-2xl font-black text-slate-800 dark:text-white font-mono">
-                {assignedSubjectsCount} Units
+            <div className="flex items-baseline gap-1.5 flex-wrap">
+              <span className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white font-mono">
+                {assignedSubjectsCount}
               </span>
-              <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-650 dark:bg-indigo-950/20 dark:text-indigo-400">
-                {assignedSubjectsCount > 0 ? 'Active' : 'None'}
+              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-650 dark:bg-indigo-950/40 dark:text-indigo-400">
+                Units
               </span>
             </div>
           </div>
-          <div className="p-3 bg-indigo-50 dark:bg-indigo-950/20 text-indigo-650 dark:text-indigo-400 rounded-xl">
-            <Award className="w-5 h-5" />
+          <div className="p-2.5 bg-indigo-50 dark:bg-indigo-950/30 text-indigo-600 dark:text-indigo-400 rounded-xl shrink-0">
+            <Award className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
         </div>
 
-        <div className="flex items-center justify-between pt-4 md:pt-0 pr-4 md:pr-0 md:px-6">
-          <div className="space-y-1">
-            <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block font-sans">
+        {/* Metric 2 */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-150 dark:border-slate-800 p-3.5 sm:p-5 shadow-xs flex items-center justify-between gap-2">
+          <div className="space-y-1 min-w-0">
+            <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block font-sans truncate">
               Hours Logged
             </span>
-            <div className="flex items-center gap-2">
-              <span className="text-2xl font-black text-slate-800 dark:text-white font-mono">
-                {loggedHours} Hrs
+            <div className="flex items-baseline gap-1.5 flex-wrap">
+              <span className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white font-mono">
+                {loggedHours}
               </span>
-              <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 dark:bg-blue-950/20 dark:text-blue-400">
-                Sessions
+              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-400">
+                Hrs
               </span>
             </div>
           </div>
-          <div className="p-3 bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 rounded-xl">
-            <Clock className="w-5 h-5" />
+          <div className="p-2.5 bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 rounded-xl shrink-0">
+            <Clock className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
         </div>
 
-        <div className="flex items-center justify-between pt-4 md:pt-0 pr-4 md:pr-0 md:px-6">
-          <div className="space-y-1">
-            <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block font-sans">
+        {/* Metric 3 */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-150 dark:border-slate-800 p-3.5 sm:p-5 shadow-xs flex items-center justify-between gap-2">
+          <div className="space-y-1 min-w-0">
+            <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block font-sans truncate">
               Hourly Rate
             </span>
-            <div className="flex items-center gap-2">
-              <span className="text-2xl font-black text-slate-800 dark:text-white font-mono">
+            <div className="flex items-baseline gap-1.5 flex-wrap">
+              <span className="text-base sm:text-xl font-black text-slate-800 dark:text-white font-mono">
                 KES {hourlyRate.toLocaleString()}
-              </span>
-              <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-400">
-                Live
               </span>
             </div>
           </div>
-          <div className="p-3 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 rounded-xl">
-            <DollarSign className="w-5 h-5" />
+          <div className="p-2.5 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 rounded-xl shrink-0">
+            <DollarSign className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
         </div>
 
-        <div className="flex items-center justify-between pt-4 md:pt-0 pr-4 md:pr-0 md:pl-6 last:pr-0">
-          <div className="space-y-1">
-            <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block font-sans">
+        {/* Metric 4 */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-150 dark:border-slate-800 p-3.5 sm:p-5 shadow-xs flex items-center justify-between gap-2">
+          <div className="space-y-1 min-w-0">
+            <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block font-sans truncate">
               Estimated Payout
             </span>
-            <div className="flex items-center gap-2">
-              <span className="text-xl font-black text-emerald-650 font-mono">
+            <div className="flex items-baseline gap-1.5 flex-wrap">
+              <span className="text-base sm:text-xl font-black text-emerald-600 dark:text-emerald-400 font-mono">
                 KES {estimatedPayout.toLocaleString()}
-              </span>
-              <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-400">
-                Accrued
               </span>
             </div>
           </div>
-          <div className="p-3 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 rounded-xl">
-            <Activity className="w-5 h-5" />
+          <div className="p-2.5 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 rounded-xl shrink-0">
+            <Activity className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
+        </div>
+      </div>
+
+      {/* QUICK ACTIONS FULL-WIDTH TOUCH BUTTONS */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-150 dark:border-slate-800 p-4 shadow-xs">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider font-mono">
+            Lecturer Touch Shortcuts
+          </h3>
+          <span className="text-[10px] text-slate-400">Touch to execute action</span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+          <button
+            type="button"
+            onClick={() => onNavigateTab('attendance')}
+            className="min-h-[48px] h-12 px-3.5 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50/70 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300 text-xs font-bold flex items-center gap-2.5 cursor-pointer active:scale-95 transition-all shadow-2xs hover:shadow-xs"
+          >
+            <UserCheck className="w-4 h-4 shrink-0 text-violet-600" />
+            <span className="truncate">Roll-call Attendance</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigateTab('grading')}
+            className="min-h-[48px] h-12 px-3.5 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 text-xs font-bold flex items-center gap-2.5 cursor-pointer active:scale-95 transition-all shadow-2xs hover:shadow-xs"
+          >
+            <Award className="w-4 h-4 shrink-0 text-blue-600" />
+            <span className="truncate">Assessment Marks</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigateTab('classlist')}
+            className="min-h-[48px] h-12 px-3.5 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/70 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 text-xs font-bold flex items-center gap-2.5 cursor-pointer active:scale-95 transition-all shadow-2xs hover:shadow-xs"
+          >
+            <Users className="w-4 h-4 shrink-0 text-indigo-600" />
+            <span className="truncate">Class Directory</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigateTab('lookup')}
+            className="min-h-[48px] h-12 px-3.5 rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 text-xs font-bold flex items-center gap-2.5 cursor-pointer active:scale-95 transition-all shadow-2xs hover:shadow-xs"
+          >
+            <Search className="w-4 h-4 shrink-0 text-emerald-600" />
+            <span className="truncate">Student Dossier</span>
+          </button>
         </div>
       </div>
 

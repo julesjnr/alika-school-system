@@ -1677,6 +1677,7 @@ Alika Medical Library Services`;
               examPapers={examPapers}
               libraryGateLogs={libraryGateLogs}
               attendanceSessions={attendanceSessions}
+              notifications={notifications}
               onReserveBook={handleReserveBook}
               onCancelReservation={handleCancelReservation}
               onAddReview={handleAddReview}
@@ -1713,6 +1714,7 @@ Alika Medical Library Services`;
               readingLists={readingLists}
               teacherResources={teacherResources}
               bookRequests={bookRequests}
+              notifications={notifications}
               onUpdateReadingList={handleUpdateReadingList}
               onCancelOfficeHour={handleCancelOfficeHour}
               onAddOfficeHourSlot={handleAddOfficeHourSlot}
@@ -1778,6 +1780,7 @@ Alika Medical Library Services`;
             onUpdateStudent={handleUpdateStudentProfile}
             mockEmails={mockEmails}
             onTriggerOverdueScan={scanOverdueLoansAndAlert}
+            notifications={notifications}
           />
         ) : (currentUserRole === 'accountant' && currentPath !== '/landing') ? (
           <AdminDashboard
@@ -1824,6 +1827,7 @@ Alika Medical Library Services`;
             isAccountantView={true}
             mockEmails={mockEmails}
             onTriggerOverdueScan={scanOverdueLoansAndAlert}
+            notifications={notifications}
           />
         ) : (currentUserRole === 'librarian' && currentPath !== '/landing') ? (
           <AdminDashboard
@@ -1869,6 +1873,7 @@ Alika Medical Library Services`;
             isLibrarianView={true}
             mockEmails={mockEmails}
             onTriggerOverdueScan={scanOverdueLoansAndAlert}
+            notifications={notifications}
           />
         ) : (
           <LandingPage

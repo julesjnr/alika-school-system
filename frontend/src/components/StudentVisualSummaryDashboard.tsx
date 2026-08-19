@@ -132,115 +132,164 @@ export default function StudentVisualSummaryDashboard({ student, onNavigateTab }
         </div>
       </header>
 
-      <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Academic summary">
+      {/* Mobile-First 2-Column Metric Cards Grid with Trend Indicators */}
+      <section className="grid grid-cols-2 gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Academic summary">
         {metricCards.map(({ label, value, detail, icon: Icon, tone }) => (
-          <div key={label} className="min-h-[108px] rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-                <p className="mt-2 text-xl font-semibold text-slate-900">{value}</p>
-                <p className="mt-1 text-xs text-slate-500">{detail}</p>
+          <div key={label} className="min-h-[100px] rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3.5 sm:p-4 shadow-xs hover:shadow-md transition-shadow">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 truncate">{label}</p>
+                <div className="flex items-baseline gap-1.5 mt-1">
+                  <p className="text-lg sm:text-xl font-black text-slate-900 dark:text-white font-display truncate">{value}</p>
+                </div>
+                <p className="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400 truncate">{detail}</p>
               </div>
-              <span className={`rounded-lg p-2 ${tone}`}><Icon className="h-4 w-4" /></span>
+              <span className={`rounded-xl p-2 shrink-0 ${tone}`}><Icon className="h-4 w-4" /></span>
             </div>
           </div>
         ))}
       </section>
 
+      {/* Quick Access Action Chips Row */}
+      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-xs">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider font-mono">Quick Access Services</h3>
+          <span className="text-[10px] text-slate-400 font-medium">Touch to navigate</span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
+          {[
+            { label: 'Results', tab: 'grades', icon: Award, color: 'text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800' },
+            { label: 'Fees & Balance', tab: 'financials', icon: WalletCards, color: 'text-blue-600 bg-blue-50 dark:bg-blue-950/40 border-blue-200 dark:border-blue-800' },
+            { label: 'Attendance', tab: 'units', icon: CheckCircle2, color: 'text-violet-600 bg-violet-50 dark:bg-violet-950/40 border-violet-200 dark:border-violet-800' },
+            { label: 'Register Units', tab: 'units', icon: BookOpen, color: 'text-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 border-indigo-200 dark:border-indigo-800' },
+            { label: 'Library HQ', tab: 'library', icon: Library, color: 'text-amber-600 bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800' },
+            { label: 'Consultations', tab: 'officeHours', icon: CalendarDays, color: 'text-sky-600 bg-sky-50 dark:bg-sky-950/40 border-sky-200 dark:border-sky-800' },
+          ].map(({ label, tab, icon: Icon, color }) => (
+            <button
+              key={label}
+              type="button"
+              onClick={() => onNavigateTab(tab as DashboardTab)}
+              className={`min-h-[48px] h-12 flex items-center gap-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer active:scale-95 shadow-2xs hover:shadow-xs ${color}`}
+            >
+              <Icon className="w-4 h-4 shrink-0" />
+              <span className="truncate">{label}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+
       {/* Academic progress & Transcript */}
-      <section className="mt-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="flex items-center justify-between">
+      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
           <div>
-            <h3 className="text-sm font-semibold text-slate-900">Academic Progress</h3>
-            <p className="text-xs text-slate-500">Programme completion and credits (server-authoritative)</p>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white">Academic Progress & Curriculum</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">Programme completion and module credit standing</p>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => window.dispatchEvent(new CustomEvent('openTranscript'))} className="text-xs font-semibold text-blue-700 hover:underline">View Transcript</button>
-            <button onClick={() => onNavigateTab('grades')} className="text-xs font-semibold text-slate-600 hover:underline">View Grades</button>
+            <button onClick={() => window.dispatchEvent(new CustomEvent('openTranscript'))} className="h-9 px-3 rounded-lg bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 text-xs font-bold hover:bg-blue-100 transition-colors">View Transcript</button>
+            <button onClick={() => onNavigateTab('grades')} className="h-9 px-3 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-bold hover:bg-slate-200 transition-colors">View Grades</button>
           </div>
         </div>
 
         <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="rounded-lg border border-slate-100 p-3">
-            <div className="text-[11px] text-slate-500">Completed modules</div>
-            <div className="mt-1 text-lg font-semibold text-slate-900">{summary.degreeProgress?.completed ?? '—'}</div>
+          <div className="rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/50 p-3.5">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Completed modules</div>
+            <div className="mt-1 text-xl font-black text-slate-900 dark:text-white font-mono">{summary.degreeProgress?.completed ?? '—'}</div>
           </div>
-          <div className="rounded-lg border border-slate-100 p-3">
-            <div className="text-[11px] text-slate-500">Remaining modules</div>
-            <div className="mt-1 text-lg font-semibold text-slate-900">{Math.max((summary.degreeProgress?.required ?? 0) - (summary.degreeProgress?.completed ?? 0), 0)}</div>
+          <div className="rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/50 p-3.5">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Remaining modules</div>
+            <div className="mt-1 text-xl font-black text-slate-900 dark:text-white font-mono">{Math.max((summary.degreeProgress?.required ?? 0) - (summary.degreeProgress?.completed ?? 0), 0)}</div>
           </div>
-          <div className="rounded-lg border border-slate-100 p-3">
-            <div className="text-[11px] text-slate-500">Programme completion</div>
-            <div className="mt-1 text-lg font-semibold text-slate-900">{summary.degreeProgress?.percent ?? '—'}%</div>
+          <div className="rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/50 p-3.5">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Completion rate</div>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-xl font-black text-blue-600 dark:text-blue-400 font-mono">{summary.degreeProgress?.percent ?? '—'}%</span>
+              <div className="flex-1 h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-blue-600 rounded-full" 
+                  style={{ width: `${Math.min(100, summary.degreeProgress?.percent || 0)}%` }} 
+                />
+              </div>
+            </div>
           </div>
         </div>
       </section>
 
       {/* Attendance summary */}
-      <section className="mt-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-xs">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-slate-900">Attendance Summary</h3>
-            <p className="text-xs text-slate-500">Aggregated attendance across your registered units</p>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white">Attendance Summary</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">Aggregated participation across registered units</p>
           </div>
         </div>
         <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="rounded-lg border border-slate-100 p-3">
-            <div className="text-[11px] text-slate-500">Attendance rate</div>
-            <div className="mt-1 text-lg font-semibold text-slate-900">{summary.attendance === null || summary.attendance === undefined ? '—' : `${summary.attendance}%`}</div>
+          <div className="rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/50 p-3.5">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Attendance rate</div>
+            <div className="mt-1 text-xl font-black text-slate-900 dark:text-white font-mono">{summary.attendance === null || summary.attendance === undefined ? '—' : `${summary.attendance}%`}</div>
           </div>
-          <div className="rounded-lg border border-slate-100 p-3">
-            <div className="text-[11px] text-slate-500">Present / Late / Absent</div>
+          <div className="rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/50 p-3.5">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Present / Late / Absent</div>
             {((summary.presentCount ?? null) !== null || (Array.isArray(summary.attendanceModules) && summary.attendanceModules.length > 0)) ? (
-              <div className="mt-1 text-sm text-slate-700">
-                <div>Present: <strong className="text-slate-900">{summary.presentCount ?? summary.attendanceModules?.reduce((s, m) => s + (m.present || 0), 0) ?? 0}</strong></div>
-                <div>Late: <strong className="text-slate-900">{summary.lateCount ?? summary.attendanceModules?.reduce((s, m) => s + (m.late || 0), 0) ?? 0}</strong></div>
-                <div>Absent: <strong className="text-slate-900">{summary.absentCount ?? summary.attendanceModules?.reduce((s, m) => s + (m.absent || 0), 0) ?? 0}</strong></div>
-                <div>Total sessions: <strong className="text-slate-900">{summary.totalSessions ?? summary.attendanceModules?.reduce((s, m) => s + (m.totalSessions || 0), 0) ?? 0}</strong></div>
+              <div className="mt-1 text-xs text-slate-700 dark:text-slate-300 space-y-0.5 font-medium">
+                <div>Present: <strong className="text-emerald-600 font-bold">{summary.presentCount ?? summary.attendanceModules?.reduce((s, m) => s + (m.present || 0), 0) ?? 0}</strong></div>
+                <div>Late: <strong className="text-amber-600 font-bold">{summary.lateCount ?? summary.attendanceModules?.reduce((s, m) => s + (m.late || 0), 0) ?? 0}</strong></div>
+                <div>Absent: <strong className="text-rose-600 font-bold">{summary.absentCount ?? summary.attendanceModules?.reduce((s, m) => s + (m.absent || 0), 0) ?? 0}</strong></div>
               </div>
             ) : (
-              <div className="mt-1 text-sm text-slate-700">No attendance records yet.</div>
+              <div className="mt-1 text-xs text-slate-500">No attendance records yet.</div>
             )}
           </div>
-          <div className="rounded-lg border border-slate-100 p-3">
-            <div className="text-[11px] text-slate-500">Attendance warning</div>
-            <div className="mt-1 text-sm font-semibold text-rose-700">{(typeof summary.attendance === 'number' && summary.attendance < 75) ? 'Attendance below 75% — exam eligibility may be affected' : 'No warnings'}</div>
+          <div className="rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/50 p-3.5">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Eligibility Status</div>
+            <div className="mt-1 text-xs font-bold text-slate-800 dark:text-white">
+              {(typeof summary.attendance === 'number' && summary.attendance < 75) ? (
+                <span className="inline-flex items-center gap-1 text-rose-600 font-bold">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" /> Below 75% threshold
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-emerald-600 font-bold">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> Exam Eligible (≥75%)
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </section>
 
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
-        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
+        <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xs xl:col-span-2">
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <h2 className="text-sm font-semibold text-slate-900">Today’s schedule</h2>
-              <p className="mt-0.5 text-xs text-slate-500">Classes assigned to your registered units</p>
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white">Today’s schedule</h2>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Classes assigned to your registered units</p>
             </div>
             <CalendarDays className="h-5 w-5 text-blue-600" />
           </div>
           {summary.todaySchedule.length === 0 ? (
             <Empty message="No classes scheduled today." />
           ) : (
-            <div className="divide-y divide-slate-100">
+            <div className="divide-y divide-slate-100 dark:divide-slate-800">
               {summary.todaySchedule.map((item) => (
-                <div key={item.id} className="grid grid-cols-[86px_1fr] gap-3 py-3 text-sm sm:grid-cols-[100px_1fr_1fr_110px]">
-                  <span className="font-medium text-slate-700">{item.time}</span>
-                  <span>
-                    <b className="font-medium text-slate-900">{item.courseCode}</b>
-                    <span className="block text-xs text-slate-500">{item.unitName}</span>
-                  </span>
-                  <span className="text-slate-600">{item.lecturer || 'Lecturer not assigned'}</span>
-                  <span className="flex items-center gap-1 text-slate-600"><MapPin className="h-3.5 w-3.5 text-slate-400" />{item.room || 'Room not set'}</span>
+                <div key={item.id} className="grid grid-cols-1 sm:grid-cols-[100px_1fr_1fr_110px] gap-2 py-3 text-xs">
+                  <span className="font-bold text-blue-600 dark:text-blue-400 font-mono">{item.time}</span>
+                  <div>
+                    <strong className="font-bold text-slate-900 dark:text-white">{item.courseCode}</strong>
+                    <span className="block text-[11px] text-slate-500 dark:text-slate-400 truncate">{item.unitName}</span>
+                  </div>
+                  <span className="text-slate-600 dark:text-slate-300 font-medium">{item.lecturer || 'Lecturer not assigned'}</span>
+                  <span className="flex items-center gap-1 text-slate-500 font-medium"><MapPin className="h-3.5 w-3.5 text-slate-400 shrink-0" />{item.room || 'Room not set'}</span>
                 </div>
               ))}
             </div>
           )}
         </section>
-        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+
+        <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xs">
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <h2 className="text-sm font-semibold text-slate-900">Notifications</h2>
-              <p className="mt-0.5 text-xs text-slate-500">Latest institutional updates</p>
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white">Notifications</h2>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Latest institutional updates</p>
             </div>
             <Bell className="h-5 w-5 text-blue-600" />
           </div>
@@ -249,10 +298,10 @@ export default function StudentVisualSummaryDashboard({ student, onNavigateTab }
           ) : (
             <div className="space-y-3">
               {summary.notifications.map((notification) => (
-                <article key={notification.id} className="border-b border-slate-100 pb-3 last:border-0 last:pb-0">
-                  <p className="text-xs font-semibold text-slate-800">{notification.title}</p>
-                  <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-slate-500">{notification.message}</p>
-                  <time className="mt-1 block text-[11px] text-slate-400">{new Date(notification.dateTime).toLocaleDateString('en-GB')}</time>
+                <article key={notification.id} className="border-b border-slate-100 dark:border-slate-800 pb-3 last:border-0 last:pb-0">
+                  <p className="text-xs font-bold text-slate-800 dark:text-slate-200">{notification.title}</p>
+                  <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">{notification.message}</p>
+                  <time className="mt-1 block text-[10px] text-slate-400 font-mono">{new Date(notification.dateTime).toLocaleDateString('en-GB')}</time>
                 </article>
               ))}
             </div>
@@ -260,61 +309,92 @@ export default function StudentVisualSummaryDashboard({ student, onNavigateTab }
         </section>
       </div>
 
+      {/* Registered Units: Responsive Stacked Cards on Mobile / Table on sm+ */}
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
-        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
-          <div className="mb-4 flex items-center justify-between">
+        <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 shadow-xs xl:col-span-2">
+          <div className="mb-4 flex items-center justify-between gap-2">
             <div>
-              <h2 className="text-sm font-semibold text-slate-900">Registered units</h2>
-              <p className="mt-0.5 text-xs text-slate-500">Manage registration from the Unit Registration page.</p>
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white">Registered units</h2>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Manage registration from Unit Registration</p>
             </div>
-            <button onClick={() => onNavigateTab('units')} className="rounded-lg border border-blue-200 px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50">Manage units</button>
+            <button onClick={() => onNavigateTab('units')} className="h-9 px-3.5 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-950/40 text-xs font-bold text-blue-700 dark:text-blue-300 hover:bg-blue-100 transition-all cursor-pointer shrink-0">Manage units</button>
           </div>
+
           {summary.registeredUnits.length === 0 ? (
             <Empty message="No registered units. Register units to begin your semester." action="Register units" onAction={() => onNavigateTab('units')} />
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[640px] text-left text-xs">
-                <thead className="border-y border-slate-100 bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
-                  <tr>
-                    <th className="px-3 py-2.5">Unit code</th>
-                    <th className="px-3 py-2.5">Unit name</th>
-                    <th className="px-3 py-2.5">Credits</th>
-                    <th className="px-3 py-2.5">Lecturer</th>
-                    <th className="px-3 py-2.5">Status</th>
-                    <th className="px-3 py-2.5 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {summary.registeredUnits.map((unit) => (
-                    <tr key={unit.courseCode} className="border-b border-slate-100 last:border-0">
-                      <td className="px-3 py-3 font-medium text-slate-800">{unit.courseCode}</td>
-                      <td className="px-3 py-3 text-slate-700">{unit.unitName}</td>
-                      <td className="px-3 py-3 text-slate-600">{unit.credits ?? '—'}</td>
-                      <td className="px-3 py-3 text-slate-600">{unit.lecturer || 'Not assigned'}</td>
-                      <td className="px-3 py-3">
-                        {summary.unpublishedSubjects && summary.unpublishedSubjects.includes(unit.courseCode) ? (
-                          <span className="rounded-full bg-amber-50 px-2 py-1 font-medium text-amber-800">Pending publication</span>
-                        ) : (
-                          <span className="rounded-full bg-emerald-50 px-2 py-1 font-medium text-emerald-700">{unit.status}</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-3 text-right">
-                        <button onClick={() => onNavigateTab('units')} className="mr-3 font-semibold text-blue-700 hover:underline">View</button>
-                        <button onClick={() => onNavigateTab('units')} className="font-semibold text-rose-700 hover:underline">Drop / request drop</button>
-                      </td>
+            <>
+              {/* Mobile Stacked Card View (<640px) */}
+              <div className="block sm:hidden space-y-2.5">
+                {summary.registeredUnits.map((unit) => (
+                  <div key={unit.courseCode} className="p-3.5 rounded-xl border border-slate-150 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/50 space-y-2">
+                    <div className="flex justify-between items-start gap-2">
+                      <div>
+                        <span className="font-mono font-black text-xs text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/60 px-1.5 py-0.5 rounded">
+                          {unit.courseCode}
+                        </span>
+                        <h4 className="text-xs font-bold text-slate-900 dark:text-white mt-1 leading-snug">{unit.unitName}</h4>
+                      </div>
+                      {summary.unpublishedSubjects && summary.unpublishedSubjects.includes(unit.courseCode) ? (
+                        <span className="rounded-full bg-amber-50 dark:bg-amber-950/60 border border-amber-200 text-[10px] font-bold px-2 py-0.5 text-amber-800 dark:text-amber-300 shrink-0">Pending</span>
+                      ) : (
+                        <span className="rounded-full bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 text-[10px] font-bold px-2 py-0.5 text-emerald-700 dark:text-emerald-300 shrink-0">{unit.status}</span>
+                      )}
+                    </div>
+                    <div className="flex justify-between items-center text-[11px] text-slate-500 pt-1 border-t border-slate-100 dark:border-slate-800">
+                      <span>{unit.lecturer || 'Lecturer not assigned'}</span>
+                      <span className="font-mono font-bold text-slate-700 dark:text-slate-300">{unit.credits ?? 3} Credits</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Desktop Table View (>=640px) */}
+              <div className="hidden sm:block overflow-x-auto">
+                <table className="w-full min-w-[640px] text-left text-xs">
+                  <thead className="border-y border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-850 text-[11px] uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2.5">Unit code</th>
+                      <th className="px-3 py-2.5">Unit name</th>
+                      <th className="px-3 py-2.5">Credits</th>
+                      <th className="px-3 py-2.5">Lecturer</th>
+                      <th className="px-3 py-2.5">Status</th>
+                      <th className="px-3 py-2.5 text-right">Action</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {summary.registeredUnits.map((unit) => (
+                      <tr key={unit.courseCode} className="hover:bg-slate-50/50">
+                        <td className="px-3 py-3 font-mono font-bold text-blue-600">{unit.courseCode}</td>
+                        <td className="px-3 py-3 font-semibold text-slate-800 dark:text-slate-200">{unit.unitName}</td>
+                        <td className="px-3 py-3 text-slate-600 font-mono">{unit.credits ?? '—'}</td>
+                        <td className="px-3 py-3 text-slate-600">{unit.lecturer || 'Not assigned'}</td>
+                        <td className="px-3 py-3">
+                          {summary.unpublishedSubjects && summary.unpublishedSubjects.includes(unit.courseCode) ? (
+                            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800">Pending publication</span>
+                          ) : (
+                            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">{unit.status}</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-right">
+                          <button onClick={() => onNavigateTab('units')} className="font-bold text-blue-600 hover:underline mr-3 cursor-pointer">View</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </section>
-        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+
+        {/* CGPA Trend Chart */}
+        <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xs">
           <div className="mb-4 flex items-center gap-2">
             <TrendingUp className="h-5 w-5 text-blue-600" />
             <div>
-              <h2 className="text-sm font-semibold text-slate-900">Academic progress</h2>
-              <p className="text-xs text-slate-500">CGPA history</p>
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white">Academic progress</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">CGPA history trend</p>
             </div>
           </div>
           {hasGpaHistory ? (
@@ -337,58 +417,78 @@ export default function StudentVisualSummaryDashboard({ student, onNavigateTab }
             </div>
           ) : (
             <div className="flex min-h-[192px] flex-col items-center justify-center text-center">
-              <Award className="h-7 w-7 text-blue-200" />
-              <p className="mt-3 text-2xl font-semibold text-slate-900">{summary.gpa === null ? '—' : summary.gpa.toFixed(2)}</p>
-              <p className="mt-2 max-w-xs text-xs leading-relaxed text-slate-500">
-                {summary.gpa === null
-                  ? 'No published results yet. Your CGPA trend will appear after grades are released across more than one academic period.'
-                  : 'More academic periods are required before a CGPA trend can be displayed.'}
+              <Award className="h-8 w-8 text-blue-300 mb-2" />
+              <p className="text-2xl font-black text-slate-900 dark:text-white font-mono">{summary.gpa === null ? '—' : summary.gpa.toFixed(2)}</p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 max-w-xs">
+                {summary.gpa === null ? 'No published results yet.' : 'Current cumulative GPA based on published courses.'}
               </p>
             </div>
           )}
         </section>
       </div>
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
-        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-900">Fee summary</h2>
-              <p className="mt-0.5 text-xs text-slate-500">Current finance ledger</p>
+      {/* Financial Breakdown Card with Visual Progress Bar */}
+      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-4">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2.5 rounded-xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400">
+              <WalletCards className="h-5 w-5" />
             </div>
-            <WalletCards className="h-5 w-5 text-blue-600" />
+            <div>
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white">Fee Balance & Financial Breakdown</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Current tuition and ledger statement</p>
+            </div>
           </div>
-          <dl className="mt-4 space-y-2.5 text-sm">
-            <Row label="Total fees" value={currency(summary.feeSummary.total)} />
-            <Row label="Paid" value={currency(summary.feeSummary.paid)} success />
-            <Row label="Balance" value={currency(summary.feeSummary.balance)} danger={summary.feeSummary.balance > 0} />
-            <Row label="Status" value={summary.feeSummary.status} />
-          </dl>
-          <button onClick={() => onNavigateTab('financials')} className="mt-5 w-full rounded-lg bg-blue-600 px-3 py-2.5 text-xs font-semibold text-white hover:bg-blue-700">Pay fees</button>
-        </section>
-        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm lg:col-span-2">
-          <h2 className="text-sm font-semibold text-slate-900">Quick actions</h2>
-          <p className="mt-0.5 text-xs text-slate-500">Go directly to a student service.</p>
-          <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
-            {[
-              { label: 'Register Units', tab: 'units', icon: BookOpen },
-              { label: 'View Results', tab: 'grades', icon: Award },
-              { label: 'Timetable', tab: 'units', icon: CalendarDays },
-              { label: 'Library', tab: 'library', icon: Library },
-              { label: 'Study Materials', tab: 'materials', icon: BookOpen },
-            ].map(({ label, tab, icon: Icon }) => (
-              <button
-                key={label}
-                onClick={() => onNavigateTab(tab as DashboardTab)}
-                className="flex min-h-[92px] flex-col items-center justify-center rounded-lg border border-slate-200 px-2 text-center text-xs font-medium text-slate-700 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
-              >
-                <Icon className="mb-2 h-5 w-5 text-blue-600" />
-                {label}
-              </button>
-            ))}
-          </div>
-        </section>
-      </div>
+          <button 
+            type="button"
+            onClick={() => onNavigateTab('financials')} 
+            className="h-11 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-xs shadow-blue-500/20 cursor-pointer active:scale-95 transition-all self-stretch sm:self-auto"
+          >
+            <span>View Fees & Ledger</span>
+          </button>
+        </div>
+
+        {(() => {
+          const total = summary.feeSummary.total || 1;
+          const paid = summary.feeSummary.paid || 0;
+          const pct = Math.min(100, Math.round((paid / total) * 100)) || 0;
+
+          return (
+            <div className="mt-4 space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="p-3.5 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/50">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Total Invoiced</span>
+                  <span className="text-base font-black text-slate-900 dark:text-white font-mono mt-1 block">{currency(summary.feeSummary.total)}</span>
+                </div>
+                <div className="p-3.5 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/50">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Total Paid</span>
+                  <span className="text-base font-black text-emerald-600 font-mono mt-1 block">{currency(summary.feeSummary.paid)}</span>
+                </div>
+                <div className="p-3.5 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/50">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Outstanding Balance</span>
+                  <span className={`text-base font-black font-mono mt-1 block ${summary.feeSummary.balance > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                    {currency(summary.feeSummary.balance)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Visual Percentage Bar */}
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center text-xs font-bold">
+                  <span className="text-slate-600 dark:text-slate-300">Fee Payment Progress</span>
+                  <span className="text-blue-600 dark:text-blue-400 font-mono">{pct}% Cleared</span>
+                </div>
+                <div className="h-3 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden p-0.5 border border-slate-200 dark:border-slate-700">
+                  <div 
+                    className={`h-full rounded-full transition-all duration-500 ${pct >= 100 ? 'bg-emerald-500' : 'bg-gradient-to-r from-blue-600 to-indigo-600'}`}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+      </section>
     </div>
   );
 }

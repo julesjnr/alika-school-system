@@ -4,9 +4,9 @@ import {
   Users, Award, Calendar, BookOpen, Clock, 
   CheckCircle2, Save, FileSpreadsheet, Plus, 
   Activity, AlertCircle, Sparkles, LogOut, ChevronDown, Trash2, User, Sliders, X, Menu,
-  UserCheck, School, GraduationCap, Bell, Search, MapPin
+  UserCheck, School, GraduationCap, Bell, Search, MapPin, UserX, Briefcase, Settings, Landmark, FileText, PhoneCall, CheckSquare, Home, Library
  } from 'lucide-react';
-import { Lecturer, Student, Grade, Course, StockItem, Book, LMSReadingList, TeacherResource, BookRequest, AttendanceSession } from '../types';
+import { Lecturer, Student, Grade, Course, StockItem, Book, LMSReadingList, TeacherResource, BookRequest, AttendanceSession, InAppNotification } from '../types';
 import LecturerBooksView from './LecturerBooksView';
 import StudentLookupPage from './StudentLookupPage';
 import LecturerAssessmentWorkspace from './LecturerAssessmentWorkspace';
@@ -15,6 +15,10 @@ import LecturerWorkstationDashboard, {
   LecturerWorkstationError,
 } from './LecturerWorkstationDashboard';
 import { useLecturerDashboard } from '../hooks/useLecturerDashboard';
+import MobileTopBar from './mobile/MobileTopBar';
+import MobileBottomNav from './mobile/MobileBottomNav';
+import MobileDrawerMenu from './mobile/MobileDrawerMenu';
+import NotificationSlideOver from './mobile/NotificationSlideOver';
 import {
   ResponsiveContainer,
   BarChart,
@@ -41,6 +45,7 @@ interface LecturerDashboardProps {
   readingLists?: LMSReadingList[];
   teacherResources?: TeacherResource[];
   bookRequests?: BookRequest[];
+  notifications?: InAppNotification[];
   onUpdateReadingList?: (subjectCode: string, lecturerId: string, bookIds: string[], notes?: string) => void;
   onCancelOfficeHour?: (lecturerId: string, slotId: string, removeEntirely?: boolean) => void;
   onAddOfficeHourSlot?: (lecturerId: string, day: string, time: string) => void;
@@ -74,12 +79,14 @@ export default function LecturerDashboard({
   onReleaseTeacherResource = () => {},
   onAddBookRequest = () => {},
   attendanceSessions = [],
+  notifications = [],
   onSaveAttendance,
   onLogout
 }: LecturerDashboardProps) {
   const { showToast, showWarning, showConfirm } = useNotification();
   const [activeTab, setActiveTab] = useState<'workstation' | 'grading' | 'classlist' | 'schedule' | 'attendance' | 'lookup' | 'books'>('workstation');
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+  const [showNotificationsDrawer, setShowNotificationsDrawer] = useState<boolean>(false);
 
   const {
     summary,
@@ -440,97 +447,30 @@ export default function LecturerDashboard({
   return (
     <div className="min-h-screen flex bg-slate-50 dark:bg-slate-950 font-sans transition-colors duration-300 w-full animate-fade-in" id="lecturer-dashboard-root">
       {/* MOBILE NAVIGATION DRAWER */}
-      {mobileMenuOpen && (
-        <div className="fixed inset-0 z-50 flex md:hidden font-sans">
-          {/* Backdrop */}
-          <button 
-            type="button" 
-            onClick={() => setMobileMenuOpen(false)}
-            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs transition-opacity cursor-default border-none w-full h-full"
-            aria-label="Close Menu"
-          />
-          
-          {/* Drawer Content */}
-          <div className="relative flex w-full max-w-xs flex-col bg-slate-900 dark:bg-slate-950 p-6 text-slate-300 shadow-xl focus:outline-none z-10">
-            {/* Close Button */}
-            <button 
-              type="button"
-              onClick={() => setMobileMenuOpen(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-white p-2 rounded-full cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
+      <MobileDrawerMenu
+        isOpen={mobileMenuOpen}
+        onClose={() => setMobileMenuOpen(false)}
+        role="lecturer"
+        userRoleLabel="Faculty Lecturer"
+        userName={lecturer.name}
+        activeTab={activeTab}
+        onSelectTab={(tabId) => setActiveTab(tabId as any)}
+        onOpenSettings={() => setIsPasscodeModalOpen(true)}
+        onLogout={onLogout}
+        menuItems={[
+          { id: 'workstation', label: 'Home', icon: Home, onClick: () => setActiveTab('workstation'), isActive: activeTab === 'workstation' },
+          { id: 'classlist', label: 'Classes', icon: BookOpen, onClick: () => setActiveTab('classlist'), isActive: activeTab === 'classlist' },
+          { id: 'attendance', label: 'Attendance', icon: CheckSquare, onClick: () => setActiveTab('attendance'), isActive: activeTab === 'attendance' },
+          { id: 'grading', label: 'Marks', icon: Award, onClick: () => setActiveTab('grading'), isActive: activeTab === 'grading' },
+          { id: 'lookup', label: 'Students', icon: GraduationCap, onClick: () => setActiveTab('lookup'), isActive: activeTab === 'lookup' },
+          { id: 'schedule', label: 'Timetable', icon: Clock, onClick: () => setActiveTab('schedule'), isActive: activeTab === 'schedule' },
+          { id: 'books', label: 'Library', icon: Library, onClick: () => setActiveTab('books'), isActive: activeTab === 'books' },
+          { id: 'settings', label: 'Settings', icon: Settings, onClick: () => setIsPasscodeModalOpen(true), isActive: false },
+        ]}
+      />
 
-            {/* Brand Header */}
-            <div className="pb-6 border-b border-slate-800 flex items-center gap-2 mb-4">
-              <div className="w-8 h-8 bg-violet-650 rounded-lg flex items-center justify-center shrink-0">
-                <School className="w-5 h-5 text-white" />
-              </div>
-              <div>
-                <span className="text-sm font-black tracking-tight text-white block uppercase leading-none">ALIKA</span>
-                <span className="text-[8px] text-slate-500 font-bold uppercase tracking-widest block">Faculty Portal</span>
-              </div>
-            </div>
-
-            {/* Navigation Menu */}
-            <nav className="flex-1 space-y-1.5 overflow-y-auto pr-2">
-              <p className="px-2 pt-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">Dashboard</p>
-              <button type="button" onClick={() => { setActiveTab('workstation'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'workstation' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                <Sliders className="w-4 h-4" />
-                <span>My Workstation</span>
-              </button>
-              <p className="px-2 pt-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Teaching</p>
-              <button type="button" onClick={() => { setActiveTab('grading'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'grading' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                <Award className="w-4 h-4" />
-                <span>Assessment & Grading</span>
-              </button>
-              <button type="button" onClick={() => { setActiveTab('attendance'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'attendance' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                <UserCheck className="w-4 h-4" />
-                <span>Attendance</span>
-              </button>
-              <button type="button" onClick={() => { setActiveTab('classlist'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'classlist' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                <Users className="w-4 h-4" />
-                <span>Class List</span>
-              </button>
-              <button type="button" onClick={() => { setActiveTab('schedule'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'schedule' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                <Calendar className="w-4 h-4" />
-                <span>Subjects Roster</span>
-              </button>
-              <p className="px-2 pt-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Students</p>
-              <button type="button" onClick={() => { setActiveTab('lookup'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'lookup' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                <GraduationCap className="w-4 h-4" />
-                <span>Student Lookup</span>
-              </button>
-              <p className="px-2 pt-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Resources</p>
-              <button type="button" onClick={() => { setActiveTab('books'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'books' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                <BookOpen className="w-4 h-4" />
-                <span>Reading Lists</span>
-              </button>
-              <p className="px-2 pt-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Account</p>
-            </nav>
-
-            {/* Profile Info & Logout */}
-            <div className="p-4 border-t border-slate-800/60 bg-slate-950/40 space-y-3 shrink-0">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-lg bg-violet-650 text-white flex items-center justify-center font-bold text-sm shrink-0">
-                  {lecturer.name.charAt(0)}
-                </div>
-                <div>
-                  <h4 className="text-xs font-bold text-white leading-none">{lecturer.name}</h4>
-                  <span className="text-[9px] text-slate-500 font-mono block mt-1">{lecturer.designatorCode}</span>
-                </div>
-              </div>
-              <button type="button" onClick={() => { setMobileMenuOpen(false); onLogout(); }} className="w-full py-2.5 bg-slate-800 hover:bg-rose-955/30 hover:text-rose-450 text-slate-400 hover:text-white text-xs font-bold rounded-lg uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5 cursor-pointer">
-                <LogOut className="w-3.5 h-3.5" />
-                <span>Logout Portal</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* LEFT SIDEBAR NAVIGATION */}
-      <aside className="w-64 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 flex flex-col border-r border-slate-100 dark:border-slate-800 shrink-0 hidden md:flex font-sans justify-between p-4 shadow-sm z-10">
+      {/* LEFT SIDEBAR NAVIGATION (Desktop) */}
+      <aside className="w-64 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 flex flex-col border-r border-slate-100 dark:border-slate-800 shrink-0 hidden sm:flex font-sans justify-between p-4 shadow-sm z-10">
         {/* Brand Header */}
         <div className="space-y-4">
           <div className="flex items-center gap-3 px-2 py-3 border-b border-slate-100 dark:border-slate-800">
@@ -577,7 +517,6 @@ export default function LecturerDashboard({
               <BookOpen className="w-4 h-4" />
               <span>Reading Lists</span>
             </button>
-            <p className="px-3 pt-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Account</p>
           </nav>
         </div>
         
@@ -600,9 +539,20 @@ export default function LecturerDashboard({
       </aside>
       
       {/* MAIN CONTAINER */}
-      <div className="flex-1 flex flex-col min-h-screen overflow-y-auto bg-[#F5F7FB] dark:bg-slate-950">
-        {/* TOP UTILITY BAR */}
-        <header className="bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 px-8 py-4 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xs shrink-0 font-sans sticky top-0 z-20">
+      <div className="flex-1 flex flex-col min-h-screen overflow-y-auto bg-[#F5F7FB] dark:bg-slate-950 pb-20 sm:pb-8">
+        {/* MOBILE TOP BAR (<640px) */}
+        <MobileTopBar
+          title="ALIKA"
+          subtitle={`Prof. ${lecturer.name.split(' ').pop()} · ${lecturer.designatorCode}`}
+          userRole="lecturer"
+          userName={lecturer.name}
+          unreadNotificationsCount={notifications.filter(n => n.status === 'unread').length}
+          onOpenDrawer={() => setMobileMenuOpen(true)}
+          onOpenNotifications={() => setShowNotificationsDrawer(true)}
+        />
+
+        {/* DESKTOP TOP UTILITY BAR (>=640px) */}
+        <header className="hidden sm:flex bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 px-8 py-4 items-center justify-between gap-4 shadow-xs shrink-0 font-sans sticky top-0 z-20">
           <div className="flex items-center gap-3">
             <button
               type="button"
@@ -636,9 +586,15 @@ export default function LecturerDashboard({
             <div className="relative">
               <button 
                 type="button" 
+                onClick={() => setShowNotificationsDrawer(true)}
                 className="relative p-2.5 rounded-2xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-all cursor-pointer"
+                title="Notifications"
+                aria-label="Notifications"
               >
                 <Bell className="w-4 h-4" />
+                {notifications.filter(n => n.status === 'unread').length > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse" />
+                )}
               </button>
             </div>
 
@@ -736,6 +692,7 @@ export default function LecturerDashboard({
                             setTimerActive={setTimerActive}
                             setTimerSeconds={setTimerSeconds}
                             onOpenAttendance={() => setActiveTab('attendance')}
+                            onNavigateTab={(tab) => setActiveTab(tab as any)}
                           />
                           {/* Historical teaching sessions (timesheets) */}
                           <div className="border border-slate-150 dark:border-slate-800 rounded-2xl p-5 space-y-3">
@@ -1595,21 +1552,21 @@ export default function LecturerDashboard({
 
                 <form onSubmit={handleSaveAttendance} className="space-y-6">
                   
-                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-105 pb-4">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-150 dark:border-slate-800 pb-4">
                     <div>
-                      <h2 className="text-base font-bold text-slate-800">Roll-call Session Attendance Registry</h2>
-                      <p className="text-xs text-slate-500">Track and submit student presence rates for auditing internal hours logs.</p>
+                      <h2 className="text-base font-bold text-slate-800 dark:text-white">Roll-call Session Attendance Registry</h2>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">Track and submit student presence rates for auditing internal hours logs.</p>
                     </div>
 
-                    <div className="flex items-center gap-3">
-                      <div className="flex items-center gap-1">
-                        <label htmlFor="att-date" className="text-xs text-slate-500 font-bold">Session Date:</label>
+                    <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
+                      <div className="flex items-center gap-1 flex-1 sm:flex-initial">
+                        <label htmlFor="att-date" className="text-xs text-slate-500 font-bold">Date:</label>
                         <input
                           id="att-date"
                           type="date"
                           value={attendanceDate}
                           onChange={(e) => setAttendanceDate(e.target.value)}
-                          className="bg-white border border-slate-200 rounded p-1.5 text-xs focus:outline-hidden"
+                          className="h-10 bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-xl px-2.5 text-xs text-slate-800 dark:text-white font-medium focus:outline-hidden"
                           required
                         />
                       </div>
@@ -1617,7 +1574,7 @@ export default function LecturerDashboard({
                       <select
                         value={selectedSubject}
                         onChange={(e) => { handleModuleSelection(e.target.value); setAttendanceRecords({}); setAttendanceSessionOpen(false); }}
-                        className="bg-white border border-slate-200 rounded p-1.5 text-xs text-slate-800 font-bold focus:outline-hidden"
+                        className="h-10 flex-1 sm:flex-initial bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-xl px-3 text-xs text-slate-800 dark:text-white font-bold focus:outline-hidden"
                         title="Choose active class"
                         disabled={assignedCodes.length === 0}
                       >
@@ -1633,7 +1590,7 @@ export default function LecturerDashboard({
                         type="button"
                         onClick={openAttendanceSession}
                         disabled={assignedCodes.length === 0 || subjectStudents.length === 0}
-                        className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                        className="h-10 px-4 rounded-xl bg-blue-600 text-xs font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:disabled:bg-slate-800 transition-all cursor-pointer shrink-0"
                       >
                         {attendanceSessionOpen ? 'Session Open' : 'Open Session'}
                       </button>
@@ -1641,44 +1598,114 @@ export default function LecturerDashboard({
                   </div>
 
                   {attendanceSuccess && (
-  <div className="bg-emerald-50 text-emerald-800 border border-emerald-100 p-4 rounded-xl text-xs font-semibold flex items-center gap-1.5 animate-bounce">
-    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-    <span>Attendance session records locked and uploaded successfully!</span>
-  </div>
-)}
+                    <div className="bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 p-4 rounded-xl text-xs font-semibold flex items-center gap-2 animate-bounce">
+                      <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                      <span>Attendance session records locked and uploaded successfully!</span>
+                    </div>
+                  )}
+
                   {subjectStudents.length === 0 ? (
                     <p className="text-slate-400 italic text-xs py-8 text-center">Select an active class with registered students.</p>
                   ) : !attendanceSessionOpen ? (
-                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 py-10 text-center">
-                      <UserCheck className="mx-auto mb-2 h-8 w-8 text-slate-300" />
-                      <p className="text-sm font-semibold text-slate-700">Attendance session is closed.</p>
-                      <p className="mt-1 text-xs text-slate-500">Open the session to mark Present, Late, or Absent.</p>
+                    <div className="rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-850/50 py-10 text-center">
+                      <UserCheck className="mx-auto mb-2 h-8 w-8 text-slate-300 dark:text-slate-600" />
+                      <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">Attendance session is closed.</p>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Open the session to mark Present, Late, or Absent.</p>
                     </div>
                   ) : (
-                    <div className="space-y-3">
-                      <div className="border border-slate-100 rounded-xl divide-y divide-slate-100 overflow-hidden bg-white">
+                    <div className="space-y-4">
+                      {/* ATTENDANCE SUMMARY BAR & RAPID ACTION CTAS */}
+                      {(() => {
+                        const pCount = subjectStudents.filter(s => (attendanceRecords[s.id] || 'absent') === 'present').length;
+                        const aCount = subjectStudents.filter(s => (attendanceRecords[s.id] || 'absent') === 'absent').length;
+                        const lCount = subjectStudents.filter(s => (attendanceRecords[s.id] || 'absent') === 'late').length;
+
+                        return (
+                          <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-3">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                              {/* Live Presence Badges */}
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-xs font-bold text-slate-500 font-mono">Live Roll-call:</span>
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-xs font-black text-emerald-700 dark:text-emerald-300 font-mono">
+                                  Present: {pCount}
+                                </span>
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-xs font-black text-rose-700 dark:text-rose-300 font-mono">
+                                  Absent: {aCount}
+                                </span>
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-xs font-black text-amber-700 dark:text-amber-300 font-mono">
+                                  Late: {lCount}
+                                </span>
+                                <span className="text-[11px] text-slate-400 font-medium">
+                                  ({subjectStudents.length} total)
+                                </span>
+                              </div>
+
+                              {/* Rapid Exception Marking CTAS */}
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const next: Record<string, 'present' | 'absent' | 'late'> = {};
+                                    subjectStudents.forEach(s => { next[s.id] = 'present'; });
+                                    setAttendanceRecords(next);
+                                  }}
+                                  className="h-10 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer active:scale-95 transition-all"
+                                >
+                                  <CheckCircle2 className="w-4 h-4" />
+                                  <span>Mark All Present</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const next: Record<string, 'present' | 'absent' | 'late'> = {};
+                                    subjectStudents.forEach(s => { next[s.id] = 'absent'; });
+                                    setAttendanceRecords(next);
+                                  }}
+                                  className="h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 text-slate-600 dark:text-slate-300 text-xs font-bold cursor-pointer transition-all"
+                                >
+                                  Reset
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* STUDENT ROWS WITH LARGE TOGGLE CHIPS (>=44px) */}
+                      <div className="border border-slate-200 dark:border-slate-800 rounded-2xl divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden bg-white dark:bg-slate-900 shadow-xs">
                         {subjectStudents.map((s) => {
                           const status = attendanceRecords[s.id] || 'absent';
                           return (
-                            <div key={s.id} className="p-3.5 flex justify-between items-center text-xs hover:bg-slate-50/30">
-                              <div className="space-y-0.5">
-                                <span className="font-bold text-slate-800 text-smblock">{s.name}</span>
-                                <span className="text-slate-400 font-mono text-[10px] block">{s.admissionNo} • Registered</span>
+                            <div key={s.id} className="p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/50 dark:hover:bg-slate-850/50 transition-colors">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 flex items-center justify-center font-bold text-sm shrink-0 border border-slate-200 dark:border-slate-700">
+                                  {s.name.charAt(0)}
+                                </div>
+                                <div className="space-y-0.5 min-w-0">
+                                  <span className="font-bold text-slate-900 dark:text-white text-xs sm:text-sm block truncate">{s.name}</span>
+                                  <span className="text-slate-400 font-mono text-[10px] block">{s.admissionNo} • Registered Student</span>
+                                </div>
                               </div>
 
-                              <div className="flex items-center gap-1.5">
+                              {/* Large Touch Target Toggle Chips (min-h-[44px] h-11) */}
+                              <div className="grid grid-cols-3 gap-2 w-full sm:w-auto">
                                 {([
-                                  ['present', 'Present', 'bg-emerald-50 text-emerald-700 border-emerald-200'],
-                                  ['late', 'Late', 'bg-amber-50 text-amber-700 border-amber-200'],
-                                  ['absent', 'Absent', 'bg-rose-50 text-rose-700 border-rose-200'],
-                                ] as const).map(([value, label, activeClass]) => (
+                                  ['present', 'Present', 'bg-emerald-600 text-white border-emerald-600 shadow-xs', CheckCircle2],
+                                  ['late', 'Late', 'bg-amber-500 text-white border-amber-500 shadow-xs', Clock],
+                                  ['absent', 'Absent', 'bg-rose-600 text-white border-rose-600 shadow-xs', UserX],
+                                ] as const).map(([value, label, activeClass, Icon]) => (
                                   <button
                                     key={value}
                                     type="button"
                                     onClick={() => setAttendanceStatus(s.id, value)}
-                                    className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-bold transition-all ${status === value ? activeClass : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'}`}
+                                    className={`min-h-[44px] h-11 px-3 sm:px-4 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 ${
+                                      status === value
+                                        ? activeClass
+                                        : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-750'
+                                    }`}
                                   >
-                                    {status === value ? '✓ ' : ''}{label}
+                                    <Icon className="w-3.5 h-3.5 shrink-0" />
+                                    <span>{label}</span>
                                   </button>
                                 ))}
                               </div>
@@ -1689,9 +1716,10 @@ export default function LecturerDashboard({
 
                       <button
                         type="submit"
-                        className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-xl text-xs w-full flex items-center justify-center gap-1 tracking-wide cursor-pointer"
+                        className="h-12 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl text-xs w-full flex items-center justify-center gap-2 tracking-wide cursor-pointer active:scale-95 shadow-md shadow-blue-500/20 transition-all"
                       >
-                        Submit Session Attendance Roll
+                        <Save className="w-4 h-4" />
+                        <span>Submit Session Attendance Roll</span>
                       </button>
                     </div>
                   )}
@@ -1903,6 +1931,7 @@ export default function LecturerDashboard({
         )}
 
       </div>
+      </div>
 
       {/* CHANGE PASSCODE SECURITY MODAL */}
       {isPasscodeModalOpen && (
@@ -1992,6 +2021,24 @@ export default function LecturerDashboard({
         </div>
       )}
 
-    </div></div></div>
+      {/* ROLE-AWARE STICKY BOTTOM NAVIGATION (<640px) */}
+      <MobileBottomNav
+        role="lecturer"
+        activeTab={activeTab}
+        onSelectTab={(tab) => setActiveTab(tab as any)}
+        onOpenDrawer={() => setMobileMenuOpen(true)}
+      />
+
+      {/* NOTIFICATIONS SLIDE-OVER */}
+      <NotificationSlideOver
+        isOpen={showNotificationsDrawer}
+        onClose={() => setShowNotificationsDrawer(false)}
+        notifications={notifications}
+        onMarkAsRead={() => {}}
+        onMarkAllAsRead={() => {}}
+        onClearNotification={() => {}}
+      />
+      </div>
+    </div>
   );
 }

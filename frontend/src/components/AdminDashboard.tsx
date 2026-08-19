@@ -9,7 +9,7 @@ import {
   AlertCircle, Bookmark, ClipboardCheck, ArrowRight, Save, Trash2, Check, X,
   Shield, Lock, Fingerprint, Library, Link, Copy, KeyRound, RefreshCw,
   TrendingUp, Calendar, Clock, MapPin, UserCheck, AlertTriangle, Info, School, Landmark, Sliders, Award, Activity, User, LogOut, Menu,
-  Eye, Download, Search, FileCheck, ExternalLink, GraduationCap, Building2
+  Eye, Download, Search, FileCheck, ExternalLink, GraduationCap, Building2, Briefcase, Settings, PhoneCall, CheckSquare
 } from 'lucide-react';
 import { subjectMap } from '../data';
 import GlobalSearchBar from './GlobalSearchBar';
@@ -20,6 +20,11 @@ import { HRPayrollView } from './hr/HRPayrollView';
 import SystemDiagnostics from './SystemDiagnostics';
 import StudentAdmissionDossierStation from './StudentAdmissionDossierStation';
 import StudentRecordsTable from './StudentRecordsTable';
+import MobileTopBar from './mobile/MobileTopBar';
+import MobileBottomNav from './mobile/MobileBottomNav';
+import MobileDrawerMenu from './mobile/MobileDrawerMenu';
+import NotificationSlideOver from './mobile/NotificationSlideOver';
+import { InAppNotification } from '../types';
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   AreaChart, Area
@@ -133,6 +138,7 @@ interface AdminDashboardProps {
   onUpdateBookRequestStatus?: (requestId: string, status: 'approved' | 'rejected', adminFeedback?: string) => void;
   onTriggerGateLog?: (log: Omit<LibraryGateLog, 'id' | 'timestamp'>) => void;
   mockEmails?: MockEmail[];
+  notifications?: InAppNotification[];
   onTriggerOverdueScan?: () => number;
   currentUserRole?: string;
   initialActiveTab?: 'overview' | 'academics' | 'finances' | 'payroll' | 'inventory' | 'roles' | 'library' | 'diagnostics' | 'admissions';
@@ -152,6 +158,7 @@ export default function AdminDashboard({
   reservations = [],
   bookRequests = [],
   libraryGateLogs = [],
+  notifications = [],
   onAddBook = () => {},
   onUpdateBook = () => {},
   onCheckoutBook = () => {},
@@ -183,6 +190,7 @@ export default function AdminDashboard({
   initialAdmissionsSubTab,
   onNavigateRoute
 }: AdminDashboardProps) {
+  const [showNotificationsDrawer, setShowNotificationsDrawer] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'academics' | 'finances' | 'payroll' | 'inventory' | 'roles' | 'library' | 'diagnostics' | 'admissions'>(() => {
     if (initialActiveTab) return initialActiveTab;
     if (isLibrarianView) return 'library';
@@ -1206,136 +1214,49 @@ export default function AdminDashboard({
     <div className="min-h-screen flex bg-slate-50 dark:bg-slate-950 font-sans transition-colors duration-300 w-full animate-fade-in" id="admin-dashboard-root">
       
       {/* MOBILE NAVIGATION DRAWER */}
-      {mobileMenuOpen && (
-        <div className="fixed inset-0 z-50 flex md:hidden font-sans">
-          {/* Backdrop */}
-          <button 
-            type="button" 
-            onClick={() => setMobileMenuOpen(false)}
-            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs transition-opacity cursor-default border-none w-full h-full"
-            aria-label="Close Menu"
-          />
-          
-          {/* Drawer Content */}
-          <div className="relative flex w-full max-w-xs flex-col bg-slate-900 dark:bg-slate-950 p-6 text-slate-300 shadow-xl focus:outline-none z-10">
-            {/* Close Button */}
-            <button 
-              type="button"
-              onClick={() => setMobileMenuOpen(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-white p-2 rounded-full cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
+      <MobileDrawerMenu
+        isOpen={mobileMenuOpen}
+        onClose={() => setMobileMenuOpen(false)}
+        role={isLibrarianView ? 'librarian' : isAccountantView ? 'accountant' : (currentUserRole || 'admin')}
+        portal={isLibrarianView ? 'librarian' : isAccountantView ? 'accountant' : (currentUserRole || 'admin')}
+        userRoleLabel={isLibrarianView ? 'Archival Librarian' : isAccountantView ? 'Chief Accountant' : currentUserRole === 'admissions_officer' ? 'Admissions Officer' : 'Super Administrator'}
+        userName={isLibrarianView ? 'Sarah Kendi' : isAccountantView ? 'Grace Wanjiku' : 'Admin Master'}
+        activeTab={activeTab}
+        activeSubTab={admissionsSubTab}
+        menuItems={isLibrarianView ? [
+          { id: 'library', label: 'Library HQ', icon: Library, onClick: () => setActiveTab('library'), isActive: activeTab === 'library' },
+          { id: 'overview', label: 'Dashboard', icon: Sliders, onClick: () => setActiveTab('overview'), isActive: activeTab === 'overview' },
+        ] : isAccountantView ? [
+          { id: 'finances', label: 'Ledger & Finances', icon: Landmark, onClick: () => setActiveTab('finances'), isActive: activeTab === 'finances' },
+          { id: 'payroll', label: 'HR & Payroll', icon: DollarSign, onClick: () => setActiveTab('payroll'), isActive: activeTab === 'payroll' },
+          { id: 'overview', label: 'Dashboard', icon: Sliders, onClick: () => setActiveTab('overview'), isActive: activeTab === 'overview' },
+        ] : currentUserRole === 'admissions_officer' ? [
+          { id: 'admissions', label: 'Admissions HQ', icon: School, onClick: () => { setActiveTab('admissions'); setAdmissionsSubTab('dashboard'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/dashboard'); }, isActive: activeTab === 'admissions' && (admissionsSubTab === 'dashboard' || !admissionsSubTab) },
+          { id: 'applicants', label: 'Applicants', icon: GraduationCap, onClick: () => { setActiveTab('admissions'); setAdmissionsSubTab('applicants'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/applicants'); }, isActive: activeTab === 'admissions' && admissionsSubTab === 'applicants' },
+          { id: 'applications', label: 'Applications', icon: FileText, onClick: () => { setActiveTab('admissions'); setAdmissionsSubTab('applications'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/applications'); }, isActive: activeTab === 'admissions' && admissionsSubTab === 'applications' },
+          { id: 'consultation', label: 'Consultations', icon: PhoneCall, onClick: () => { setActiveTab('admissions'); setAdmissionsSubTab('consultations'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/consultations'); }, isActive: activeTab === 'admissions' && admissionsSubTab === 'consultations' },
+          { id: 'enrollment', label: 'Enrollment Desk', icon: CheckCircle2, onClick: () => { setActiveTab('admissions'); setAdmissionsSubTab('enrollment'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/enrollment'); }, isActive: activeTab === 'admissions' && admissionsSubTab === 'enrollment' },
+          { id: 'overview', label: 'Campus Overview', icon: Sliders, onClick: () => { setActiveTab('overview'); if (onNavigateRoute) onNavigateRoute('/admin'); }, isActive: activeTab === 'overview' },
+        ] : [
+          { id: 'overview', label: 'Dashboard', icon: Sliders, onClick: () => { setActiveTab('overview'); if (onNavigateRoute) onNavigateRoute('/admin'); }, isActive: activeTab === 'overview' },
+          { id: 'students', label: 'Students', icon: GraduationCap, onClick: () => { setActiveTab('admissions'); setAdmissionsSubTab('applicants'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/applicants'); }, isActive: activeTab === 'admissions' && admissionsSubTab === 'applicants' },
+          { id: 'academics', label: 'Academics', icon: Award, onClick: () => { setActiveTab('academics'); if (onNavigateRoute) onNavigateRoute('/admin/academics'); }, isActive: activeTab === 'academics' },
+          { id: 'finances', label: 'Finance', icon: Landmark, onClick: () => { setActiveTab('finances'); if (onNavigateRoute) onNavigateRoute('/admin/finances'); }, isActive: activeTab === 'finances' },
+          { id: 'admissions', label: 'Admissions HQ', icon: School, onClick: () => { setActiveTab('admissions'); setAdmissionsSubTab(prev => prev || 'dashboard'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/dashboard'); }, isActive: activeTab === 'admissions' && (admissionsSubTab === 'dashboard' || !admissionsSubTab) },
+          { id: 'applications', label: 'Applications', icon: FileText, onClick: () => { setActiveTab('admissions'); setAdmissionsSubTab('applications'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/applications'); }, isActive: activeTab === 'admissions' && admissionsSubTab === 'applications' },
+          { id: 'consultation', label: 'Consultations', icon: PhoneCall, onClick: () => { setActiveTab('admissions'); setAdmissionsSubTab('consultations'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/consultations'); }, isActive: activeTab === 'admissions' && admissionsSubTab === 'consultations' },
+          { id: 'enrollment', label: 'Enrollment', icon: CheckCircle2, onClick: () => { setActiveTab('admissions'); setAdmissionsSubTab('enrollment'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/enrollment'); }, isActive: activeTab === 'admissions' && admissionsSubTab === 'enrollment' },
+          { id: 'roles', label: 'Lecturers & Staff', icon: Users, onClick: () => { setActiveTab('roles'); if (onNavigateRoute) onNavigateRoute('/admin/roles'); }, isActive: activeTab === 'roles' },
+          { id: 'payroll', label: 'HR & Payroll', icon: Briefcase, onClick: () => { setActiveTab('payroll'); if (onNavigateRoute) onNavigateRoute('/admin/payroll'); }, isActive: activeTab === 'payroll' },
+          { id: 'inventory', label: 'Inventory', icon: Activity, onClick: () => { setActiveTab('inventory'); if (onNavigateRoute) onNavigateRoute('/admin/inventory'); }, isActive: activeTab === 'inventory' },
+          { id: 'library', label: 'Archival Library', icon: Library, onClick: () => { setActiveTab('library'); if (onNavigateRoute) onNavigateRoute('/admin/library'); }, isActive: activeTab === 'library' },
+          { id: 'diagnostics', label: 'Reports', icon: FileText, onClick: () => { setActiveTab('diagnostics'); if (onNavigateRoute) onNavigateRoute('/admin/diagnostics'); }, isActive: activeTab === 'diagnostics' },
+        ]}
+        onLogout={onLogout}
+      />
 
-            {/* Brand Header */}
-            <div className="pb-6 border-b border-slate-800 flex items-center gap-2 mb-4">
-              <div className="w-8 h-8 bg-slate-800 rounded-lg flex items-center justify-center shrink-0 border border-slate-700">
-                <School className="w-5 h-5 text-white" />
-              </div>
-              <div>
-                <span className="text-sm font-black tracking-tight text-white block uppercase leading-none">ALIKA</span>
-                <span className="text-[8px] text-slate-500 font-bold uppercase tracking-widest block">Admin Console</span>
-              </div>
-            </div>
-
-            {/* Navigation Menu */}
-            <nav className="flex-1 space-y-1.5 overflow-y-auto pr-2">
-              {isLibrarianView ? (
-                <button type="button" onClick={() => { setActiveTab('library'); setMobileMenuOpen(false); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold bg-amber-600 text-white shadow-md uppercase tracking-wider cursor-pointer">
-                  <Library className="w-4 h-4" />
-                  <span>Library Registry</span>
-                </button>
-              ) : isAccountantView ? (
-                <>
-                  <button type="button" onClick={() => { setActiveTab('finances'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'finances' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                    <Landmark className="w-4 h-4" />
-                    <span>Ledger & Finances</span>
-                  </button>
-                  <button type="button" onClick={() => { setActiveTab('payroll'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'payroll' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                    <DollarSign className="w-4 h-4" />
-                    <span>HR & Payroll</span>
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button type="button" onClick={() => { setActiveTab('overview'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'overview' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                    <Sliders className="w-4 h-4" />
-                    <span>Overview</span>
-                  </button>
-                  {/* Admissions Module (mobile) - visible to super_admin, admissions_officer, and admin */}
-                  {(['super_admin','admissions_officer','admin'] as string[]).includes(currentUserRole || '') && (
-                    <div className="space-y-1 my-1">
-                      <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab(prev => prev || 'dashboard'); setMobileMenuOpen(false); if (onNavigateRoute) onNavigateRoute('/admin/admissions/dashboard'); }} className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'admissions' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                        <div className="flex items-center gap-3">
-                          <School className="w-4 h-4" />
-                          <span>Admissions</span>
-                        </div>
-                      </button>
-                      {activeTab === 'admissions' && (
-                        <div className="pl-6 mt-1 space-y-1 border-l-2 border-slate-700 ml-4">
-                          <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('dashboard'); setMobileMenuOpen(false); if (onNavigateRoute) onNavigateRoute('/admin/admissions/dashboard'); }} className={`w-full text-left py-1.5 px-3 rounded text-xs font-semibold ${admissionsSubTab === 'dashboard' ? 'text-blue-400 bg-slate-800/80 font-bold' : 'text-slate-400 hover:text-white'}`}>Dashboard</button>
-                          <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('consultations'); setMobileMenuOpen(false); if (onNavigateRoute) onNavigateRoute('/admin/admissions/consultations'); }} className={`w-full text-left py-1.5 px-3 rounded text-xs font-semibold ${admissionsSubTab === 'consultations' ? 'text-blue-400 bg-slate-800/80 font-bold' : 'text-slate-400 hover:text-white'}`}>Consultations</button>
-                          <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('applications'); setMobileMenuOpen(false); if (onNavigateRoute) onNavigateRoute('/admin/admissions/applications'); }} className={`w-full text-left py-1.5 px-3 rounded text-xs font-semibold ${admissionsSubTab === 'applications' ? 'text-blue-400 bg-slate-800/80 font-bold' : 'text-slate-400 hover:text-white'}`}>Applications</button>
-                          <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('applicants'); setMobileMenuOpen(false); if (onNavigateRoute) onNavigateRoute('/admin/admissions/applicants'); }} className={`w-full text-left py-1.5 px-3 rounded text-xs font-semibold ${admissionsSubTab === 'applicants' ? 'text-blue-400 bg-slate-800/80 font-bold' : 'text-slate-400 hover:text-white'}`}>Applicants</button>
-                          <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('enrollment'); setMobileMenuOpen(false); if (onNavigateRoute) onNavigateRoute('/admin/admissions/enrollment'); }} className={`w-full text-left py-1.5 px-3 rounded text-xs font-semibold ${admissionsSubTab === 'enrollment' ? 'text-blue-400 bg-slate-800/80 font-bold' : 'text-slate-400 hover:text-white'}`}>Enrollment</button>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  <button type="button" onClick={() => { setActiveTab('finances'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'finances' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                    <Landmark className="w-4 h-4" />
-                    <span>Ledger & Finances</span>
-                  </button>
-                  <button type="button" onClick={() => { setActiveTab('payroll'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'payroll' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                    <DollarSign className="w-4 h-4" />
-                    <span>HR & Payroll</span>
-                  </button>
-                  <button type="button" onClick={() => { setActiveTab('inventory'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'inventory' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                    <Activity className="w-4 h-4" />
-                    <span>Procurement Stock</span>
-                  </button>
-                  <button type="button" onClick={() => { setActiveTab('roles'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'roles' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                    <User className="w-4 h-4" />
-                    <span>Role Management</span>
-                  </button>
-                  <button type="button" onClick={() => { setActiveTab('library'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'library' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                    <Library className="w-4 h-4" />
-                    <span>Library Registry</span>
-                  </button>
-                  <button type="button" onClick={() => { setActiveTab('diagnostics'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'diagnostics' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-850 hover:text-white'}`}>
-                    <CheckCircle2 className="w-4 h-4" />
-                    <span>Diagnostics</span>
-                  </button>
-                </>
-              )}
-            </nav>
-
-            {/* Profile Info & Logout */}
-            <div className="p-4 border-t border-slate-800/60 bg-slate-950/40 space-y-3 shrink-0">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-lg bg-slate-800 text-white flex items-center justify-center font-bold text-sm shrink-0 border border-slate-700">
-                  {isLibrarianView ? 'L' : isAccountantView ? 'A' : 'M'}
-                </div>
-                <div>
-                  <h4 className="text-xs font-bold text-white leading-none">
-                    {isLibrarianView ? 'Sarah Kendi' : isAccountantView ? 'Grace Wanjiku' : 'Admin Master'}
-                  </h4>
-                  <span className="text-[9px] text-slate-500 font-mono block mt-1">
-                    {isLibrarianView ? 'Librarian' : isAccountantView ? 'Accountant' : 'Administrator'}
-                  </span>
-                </div>
-              </div>
-              <button type="button" onClick={() => { setMobileMenuOpen(false); onLogout(); }} className="w-full py-2.5 bg-slate-800 hover:bg-rose-955/30 hover:text-rose-455 text-slate-400 hover:text-white text-xs font-bold rounded-lg uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5 cursor-pointer">
-                <LogOut className="w-3.5 h-3.5" />
-                <span>Logout Portal</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      
       {/* LEFT SIDEBAR NAVIGATION */}
-      <aside className="w-64 bg-slate-900 dark:bg-slate-950 text-slate-300 flex flex-col border-r border-slate-800 shrink-0 hidden md:flex font-sans">
+      <aside className="w-64 bg-slate-900 dark:bg-slate-950 text-slate-300 flex flex-col border-r border-slate-800 shrink-0 hidden sm:flex font-sans">
         {/* Brand Header */}
         <div className="p-6 border-b border-slate-800 flex items-center gap-2">
           <div className="w-8 h-8 bg-slate-800 rounded-lg flex items-center justify-center shrink-0 border border-slate-700">
@@ -1469,18 +1390,21 @@ export default function AdminDashboard({
       </aside>
       
       {/* MAIN CONTAINER */}
-      <div className="flex-1 flex flex-col min-h-screen overflow-y-auto bg-slate-50 dark:bg-slate-950">
-        {/* TOP UTILITY BAR */}
-        <header className="bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-2xs shrink-0 font-sans">
+      <div className="flex-1 flex flex-col min-h-screen overflow-y-auto bg-slate-50 dark:bg-slate-950 pb-20 sm:pb-8">
+        {/* MOBILE TOP BAR (<640px) */}
+        <MobileTopBar
+          title="ALIKA"
+          subtitle={isLibrarianView ? 'Archival & Textbook Catalog' : isAccountantView ? 'Chief Accountant' : 'Super Administrator'}
+          userRole={isLibrarianView ? 'librarian' : isAccountantView ? 'accountant' : 'admin'}
+          userName={isLibrarianView ? 'Sarah Kendi' : isAccountantView ? 'Grace Wanjiku' : 'Admin Master'}
+          unreadNotificationsCount={notifications ? notifications.filter(n => n.status === 'unread').length : 0}
+          onOpenDrawer={() => setMobileMenuOpen(true)}
+          onOpenNotifications={() => setShowNotificationsDrawer(true)}
+        />
+
+        {/* DESKTOP TOP UTILITY BAR (>=640px) */}
+        <header className="hidden sm:flex bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 px-6 py-4 flex-col sm:flex-row items-center justify-between gap-4 shadow-2xs shrink-0 font-sans">
           <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setMobileMenuOpen(true)}
-              className="md:hidden p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 dark:text-slate-400 cursor-pointer"
-              title="Toggle Menu"
-            >
-              <Menu className="w-5 h-5" />
-            </button>
             <div className="space-y-0.5 text-left">
               <h2 className="text-[9px] font-bold text-slate-450 uppercase tracking-widest leading-none font-mono">Restricted MIS Console</h2>
               <h1 className="text-base font-black text-slate-800 dark:text-white leading-tight font-display">
@@ -4130,8 +4054,43 @@ export default function AdminDashboard({
           </div>
         )}
 
+        </div>
+
+        {/* ROLE-AWARE STICKY BOTTOM NAVIGATION (<640px) */}
+        <MobileBottomNav
+          role={isLibrarianView ? 'librarian' : isAccountantView ? 'accountant' : (currentUserRole || 'admin')}
+          portal={isLibrarianView ? 'librarian' : isAccountantView ? 'accountant' : (currentUserRole || 'admin')}
+          isAccountantView={isAccountantView}
+          isLibrarianView={isLibrarianView}
+          activeTab={activeTab}
+          activeSubTab={admissionsSubTab}
+          onSelectTab={(tab, subTab) => {
+            if (tab === 'admissions' || tab === 'students') {
+              setActiveTab('admissions');
+              setAdmissionsSubTab((subTab as any) || 'dashboard');
+              if (onNavigateRoute) onNavigateRoute(`/admin/admissions/${subTab || 'dashboard'}`);
+            } else {
+              setActiveTab(tab as any);
+              if (onNavigateRoute) onNavigateRoute(tab === 'overview' ? '/admin' : `/admin/${tab}`);
+            }
+          }}
+          onNavigateRoute={onNavigateRoute}
+          onOpenDrawer={() => setMobileMenuOpen(true)}
+        />
+
+        {/* NOTIFICATIONS SLIDE-OVER */}
+        <NotificationSlideOver
+          isOpen={showNotificationsDrawer}
+          onClose={() => setShowNotificationsDrawer(false)}
+          notifications={notifications || []}
+          onMarkAsRead={() => {}}
+          onMarkAllAsRead={() => {}}
+          onClearNotification={() => {}}
+        />
+
       </div>
 
-    </div></div></div>
+    </div>
+    </div>
   );
 }
