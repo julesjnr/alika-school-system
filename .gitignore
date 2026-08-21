@@ -49,3 +49,6 @@ Thumbs.db
 orthoc/
 tmp/
 *.tsbuildinfo
+
+# Runtime uploaded files
+backend/uploads/schools/
