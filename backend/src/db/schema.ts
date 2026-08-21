@@ -1,0 +1,997 @@
+import { pgTable, index, unique, check, uuid, varchar, text, numeric, boolean, foreignKey, integer, date, serial, timestamp, jsonb, primaryKey } from "drizzle-orm/pg-core"
+import { sql } from "drizzle-orm"
+
+
+
+export const courses = pgTable("courses", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	code: varchar({ length: 30 }).notNull(),
+	title: varchar({ length: 255 }).notNull(),
+	description: text(),
+	duration: varchar({ length: 50 }).notNull(),
+	fees: numeric({ precision: 12, scale:  2 }).default('0.00').notNull(),
+	thumbnail: text(),
+	faculty: varchar({ length: 100 }).notNull(),
+	active: boolean().default(true).notNull(),
+}, (table) => [
+	index("idx_courses_code").using("btree", table.code.asc().nullsLast().op("text_ops")),
+	unique("courses_code_key").on(table.code),
+	check("courses_fees_check", sql`fees >= (0)::numeric`),
+]);
+
+export const courseReviews = pgTable("course_reviews", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	courseId: uuid("course_id"),
+	studentId: uuid("student_id").notNull(),
+	studentName: varchar("student_name", { length: 255 }).notNull(),
+	rating: integer().notNull(),
+	comment: text(),
+	date: date().default(sql`CURRENT_DATE`).notNull(),
+}, (table) => [
+	foreignKey({
+			columns: [table.courseId],
+			foreignColumns: [courses.id],
+			name: "course_reviews_course_id_fkey"
+		}).onDelete("cascade"),
+	check("course_reviews_rating_check", sql`(rating >= 1) AND (rating <= 5)`),
+]);
+
+export const courseGalleryImages = pgTable("course_gallery_images", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	courseId: uuid("course_id").notNull(),
+	imageUrl: text("image_url").notNull(),
+	caption: varchar("caption", { length: 500 }),
+	displayOrder: integer("display_order").default(0).notNull(),
+	isFeatured: boolean("is_featured").default(false).notNull(),
+	isPublic: boolean("is_public").default(true).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	foreignKey({
+		columns: [table.courseId],
+		foreignColumns: [courses.id],
+		name: "course_gallery_images_course_id_fkey"
+	}).onDelete("cascade"),
+	index("idx_course_gallery_course").using("btree", table.courseId.asc().nullsLast().op("uuid_ops"), table.displayOrder.asc().nullsLast().op("int4_ops")),
+]);
+
+export const applications = pgTable("applications", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	applicationNo: varchar("application_no", { length: 40 }).notNull(),
+	fullName: varchar("full_name", { length: 255 }).notNull(),
+	nationalId: varchar("national_id", { length: 100 }).notNull(),
+	dateOfBirth: date("date_of_birth").notNull(),
+	gender: varchar({ length: 30 }).notNull(),
+	nationality: varchar({ length: 100 }).notNull(),
+	phone: varchar({ length: 50 }).notNull(),
+	email: varchar({ length: 255 }).notNull(),
+	postalAddress: text("postal_address").notNull(),
+	previousSchool: varchar("previous_school", { length: 255 }).notNull(),
+	highestQualification: varchar("highest_qualification", { length: 255 }).notNull(),
+	meanGrade: varchar("mean_grade", { length: 50 }).notNull(),
+	graduationYear: integer("graduation_year").notNull(),
+	firstChoiceCourseId: uuid("first_choice_course_id").notNull(),
+	secondChoiceCourseId: uuid("second_choice_course_id"),
+	preferredIntake: varchar("preferred_intake", { length: 100 }).notNull(),
+	status: varchar({ length: 40 }).default('submitted').notNull(),
+	admissionNo: varchar("admission_no", { length: 50 }),
+	approvedCourseId: uuid("approved_course_id"),
+	internalNotes: text("internal_notes"),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	decidedAt: timestamp("decided_at", { withTimezone: true, mode: 'string' }),
+	decidedBy: varchar("decided_by", { length: 255 }),
+}, (table) => [
+	foreignKey({
+		columns: [table.firstChoiceCourseId],
+		foreignColumns: [courses.id],
+		name: "applications_first_choice_course_id_fkey"
+	}).onDelete("restrict"),
+	foreignKey({
+		columns: [table.secondChoiceCourseId],
+		foreignColumns: [courses.id],
+		name: "applications_second_choice_course_id_fkey"
+	}).onDelete("set null"),
+	foreignKey({
+		columns: [table.approvedCourseId],
+		foreignColumns: [courses.id],
+		name: "applications_approved_course_id_fkey"
+	}).onDelete("restrict"),
+	unique("applications_application_no_key").on(table.applicationNo),
+	unique("applications_admission_no_key").on(table.admissionNo),
+	index("idx_applications_status_created").using("btree", table.status.asc().nullsLast().op("text_ops"), table.createdAt.desc().nullsLast().op("timestamptz_ops")),
+]);
+
+export const applicationDocuments = pgTable("application_documents", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	applicationId: uuid("application_id").notNull(),
+	documentType: varchar("document_type", { length: 60 }).notNull(),
+	fileName: varchar("file_name", { length: 255 }).notNull(),
+	mimeType: varchar("mime_type", { length: 100 }).notNull(),
+	fileUrl: text("file_url").notNull(),
+	sizeBytes: integer("size_bytes").notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	foreignKey({
+		columns: [table.applicationId],
+		foreignColumns: [applications.id],
+		name: "application_documents_application_id_fkey"
+	}).onDelete("cascade"),
+]);
+
+export const applicationNotes = pgTable("application_notes", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	applicationId: uuid("application_id").notNull(),
+	note: text().notNull(),
+	createdBy: varchar("created_by", { length: 255 }),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	foreignKey({
+		columns: [table.applicationId],
+		foreignColumns: [applications.id],
+		name: "application_notes_application_id_fkey"
+	}).onDelete("cascade"),
+]);
+
+export const emailOutbox = pgTable("email_outbox", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	eventKey: varchar("event_key", { length: 255 }).notNull(),
+	recipient: varchar({ length: 255 }).notNull(),
+	subject: varchar({ length: 500 }).notNull(),
+	body: text().notNull(),
+	status: varchar({ length: 20 }).default('queued').notNull(),
+	attempts: integer().default(0).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	sentAt: timestamp("sent_at", { withTimezone: true, mode: 'string' }),
+	lastError: text("last_error"),
+}, (table) => [
+	unique("email_outbox_event_key_key").on(table.eventKey),
+]);
+
+export const adminAuditLogs = pgTable("admin_audit_logs", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	actorId: varchar("actor_id", { length: 255 }),
+	actorRole: varchar("actor_role", { length: 50 }),
+	action: varchar({ length: 100 }).notNull(),
+	resourceType: varchar({ length: 100 }).notNull(),
+	resourceId: varchar("resource_id", { length: 255 }),
+	details: jsonb(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_admin_audit_resource").using("btree", table.resourceType.asc().nullsLast().op("text_ops"), table.resourceId.asc().nullsLast().op("text_ops"), table.createdAt.desc().nullsLast().op("timestamptz_ops")),
+]);
+
+export const lecturerPublications = pgTable("lecturer_publications", {
+	id: serial().primaryKey().notNull(),
+	lecturerId: uuid("lecturer_id").notNull(),
+	publicationText: text("publication_text").notNull(),
+}, (table) => [
+	foreignKey({
+			columns: [table.lecturerId],
+			foreignColumns: [lecturers.id],
+			name: "lecturer_publications_lecturer_id_fkey"
+		}).onDelete("cascade"),
+]);
+
+export const lecturerResearchInterests = pgTable("lecturer_research_interests", {
+	id: serial().primaryKey().notNull(),
+	lecturerId: uuid("lecturer_id").notNull(),
+	interestText: text("interest_text").notNull(),
+}, (table) => [
+	foreignKey({
+			columns: [table.lecturerId],
+			foreignColumns: [lecturers.id],
+			name: "lecturer_research_interests_lecturer_id_fkey"
+		}).onDelete("cascade"),
+]);
+
+export const officeHourSlots = pgTable("office_hour_slots", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	lecturerId: uuid("lecturer_id").notNull(),
+	day: varchar({ length: 30 }).notNull(),
+	timeSlot: varchar("time_slot", { length: 100 }).notNull(),
+	status: varchar({ length: 20 }).default('available').notNull(),
+	studentId: uuid("student_id"),
+	studentName: varchar("student_name", { length: 255 }),
+	studentEmail: varchar("student_email", { length: 255 }),
+	studentNotes: text("student_notes"),
+}, (table) => [
+	foreignKey({
+			columns: [table.lecturerId],
+			foreignColumns: [lecturers.id],
+			name: "office_hour_slots_lecturer_id_fkey"
+		}).onDelete("cascade"),
+	check("office_hour_slots_status_check", sql`(status)::text = ANY ((ARRAY['available'::character varying, 'booked'::character varying])::text[])`),
+]);
+
+export const studentAttendance = pgTable("student_attendance", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	studentId: uuid("student_id").notNull(),
+	subjectCode: varchar("subject_code", { length: 30 }).notNull(),
+	attendanceRate: integer("attendance_rate").default(100).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	foreignKey({
+			columns: [table.studentId],
+			foreignColumns: [students.id],
+			name: "student_attendance_student_id_fkey"
+		}).onDelete("cascade"),
+	unique("uq_student_subject_attendance").on(table.studentId, table.subjectCode),
+	check("student_attendance_attendance_rate_check", sql`(attendance_rate >= 0) AND (attendance_rate <= 100)`),
+]);
+
+export const expenses = pgTable("expenses", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	description: text().notNull(),
+	category: varchar({ length: 100 }).notNull(),
+	amount: numeric({ precision: 12, scale:  2 }).notNull(),
+	date: date().notNull(),
+}, (table) => [
+	check("expenses_amount_check", sql`amount >= (0)::numeric`),
+]);
+
+export const stockItems = pgTable("stock_items", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	name: varchar({ length: 255 }).notNull(),
+	quantity: integer().notNull(),
+	category: varchar({ length: 100 }).notNull(),
+	location: varchar({ length: 100 }).notNull(),
+	lowestThreshold: integer("lowest_threshold").default(5).notNull(),
+}, (table) => [
+	check("stock_items_lowest_threshold_check", sql`lowest_threshold >= 0`),
+	check("stock_items_quantity_check", sql`quantity >= 0`),
+]);
+
+export const requisitions = pgTable("requisitions", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	itemName: varchar("item_name", { length: 255 }).notNull(),
+	quantity: integer().notNull(),
+	staffName: varchar("staff_name", { length: 255 }).notNull(),
+	date: date().notNull(),
+	status: varchar({ length: 20 }).default('pending').notNull(),
+}, (table) => [
+	check("requisitions_quantity_check", sql`quantity > 0`),
+	check("requisitions_status_check", sql`(status)::text = ANY ((ARRAY['pending'::character varying, 'approved'::character varying, 'rejected'::character varying])::text[])`),
+]);
+
+export const testimonies = pgTable("testimonies", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	name: varchar({ length: 255 }).notNull(),
+	role: varchar({ length: 255 }).notNull(),
+	content: text().notNull(),
+	avatar: text(),
+});
+
+export const books = pgTable("books", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	title: varchar({ length: 255 }).notNull(),
+	author: varchar({ length: 255 }).notNull(),
+	isbn: varchar({ length: 50 }).notNull(),
+	publisher: varchar({ length: 100 }),
+	edition: varchar({ length: 50 }),
+	purchasePrice: numeric("purchase_price", { precision: 10, scale:  2 }).default('0.00').notNull(),
+	rackNumber: varchar("rack_number", { length: 50 }).notNull(),
+	shelfRow: varchar("shelf_row", { length: 50 }).notNull(),
+	libraryCode: varchar("library_code", { length: 50 }).notNull(),
+	type: varchar({ length: 20 }).default('Physical Book').notNull(),
+	eUrl: text("e_url"),
+	copiesTotal: integer("copies_total").notNull(),
+	copiesAvailable: integer("copies_available").notNull(),
+	category: varchar({ length: 100 }).notNull(),
+}, (table) => [
+	index("idx_books_isbn").using("btree", table.isbn.asc().nullsLast().op("text_ops")),
+	unique("books_isbn_key").on(table.isbn),
+	unique("books_library_code_key").on(table.libraryCode),
+	check("books_copies_available_check", sql`copies_available >= 0`),
+	check("books_copies_total_check", sql`copies_total >= 0`),
+	check("books_type_check", sql`(type)::text = ANY ((ARRAY['Physical Book'::character varying, 'E-Book'::character varying])::text[])`),
+	check("check_copies", sql`copies_available <= copies_total`),
+]);
+
+export const loans = pgTable("loans", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	bookId: uuid("book_id").notNull(),
+	bookTitle: varchar("book_title", { length: 255 }).notNull(),
+	patronId: uuid("patron_id").notNull(),
+	patronName: varchar("patron_name", { length: 255 }).notNull(),
+	patronRole: varchar("patron_role", { length: 20 }).notNull(),
+	checkoutDate: date("checkout_date").notNull(),
+	dueDate: date("due_date").notNull(),
+	returnDate: date("return_date"),
+	status: varchar({ length: 20 }).default('borrowed').notNull(),
+	lateFeeAssessed: numeric("late_fee_assessed", { precision: 10, scale:  2 }).default('0.00').notNull(),
+}, (table) => [
+	index("idx_loans_patron").using("btree", table.patronId.asc().nullsLast().op("uuid_ops")),
+	index("idx_loans_status").using("btree", table.status.asc().nullsLast().op("text_ops")),
+	foreignKey({
+			columns: [table.bookId],
+			foreignColumns: [books.id],
+			name: "loans_book_id_fkey"
+		}).onDelete("cascade"),
+	check("check_dates", sql`due_date >= checkout_date`),
+	check("loans_late_fee_assessed_check", sql`late_fee_assessed >= 0.00`),
+	check("loans_patron_role_check", sql`(patron_role)::text = ANY ((ARRAY['student'::character varying, 'lecturer'::character varying])::text[])`),
+	check("loans_status_check", sql`(status)::text = ANY ((ARRAY['borrowed'::character varying, 'returned'::character varying, 'overdue'::character varying, 'lost'::character varying, 'damaged'::character varying])::text[])`),
+]);
+
+export const reservations = pgTable("reservations", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	bookId: uuid("book_id").notNull(),
+	bookTitle: varchar("book_title", { length: 255 }).notNull(),
+	patronId: uuid("patron_id").notNull(),
+	patronName: varchar("patron_name", { length: 255 }).notNull(),
+	reservationDate: date("reservation_date").default(sql`CURRENT_DATE`).notNull(),
+	status: varchar({ length: 20 }).default('pending').notNull(),
+}, (table) => [
+	foreignKey({
+			columns: [table.bookId],
+			foreignColumns: [books.id],
+			name: "reservations_book_id_fkey"
+		}).onDelete("cascade"),
+	check("reservations_status_check", sql`(status)::text = ANY ((ARRAY['pending'::character varying, 'fulfilled'::character varying, 'cancelled'::character varying])::text[])`),
+]);
+
+export const readingLists = pgTable("reading_lists", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	subjectCode: varchar("subject_code", { length: 30 }).notNull(),
+	lecturerId: uuid("lecturer_id").notNull(),
+	notes: text(),
+}, (table) => [
+	foreignKey({
+			columns: [table.lecturerId],
+			foreignColumns: [lecturers.id],
+			name: "reading_lists_lecturer_id_fkey"
+		}).onDelete("cascade"),
+]);
+
+export const bookReviews = pgTable("book_reviews", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	bookId: uuid("book_id").notNull(),
+	studentId: uuid("student_id").notNull(),
+	studentName: varchar("student_name", { length: 255 }).notNull(),
+	rating: integer().notNull(),
+	comment: text(),
+	date: date().default(sql`CURRENT_DATE`).notNull(),
+}, (table) => [
+	foreignKey({
+			columns: [table.bookId],
+			foreignColumns: [books.id],
+			name: "book_reviews_book_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.studentId],
+			foreignColumns: [students.id],
+			name: "book_reviews_student_id_fkey"
+		}).onDelete("cascade"),
+	check("book_reviews_rating_check", sql`(rating >= 1) AND (rating <= 5)`),
+]);
+
+export const bookRequests = pgTable("book_requests", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	title: varchar({ length: 255 }).notNull(),
+	author: varchar({ length: 255 }).notNull(),
+	isbn: varchar({ length: 50 }),
+	suggestedBy: varchar("suggested_by", { length: 255 }).notNull(),
+	suggestorRole: varchar("suggestor_role", { length: 20 }).notNull(),
+	date: date().default(sql`CURRENT_DATE`).notNull(),
+	reason: text(),
+	status: varchar({ length: 20 }).default('pending').notNull(),
+	adminFeedback: text("admin_feedback"),
+}, (table) => [
+	check("book_requests_status_check", sql`(status)::text = ANY ((ARRAY['pending'::character varying, 'approved'::character varying, 'rejected'::character varying])::text[])`),
+	check("book_requests_suggestor_role_check", sql`(suggestor_role)::text = ANY ((ARRAY['student'::character varying, 'lecturer'::character varying])::text[])`),
+]);
+
+export const examPapers = pgTable("exam_papers", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	title: varchar({ length: 255 }).notNull(),
+	subjectCode: varchar("subject_code", { length: 30 }).notNull(),
+	year: integer().notNull(),
+	semester: varchar({ length: 50 }).notNull(),
+	examType: varchar("exam_type", { length: 50 }).notNull(),
+	downloadUrl: text("download_url").notNull(),
+	downloadsCount: integer("downloads_count").default(0).notNull(),
+}, (table) => [
+	check("exam_papers_exam_type_check", sql`(exam_type)::text = ANY ((ARRAY['Midterm'::character varying, 'Final'::character varying, 'National Exam (KCSE/IGCSE)'::character varying])::text[])`),
+]);
+
+export const teacherResources = pgTable("teacher_resources", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	name: varchar({ length: 255 }).notNull(),
+	category: varchar({ length: 100 }).notNull(),
+	serialNo: varchar("serial_no", { length: 100 }).notNull(),
+	status: varchar({ length: 20 }).default('available').notNull(),
+	reservedByLecturerId: uuid("reserved_by_lecturer_id"),
+	reservedByLecturerName: varchar("reserved_by_lecturer_name", { length: 255 }),
+	reservationDate: date("reservation_date"),
+}, (table) => [
+	foreignKey({
+			columns: [table.reservedByLecturerId],
+			foreignColumns: [lecturers.id],
+			name: "teacher_resources_reserved_by_lecturer_id_fkey"
+		}).onDelete("set null"),
+	unique("teacher_resources_serial_no_key").on(table.serialNo),
+	check("teacher_resources_category_check", sql`(category)::text = ANY ((ARRAY['Instructional Guide'::character varying, 'Lab Manual'::character varying, 'Hardware/Projector'::character varying, 'Scientific Kit'::character varying])::text[])`),
+	check("teacher_resources_status_check", sql`(status)::text = ANY ((ARRAY['available'::character varying, 'reserved'::character varying])::text[])`),
+]);
+
+export const libraryGateLogs = pgTable("library_gate_logs", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	timestamp: timestamp({ withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	patronName: varchar("patron_name", { length: 255 }).notNull(),
+	patronId: uuid("patron_id").notNull(),
+	role: varchar({ length: 20 }).notNull(),
+	authMethod: varchar("auth_method", { length: 50 }).notNull(),
+	gateAction: varchar("gate_action", { length: 20 }).notNull(),
+	status: varchar({ length: 20 }).default('success').notNull(),
+	reason: text(),
+}, (table) => [
+	index("idx_gate_logs_timestamp").using("btree", table.timestamp.asc().nullsLast().op("timestamptz_ops")),
+	check("library_gate_logs_auth_method_check", sql`(auth_method)::text = ANY ((ARRAY['biometric_fingerprint'::character varying, 'biometric_facial'::character varying, 'rfid_tap'::character varying])::text[])`),
+	check("library_gate_logs_gate_action_check", sql`(gate_action)::text = ANY ((ARRAY['Entry'::character varying, 'Exit'::character varying])::text[])`),
+	check("library_gate_logs_role_check", sql`(role)::text = ANY ((ARRAY['student'::character varying, 'lecturer'::character varying])::text[])`),
+	check("library_gate_logs_status_check", sql`(status)::text = ANY ((ARRAY['success'::character varying, 'denied'::character varying])::text[])`),
+]);
+
+export const notifications = pgTable("notifications", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	targetUserId: uuid("target_user_id"),
+	targetUserRole: varchar("target_user_role", { length: 20 }).notNull(),
+	type: varchar({ length: 30 }).notNull(),
+	title: varchar({ length: 255 }).notNull(),
+	message: text().notNull(),
+	status: varchar({ length: 20 }).default('unread').notNull(),
+	dateTime: timestamp("date_time", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_notifications_target").using("btree", table.targetUserId.asc().nullsLast().op("text_ops"), table.targetUserRole.asc().nullsLast().op("text_ops")),
+	check("notifications_status_check", sql`(status)::text = ANY ((ARRAY['unread'::character varying, 'read'::character varying])::text[])`),
+	check("notifications_target_user_role_check", sql`(target_user_role)::text = ANY ((ARRAY['student'::character varying, 'lecturer'::character varying, 'accountant'::character varying, 'librarian'::character varying, 'admin'::character varying, 'all'::character varying])::text[])`),
+	check("notifications_type_check", sql`(type)::text = ANY ((ARRAY['library'::character varying, 'payment'::character varying, 'announcement'::character varying])::text[])`),
+]);
+
+export const mockEmails = pgTable("mock_emails", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	recipientTo: varchar("recipient_to", { length: 255 }).notNull(),
+	subject: varchar({ length: 255 }).notNull(),
+	body: text().notNull(),
+	sentAt: timestamp("sent_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	type: varchar({ length: 30 }).notNull(),
+	recipientName: varchar("recipient_name", { length: 255 }).notNull(),
+}, (table) => [
+	check("mock_emails_type_check", sql`(type)::text = ANY ((ARRAY['invoice'::character varying, 'book_due'::character varying, 'grade_posted'::character varying])::text[])`),
+]);
+
+export const passwordResetRequests = pgTable("password_reset_requests", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	userId: uuid("user_id").notNull(),
+	name: varchar({ length: 255 }).notNull(),
+	email: varchar({ length: 255 }).notNull(),
+	role: varchar({ length: 20 }).notNull(),
+	date: date().default(sql`CURRENT_DATE`).notNull(),
+	reason: text().notNull(),
+	status: varchar({ length: 20 }).default('pending').notNull(),
+	adminFeedback: text("admin_feedback"),
+	temporaryPasscode: varchar("temporary_passcode", { length: 50 }),
+}, (table) => [
+	check("password_reset_requests_role_check", sql`(role)::text = ANY ((ARRAY['student'::character varying, 'lecturer'::character varying, 'accountant'::character varying, 'librarian'::character varying, 'admin'::character varying])::text[])`),
+	check("password_reset_requests_status_check", sql`(status)::text = ANY ((ARRAY['pending'::character varying, 'resolved'::character varying, 'rejected'::character varying])::text[])`),
+]);
+
+export const students = pgTable("students", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	name: varchar({ length: 255 }).notNull(),
+	email: varchar({ length: 255 }).notNull(),
+	phone: varchar({ length: 30 }).notNull(),
+	admissionNo: varchar("admission_no", { length: 50 }).notNull(),
+	cohort: varchar({ length: 50 }).notNull(),
+	courseId: uuid("course_id").references(() => courses.id, { onDelete: "restrict" }),
+	programme: varchar({ length: 255 }),
+	department: varchar({ length: 255 }),
+	avatar: text(),
+	accountStatus: varchar("account_status", { length: 50 }).default('Active').notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_students_admission").using("btree", table.admissionNo.asc().nullsLast().op("text_ops")),
+	index("idx_students_email").using("btree", table.email.asc().nullsLast().op("text_ops")),
+	index("idx_students_name").using("btree", table.name.asc().nullsLast().op("text_ops")),
+	index("idx_students_cohort").using("btree", table.cohort.asc().nullsLast().op("text_ops")),
+	index("idx_students_course_id").using("btree", table.courseId.asc().nullsLast().op("uuid_ops")),
+	index("idx_students_account_status").using("btree", table.accountStatus.asc().nullsLast().op("text_ops")),
+	index("idx_students_created_at").using("btree", table.createdAt.desc().nullsLast().op("timestamptz_ops")),
+	unique("students_email_key").on(table.email),
+	unique("students_admission_no_key").on(table.admissionNo),
+	check("students_email_check", sql`(email)::text ~~ '%@%.%'::text`),
+]);
+
+export const lecturers = pgTable("lecturers", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	name: varchar({ length: 255 }).notNull(),
+	email: varchar({ length: 255 }).notNull(),
+	phone: varchar({ length: 30 }).notNull(),
+	hourlyRate: numeric("hourly_rate", { precision: 10, scale:  2 }).default('0.00').notNull(),
+	loggedHours: numeric("logged_hours", { precision: 6, scale:  2 }).default('0.00').notNull(),
+	bankDetails: text("bank_details"),
+	contractLength: varchar("contract_length", { length: 100 }).notNull(),
+	designatorCode: varchar("designator_code", { length: 50 }).notNull(),
+	bio: text(),
+	avatar: text(),
+	isActive: boolean("is_active").default(true).notNull(),
+	isAccountant: boolean("is_accountant").default(false).notNull(),
+	isLibrarian: boolean("is_librarian").default(false).notNull(),
+}, (table) => [
+	index("idx_lecturers_email").using("btree", table.email.asc().nullsLast().op("text_ops")),
+	unique("lecturers_email_key").on(table.email),
+	unique("lecturers_designator_code_key").on(table.designatorCode),
+	check("lecturers_email_check", sql`(email)::text ~~ '%@%.%'::text`),
+	check("lecturers_hourly_rate_check", sql`hourly_rate >= (0)::numeric`),
+	check("lecturers_logged_hours_check", sql`logged_hours >= (0)::numeric`),
+]);
+//-- lectures subjects table to link lecturers and subjects (courses)
+export const lecturerSubjects = pgTable("lecturer_subjects", {
+  id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+
+  lecturerId: uuid("lecturer_id")
+    .notNull()
+    .references(() => lecturers.id, { onDelete: "cascade" }),
+
+  subjectCode: varchar("subject_code", { length: 30 })
+    .notNull(),
+});
+
+export const studentAssessmentMarks = pgTable("student_assessment_marks", {
+  id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+  studentId: uuid("student_id").notNull(),
+  subjectCode: varchar("subject_code", { length: 30 }).notNull(),
+  assessmentKind: varchar("assessment_kind", { length: 30 }).notNull(),
+  assessmentName: varchar("assessment_name", { length: 100 }).notNull(),
+  rawMark: numeric("raw_mark", { precision: 8, scale: 2 }).notNull(),
+  maxMarks: numeric("max_marks", { precision: 8, scale: 2 }).notNull(),
+  weight: numeric({ precision: 5, scale: 2 }).default('0.00').notNull(),
+  lecturerId: uuid("lecturer_id"),
+  recordedAt: timestamp("recorded_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+  foreignKey({
+      columns: [table.studentId],
+      foreignColumns: [students.id],
+      name: "student_assessment_marks_student_id_fkey"
+    }).onDelete("cascade"),
+  foreignKey({
+      columns: [table.lecturerId],
+      foreignColumns: [lecturers.id],
+      name: "student_assessment_marks_lecturer_id_fkey"
+    }).onDelete("set null"),
+  unique("uq_student_assessment_mark").on(table.studentId, table.subjectCode, table.assessmentKind),
+  check("student_assessment_marks_raw_mark_check", sql`raw_mark >= (0)::numeric`),
+  check("student_assessment_marks_max_marks_check", sql`max_marks > (0)::numeric`),
+  check("student_assessment_marks_weight_check", sql`weight >= (0)::numeric`),
+]);
+
+/** One-time password-reset credentials. The raw token is never persisted. */
+export const passwordResetTokens = pgTable("password_reset_tokens", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	userId: integer("user_id").notNull(),
+	tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+	expiresAt: timestamp("expires_at", { withTimezone: true, mode: 'string' }).notNull(),
+	usedAt: timestamp("used_at", { withTimezone: true, mode: 'string' }),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	requestedIp: varchar("requested_ip", { length: 64 }),
+}, (table) => [
+	unique("password_reset_tokens_token_hash_key").on(table.tokenHash),
+	index("idx_password_reset_tokens_active").using("btree", table.userId.asc().nullsLast().op("int4_ops"), table.expiresAt.asc().nullsLast().op("timestamptz_ops")),
+]);
+
+//--grade table to link students and their grades for subjects
+export const grades = pgTable("grades", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	studentId: uuid("student_id").notNull(),
+	subjectCode: varchar("subject_code", { length: 30 }).notNull(),
+	catScore: numeric("cat_score", { precision: 5, scale:  2 }).default('0.00').notNull(),
+	examScore: numeric("exam_score", { precision: 5, scale:  2 }).default('0.00').notNull(),
+	gradedAt: timestamp("graded_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_grades_student").using("btree", table.studentId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.studentId],
+			foreignColumns: [students.id],
+			name: "grades_student_id_fkey"
+		}).onDelete("cascade"),
+	unique("uq_student_subject").on(table.studentId, table.subjectCode),
+	check("grades_cat_score_check", sql`cat_score >= 0.00`),
+	check("grades_exam_score_check", sql`exam_score >= 0.00`),
+]);
+
+export const invoices = pgTable("invoices", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	studentId: uuid("student_id").notNull(),
+	invoiceNo: varchar("invoice_no", { length: 50 }).notNull(),
+	description: text().notNull(),
+	amount: numeric({ precision: 12, scale:  2 }).notNull(),
+	date: date().notNull().default(sql`CURRENT_DATE`),
+	dueDate: date("due_date").default(sql`CURRENT_DATE + INTERVAL '14 days'`),
+	outstandingBalance: numeric("outstanding_balance", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	status: varchar({ length: 20 }).default('unpaid').notNull(),
+}, (table) => [
+	index("idx_invoices_student").using("btree", table.studentId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.studentId],
+			foreignColumns: [students.id],
+			name: "invoices_student_id_fkey"
+		}).onDelete("cascade"),
+	unique("invoices_invoice_no_key").on(table.invoiceNo),
+	check("invoices_status_check", sql`(status)::text = ANY ((ARRAY['unpaid'::character varying, 'paid'::character varying])::text[])`),
+]);
+
+export const payments = pgTable("payments", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	studentId: uuid("student_id").notNull(),
+	invoiceId: uuid("invoice_id"),
+	amount: numeric({ precision: 12, scale:  2 }).notNull(),
+	paymentMethod: varchar("payment_method", { length: 30 }).notNull(),
+	transactionId: varchar("transaction_id", { length: 100 }).notNull(),
+	receiptNo: varchar("receipt_no", { length: 50 }),
+	recordedBy: varchar("recorded_by", { length: 255 }),
+	date: date().notNull(),
+	status: varchar({ length: 20 }).default('unreconciled').notNull(),
+}, (table) => [
+	index("idx_payments_student").using("btree", table.studentId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.invoiceId],
+			foreignColumns: [invoices.id],
+			name: "payments_invoice_id_fkey"
+		}).onDelete("set null"),
+	foreignKey({
+			columns: [table.studentId],
+			foreignColumns: [students.id],
+			name: "payments_student_id_fkey"
+		}).onDelete("cascade"),
+	unique("payments_transaction_id_key").on(table.transactionId),
+	check("payments_amount_check", sql`amount > (0)::numeric`),
+	check("payments_payment_method_check", sql`(payment_method)::text = ANY ((ARRAY['M-Pesa'::character varying, 'Bank Transfer'::character varying, 'Card'::character varying])::text[])`),
+	check("payments_status_check", sql`(status)::text = ANY ((ARRAY['unreconciled'::character varying, 'reconciled'::character varying])::text[])`),
+]);
+
+export const systemState = pgTable("system_state", {
+	id: serial().primaryKey().notNull(),
+	data: jsonb().notNull(),
+	updatedAt: timestamp("updated_at", { mode: 'string' }).defaultNow().notNull(),
+});
+
+export const assessmentConfigurations = pgTable("assessment_configurations", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	subjectCode: varchar("subject_code", { length: 30 }).notNull(),
+	assessmentKind: varchar("assessment_kind", { length: 30 }).notNull(),
+	assessmentName: varchar("assessment_name", { length: 100 }).notNull(),
+	maxMarks: numeric("max_marks", { precision: 8, scale: 2 }).notNull(),
+	weight: numeric({ precision: 5, scale: 2 }).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	unique("uq_assessment_config_subject_kind").on(table.subjectCode, table.assessmentKind),
+	check("assessment_config_max_marks_check", sql`max_marks > (0)::numeric`),
+	check("assessment_config_weight_check", sql`weight >= (0)::numeric`),
+]);
+
+export const users = pgTable("users", {
+	id: serial().primaryKey().notNull(),
+	uid: text().notNull(),
+	username: varchar({ length: 255 }),
+	email: varchar({ length: 255 }).notNull(),
+	passwordHash: text("password_hash").notNull(),
+	role: varchar({ length: 50 }).default('student').notNull(),
+	roleId: varchar("role_id", { length: 255 }),
+	isActive: boolean("is_active").default(true).notNull(),
+	mustChangePassword: boolean("must_change_password").default(true).notNull(),
+	sessionVersion: integer("session_version").default(0).notNull(),
+	lastLogin: timestamp("last_login", { withTimezone: true, mode: 'string' }),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	unique("users_uid_key").on(table.uid),
+	unique("users_username_key").on(table.username),
+	unique("users_email_key").on(table.email),
+	index("idx_users_uid").using("btree", table.uid.asc().nullsLast().op("text_ops")),
+	index("idx_users_username").using("btree", table.username.asc().nullsLast().op("text_ops")),
+	index("idx_users_email").using("btree", table.email.asc().nullsLast().op("text_ops")),
+	index("idx_users_role_id").using("btree", table.roleId.asc().nullsLast().op("text_ops")),
+]);
+
+export const readingListBooks = pgTable("reading_list_books", {
+	readingListId: uuid("reading_list_id").notNull(),
+	bookId: uuid("book_id").notNull(),
+}, (table) => [
+	foreignKey({
+			columns: [table.bookId],
+			foreignColumns: [books.id],
+			name: "reading_list_books_book_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.readingListId],
+			foreignColumns: [readingLists.id],
+			name: "reading_list_books_reading_list_id_fkey"
+		}).onDelete("cascade"),
+	primaryKey({ columns: [table.readingListId, table.bookId], name: "reading_list_books_pkey"}),
+]);
+
+export const studentEnrollments = pgTable("student_enrollments", {
+	studentId: uuid("student_id").notNull(),
+	courseCode: varchar("course_code", { length: 30 }).notNull(),
+	enrolledAt: timestamp("enrolled_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	foreignKey({
+			columns: [table.studentId],
+			foreignColumns: [students.id],
+			name: "student_enrollments_student_id_fkey"
+		}).onDelete("cascade"),
+	primaryKey({ columns: [table.studentId, table.courseCode], name: "student_enrollments_pkey"}),
+]);
+
+export const transactions = pgTable("transactions", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	referenceNo: varchar("reference_no", { length: 50 }).notNull(),
+	recipientSender: varchar("recipient_sender", { length: 255 }).notNull(),
+	description: text().notNull(),
+	amount: numeric({ precision: 12, scale: 2 }).notNull(),
+	currency: varchar({ length: 10 }).default('KES').notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	unique("transactions_reference_no_key").on(table.referenceNo),
+]);
+
+export const studentLedger = pgTable("student_ledger", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	studentId: uuid("student_id").notNull(),
+	entryType: varchar("entry_type", { length: 10 }).notNull(), // 'DEBIT' or 'CREDIT'
+	voteHead: varchar("vote_head", { length: 100 }).notNull(),
+	amount: numeric({ precision: 12, scale: 2 }).notNull(),
+	description: text().notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	foreignKey({
+		columns: [table.studentId],
+		foreignColumns: [students.id],
+		name: "student_ledger_student_id_fkey"
+	}).onDelete("cascade"),
+	check("student_ledger_entry_type_check", sql`(entry_type)::text = ANY ((ARRAY['DEBIT'::character varying, 'CREDIT'::character varying])::text[])`),
+	check("student_ledger_amount_check", sql`amount >= (0)::numeric`),
+]);
+
+// HR & Payroll Relational Tables
+export const departments = pgTable("departments", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	code: varchar({ length: 30 }).notNull(),
+	name: varchar({ length: 255 }).notNull(),
+	headOfDepartmentId: uuid("head_of_department_id"),
+}, (table) => [
+	unique("departments_code_key").on(table.code),
+]);
+
+export const academicRanks = pgTable("academic_ranks", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	code: varchar({ length: 50 }).notNull(),
+	title: varchar({ length: 100 }).notNull(),
+	defaultHourlyRate: numeric("default_hourly_rate", { precision: 10, scale: 2 }).notNull(),
+}, (table) => [
+	unique("academic_ranks_code_key").on(table.code),
+]);
+
+export const employmentTypes = pgTable("employment_types", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	code: varchar({ length: 50 }).notNull(),
+	name: varchar({ length: 100 }).notNull(),
+}, (table) => [
+	unique("employment_types_code_key").on(table.code),
+]);
+
+export const employmentStatuses = pgTable("employment_statuses", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	code: varchar({ length: 50 }).notNull(),
+	name: varchar({ length: 100 }).notNull(),
+}, (table) => [
+	unique("employment_statuses_code_key").on(table.code),
+]);
+
+export const banks = pgTable("banks", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	code: varchar({ length: 50 }).notNull(),
+	name: varchar({ length: 100 }).notNull(),
+	swiftCode: varchar("swift_code", { length: 50 }),
+}, (table) => [
+	unique("banks_code_key").on(table.code),
+]);
+
+export const roles = pgTable("roles", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	code: varchar({ length: 50 }).notNull(),
+	name: varchar({ length: 100 }).notNull(),
+	description: text(),
+}, (table) => [
+	unique("roles_code_key").on(table.code),
+]);
+
+export const userRoles = pgTable("user_roles", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	lecturerId: uuid("lecturer_id").notNull(),
+	roleId: uuid("role_id"),
+	roleCode: varchar("role_code", { length: 50 }).notNull(),
+}, (table) => [
+	foreignKey({
+		columns: [table.lecturerId],
+		foreignColumns: [lecturers.id],
+		name: "user_roles_lecturer_id_fkey"
+	}).onDelete("cascade"),
+]);
+
+export const payrollPeriods = pgTable("payroll_periods", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	month: varchar({ length: 30 }).notNull(),
+	year: integer().notNull(),
+	status: varchar({ length: 50 }).default('Draft').notNull(),
+	totalGross: numeric("total_gross", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	totalDeductions: numeric("total_deductions", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	totalNet: numeric("total_net", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	staffCount: integer("staff_count").default(0).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+});
+
+/**
+ * A registry of records hidden from operational views. Keeping archive state in
+ * a separate table avoids changing existing foreign-key relationships.
+ */
+export const archiveRecords = pgTable("archive_records", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	resourceType: varchar("resource_type", { length: 30 }).notNull(),
+	resourceId: text("resource_id").notNull(),
+	displayName: varchar("display_name", { length: 255 }).notNull(),
+	snapshot: jsonb().notNull(),
+	archivedAt: timestamp("archived_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	archivedBy: varchar("archived_by", { length: 255 }),
+}, (table) => [
+	unique("archive_records_resource_key").on(table.resourceType, table.resourceId),
+	index("idx_archive_records_archived_at").using("btree", table.archivedAt.desc().nullsLast().op("timestamptz_ops")),
+]);
+
+export const archiveAuditLogs = pgTable("archive_audit_logs", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	resourceType: varchar("resource_type", { length: 30 }).notNull(),
+	resourceId: text("resource_id").notNull(),
+	action: varchar({ length: 30 }).notNull(),
+	performedBy: varchar("performed_by", { length: 255 }),
+	performedAt: timestamp("performed_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	details: jsonb(),
+}, (table) => [
+	index("idx_archive_audit_resource").using("btree", table.resourceType.asc().nullsLast().op("text_ops"), table.resourceId.asc().nullsLast().op("text_ops")),
+]);
+
+export const payrollTransactions = pgTable("payroll_transactions", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	periodId: uuid("period_id"),
+	lecturerId: uuid("lecturer_id").notNull(),
+	staffNumber: varchar("staff_number", { length: 50 }).notNull(),
+	lecturerName: varchar("lecturer_name", { length: 255 }).notNull(),
+	department: varchar({ length: 255 }).notNull(),
+	academicRank: varchar("academic_rank", { length: 100 }).notNull(),
+	hoursWorked: numeric("hours_worked", { precision: 8, scale: 2 }).default('0.00').notNull(),
+	hourlyRate: numeric("hourly_rate", { precision: 10, scale: 2 }).default('0.00').notNull(),
+	overtimeHours: numeric("overtime_hours", { precision: 8, scale: 2 }).default('0.00').notNull(),
+	basePay: numeric("base_pay", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	overtimePay: numeric("overtime_pay", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	houseAllowance: numeric("house_allowance", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	transportAllowance: numeric("transport_allowance", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	responsibilityAllowance: numeric("responsibility_allowance", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	otherAllowances: numeric("other_allowances", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	grossPay: numeric("gross_pay", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	payeTax: numeric("paye_tax", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	shifDeduction: numeric("shif_deduction", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	nssfDeduction: numeric("nssf_deduction", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	otherDeductions: numeric("other_deductions", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	totalDeductions: numeric("total_deductions", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	netSalary: numeric("net_salary", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	payrollStatus: varchar("payroll_status", { length: 50 }).default('Approved').notNull(),
+	paymentStatus: varchar("payment_status", { length: 50 }).default('Pending').notNull(),
+	month: varchar({ length: 30 }).notNull(),
+	year: integer().notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_payroll_tx_lecturer").using("btree", table.lecturerId.asc().nullsLast().op("uuid_ops")),
+	index("idx_payroll_tx_period").using("btree", table.month.asc().nullsLast().op("text_ops"), table.year.asc().nullsLast().op("int4_ops")),
+]);
+
+export const allowances = pgTable("allowances", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	name: varchar({ length: 100 }).notNull(),
+	code: varchar({ length: 50 }).notNull(),
+	defaultAmount: numeric("default_amount", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	isTaxable: boolean("is_taxable").default(true).notNull(),
+});
+
+export const deductions = pgTable("deductions", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	name: varchar({ length: 100 }).notNull(),
+	code: varchar({ length: 50 }).notNull(),
+	type: varchar({ length: 50 }).notNull(), // 'statutory' | 'custom'
+});
+
+export const taxRates = pgTable("tax_rates", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	taxType: varchar("tax_type", { length: 50 }).notNull(), // 'PAYE' | 'SHIF' | 'NSSF'
+	bracketName: varchar("bracket_name", { length: 100 }).notNull(),
+	minAmount: numeric("min_amount", { precision: 12, scale: 2 }).default('0.00').notNull(),
+	maxAmount: numeric("max_amount", { precision: 12, scale: 2 }),
+	ratePercentage: numeric("rate_percentage", { precision: 5, scale: 2 }).notNull(),
+});
+
+/** Logged teaching hours for payroll and analytics */
+export const teachingSessions = pgTable("teaching_sessions", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	lecturerId: uuid("lecturer_id").notNull(),
+	subjectCode: varchar("subject_code", { length: 30 }).notNull(),
+	topic: text().notNull(),
+	durationHours: numeric("duration_hours", { precision: 6, scale: 2 }).notNull(),
+	sessionDate: date("session_date").notNull(),
+	sessionTime: varchar("session_time", { length: 20 }).default('09:00').notNull(),
+	status: varchar({ length: 20 }).default('Pending').notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_teaching_sessions_lecturer").using("btree", table.lecturerId.asc().nullsLast().op("uuid_ops")),
+	index("idx_teaching_sessions_date").using("btree", table.sessionDate.desc().nullsLast().op("date_ops")),
+	foreignKey({
+		columns: [table.lecturerId],
+		foreignColumns: [lecturers.id],
+		name: "teaching_sessions_lecturer_id_fkey",
+	}).onDelete("cascade"),
+	check("teaching_sessions_duration_check", sql`duration_hours > (0)::numeric`),
+	check("teaching_sessions_status_check", sql`(status)::text = ANY ((ARRAY['Pending'::character varying, 'Approved'::character varying])::text[])`),
+]);
+
+/** Timetable / class roster entries for assigned subjects */
+export const lectureSchedules = pgTable("lecture_schedules", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	lecturerId: uuid("lecturer_id").notNull(),
+	subjectCode: varchar("subject_code", { length: 30 }).notNull(),
+	room: varchar({ length: 100 }).notNull(),
+	sessionDate: date("session_date").notNull(),
+	startTime: varchar("start_time", { length: 20 }).notNull(),
+	endTime: varchar("end_time", { length: 20 }).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_lecture_schedules_lecturer").using("btree", table.lecturerId.asc().nullsLast().op("uuid_ops")),
+	index("idx_lecture_schedules_date").using("btree", table.sessionDate.asc().nullsLast().op("date_ops")),
+	foreignKey({
+		columns: [table.lecturerId],
+		foreignColumns: [lecturers.id],
+		name: "lecture_schedules_lecturer_id_fkey",
+	}).onDelete("cascade"),
+]);
+
+/** Planned syllabus topics per subject for coverage calculation */
+export const syllabusTopics = pgTable("syllabus_topics", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	subjectCode: varchar("subject_code", { length: 30 }).notNull(),
+	topicTitle: text("topic_title").notNull(),
+	weekNumber: integer("week_number").default(1).notNull(),
+	sequenceNo: integer("sequence_no").default(1).notNull(),
+}, (table) => [
+	index("idx_syllabus_topics_subject").using("btree", table.subjectCode.asc().nullsLast().op("text_ops")),
+]);
+
+/** Per-class roll-call sessions (present, late, and absent student lists) */
+export const classAttendanceSessions = pgTable("attendance_sessions", {
+	id: uuid().default(sql`uuid_generate_v4()`).primaryKey().notNull(),
+	lecturerId: uuid("lecturer_id").notNull(),
+	subjectCode: varchar("subject_code", { length: 30 }).notNull(),
+	sessionDate: date("session_date").notNull(),
+	presentStudentIds: jsonb("present_student_ids").$type<string[]>().default([]).notNull(),
+	lateStudentIds: jsonb("late_student_ids").$type<string[]>().default([]).notNull(),
+	absentStudentIds: jsonb("absent_student_ids").$type<string[]>().default([]).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_attendance_sessions_lecturer").using("btree", table.lecturerId.asc().nullsLast().op("uuid_ops")),
+	index("idx_attendance_sessions_subject_date").using("btree", table.subjectCode.asc().nullsLast().op("text_ops"), table.sessionDate.desc().nullsLast().op("date_ops")),
+	unique("uq_attendance_session_lecturer_subject_date").on(table.lecturerId, table.subjectCode, table.sessionDate),
+	foreignKey({
+		columns: [table.lecturerId],
+		foreignColumns: [lecturers.id],
+		name: "attendance_sessions_lecturer_id_fkey",
+	}).onDelete("cascade"),
+]);

@@ -1,0 +1,4165 @@
+import React, { useState, useEffect } from 'react';
+import { useNotification } from './notifications';
+import { 
+  Course, Lecturer, Student, Expense, StockItem, Requisition, Payment, Invoice,
+  Book, Loan, Reservation, BookRequest, LibraryGateLog, PasswordResetRequest, MockEmail
+} from '../types';
+import { 
+  BookOpen, Users, DollarSign, Package, FileText, Plus, CheckCircle2, 
+  AlertCircle, Bookmark, ClipboardCheck, ArrowRight, Save, Trash2, Check, X,
+  Shield, Lock, Fingerprint, Library, Link, Copy, KeyRound, RefreshCw,
+  TrendingUp, Calendar, Clock, MapPin, UserCheck, AlertTriangle, Info, School, Landmark, Sliders, Award, Activity, User, LogOut, Menu,
+  Eye, Download, Search, FileCheck, ExternalLink, GraduationCap, Building2
+} from 'lucide-react';
+import { subjectMap } from '../data';
+import GlobalSearchBar from './GlobalSearchBar';
+import FinanceSuite from './FinanceSuite';
+import LibraryHQ from './LibraryHQ';
+import { toast } from 'react-hot-toast';
+import { HRPayrollView } from './hr/HRPayrollView';
+import SystemDiagnostics from './SystemDiagnostics';
+import StudentAdmissionDossierStation from './StudentAdmissionDossierStation';
+import StudentRecordsTable from './StudentRecordsTable';
+import BottomNavigation, { BottomNavItem } from './navigation/BottomNavigation';
+import MobileNavDrawer, { DrawerNavGroup } from './navigation/MobileNavDrawer';
+import PageTransition from './common/PageTransition';
+import { 
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  AreaChart, Area
+} from 'recharts';
+
+interface ConsultationRecord {
+  id: string;
+  request_no: string;
+  full_name: string;
+  email: string;
+  phone: string;
+  course_id?: string;
+  course_name?: string;
+  consultation_type: string;
+  preferred_contact_method?: string;
+  preferred_date?: string;
+  preferred_time?: string;
+  subject?: string;
+  message?: string;
+  status: string;
+  created_at: string;
+  updated_at?: string;
+  scheduled_at?: string;
+}
+
+interface ConsultationMessageRecord {
+  id: string;
+  consultation_id: string;
+  direction: string;
+  sender_name?: string;
+  sender_email?: string;
+  body: string;
+  created_at: string;
+  message_id?: string;
+}
+
+interface ApplicationRecord {
+  id: string;
+  application_no: string;
+  full_name: string;
+  email: string;
+  phone: string;
+  status: string;
+  first_choice_course_id?: string;
+  approved_course_id?: string;
+  second_choice_course_id?: string;
+  first_choice_course_title?: string;
+  first_choice_course_code?: string;
+  approved_course_title?: string;
+  second_choice_course_title?: string;
+  second_choice_course_code?: string;
+  preferred_intake?: string;
+  created_at: string;
+  updated_at?: string;
+  internal_notes?: string;
+  national_id?: string;
+  date_of_birth?: string;
+  gender?: string;
+  nationality?: string;
+  postal_address?: string;
+  previous_school?: string;
+  highest_qualification?: string;
+  mean_grade?: string;
+  graduation_year?: number;
+  admission_no?: string;
+  documents?: {
+    id: string;
+    document_type: string;
+    file_name: string;
+    mime_type: string;
+    file_url: string;
+    size_bytes: number;
+    created_at?: string;
+  }[];
+}
+
+interface AdminDashboardProps {
+  courses: Course[];
+  lecturers: Lecturer[];
+  students: Student[];
+  expenses: Expense[];
+  inventory: StockItem[];
+  requisitions: Requisition[];
+  currentUserId?: string;
+  onAddCourse: (course: Omit<Course, 'id' | 'active'>) => void;
+  onToggleCourseActive: (courseId: string) => void;
+  onAllocateSubject: (lecturerId: string, subjectCode: string) => void;
+  onReconcilePayment: (paymentId: string) => void;
+  onAddExpense: (expense: Omit<Expense, 'id'>) => void;
+  onAddStockItem: (item: Omit<StockItem, 'id'>) => void;
+  onUpdateStockQuantity: (itemId: string, increment: number) => void;
+  onProcessRequisition: (requisitionId: string, status: 'approved' | 'rejected') => void;
+  onAddLecturer: (lecturer: Omit<Lecturer, 'id' | 'loggedHours'>) => void;
+  onAddStudent?: (student: Omit<Student, 'id' | 'enrolledUnits' | 'grades' | 'ledger' | 'payments' | 'attendance'>) => void;
+  onDeleteLecturer?: (lecturerId: string) => void;
+  onDeleteStudent?: (studentId: string) => void;
+  onLogout: () => void;
+  onUpdateLecturer?: (lecturerId: string, updatedFields: Partial<Lecturer>) => void;
+  onUpdateStudent?: (studentId: string, updatedFields: Partial<Student>) => void;
+  isAccountantView?: boolean;
+  isLibrarianView?: boolean;
+  books?: Book[];
+  loans?: Loan[];
+  reservations?: Reservation[];
+  bookRequests?: BookRequest[];
+  libraryGateLogs?: LibraryGateLog[];
+  onAddBook?: (book: Omit<Book, 'id'>) => void;
+  onUpdateBook?: (bookId: string, updatedFields: Partial<Book>) => void;
+  onCheckoutBook?: (bookId: string, patronId: string, patronName: string, patronRole: 'student' | 'lecturer', loanDays: number) => void;
+  onReturnBook?: (loanId: string, returnStatus: 'returned' | 'damaged' | 'lost', damageFee: number) => void;
+  onUpdateBookRequestStatus?: (requestId: string, status: 'approved' | 'rejected', adminFeedback?: string) => void;
+  onTriggerGateLog?: (log: Omit<LibraryGateLog, 'id' | 'timestamp'>) => void;
+  mockEmails?: MockEmail[];
+  onTriggerOverdueScan?: () => number;
+  currentUserRole?: string;
+  initialActiveTab?: 'overview' | 'academics' | 'finances' | 'payroll' | 'inventory' | 'roles' | 'library' | 'diagnostics' | 'admissions';
+  initialAdmissionsSubTab?: 'dashboard' | 'consultations' | 'applications' | 'applicants' | 'enrollment';
+  onNavigateRoute?: (path: string) => void;
+}
+
+export default function AdminDashboard({
+  courses,
+  lecturers,
+  students,
+  expenses,
+  inventory,
+  requisitions,
+  books = [],
+  loans = [],
+  reservations = [],
+  bookRequests = [],
+  libraryGateLogs = [],
+  onAddBook = () => {},
+  onUpdateBook = () => {},
+  onCheckoutBook = () => {},
+  onReturnBook = () => {},
+  onUpdateBookRequestStatus = () => {},
+  onTriggerGateLog = () => {},
+  onAddCourse,
+  onToggleCourseActive,
+  onAllocateSubject,
+  onReconcilePayment,
+  onAddExpense,
+  onAddStockItem,
+  onUpdateStockQuantity,
+  onProcessRequisition,
+  onAddLecturer,
+  onAddStudent = () => {},
+  onDeleteLecturer = () => {},
+  onDeleteStudent = () => {},
+  onLogout,
+  onUpdateLecturer,
+  onUpdateStudent,
+  isAccountantView = false,
+  isLibrarianView = false,
+  currentUserId = '',
+  mockEmails = [],
+  onTriggerOverdueScan,
+  currentUserRole,
+  initialActiveTab,
+  initialAdmissionsSubTab,
+  onNavigateRoute
+}: AdminDashboardProps) {
+  const [activeTab, setActiveTab] = useState<'overview' | 'academics' | 'finances' | 'payroll' | 'inventory' | 'roles' | 'library' | 'diagnostics' | 'admissions'>(() => {
+    if (initialActiveTab) return initialActiveTab;
+    if (isLibrarianView) return 'library';
+    if (isAccountantView) return 'finances';
+    return 'overview';
+  });
+  const [admissionsSubTab, setAdmissionsSubTab] = useState<'dashboard' | 'consultations' | 'applications' | 'applicants' | 'enrollment'>(() => initialAdmissionsSubTab || 'dashboard');
+  const [consultations, setConsultations] = useState<ConsultationRecord[]>([]);
+  const [consultationMessages, setConsultationMessages] = useState<ConsultationMessageRecord[]>([]);
+  const [consultationsLoading, setConsultationsLoading] = useState(false);
+  const [consultationMessagesLoading, setConsultationMessagesLoading] = useState(false);
+  const [selectedConsultationId, setSelectedConsultationId] = useState<string | null>(null);
+  const [consultationReplyMap, setConsultationReplyMap] = useState<Record<string, string>>({});
+  const [consultationStatusMap, setConsultationStatusMap] = useState<Record<string, string>>({});
+  const [consultationSearch, setConsultationSearch] = useState('');
+  const [consultationStatusFilter, setConsultationStatusFilter] = useState('all');
+  const [updatingConsultation, setUpdatingConsultation] = useState(false);
+  const [applications, setApplications] = useState<ApplicationRecord[]>([]);
+  const [applicationsLoading, setApplicationsLoading] = useState(false);
+  const [applicationSearch, setApplicationSearch] = useState('');
+  const [applicationStatusFilter, setApplicationStatusFilter] = useState('all');
+  const [selectedApplicationId, setSelectedApplicationId] = useState<string | null>(null);
+  const [applicationNoteMap, setApplicationNoteMap] = useState<Record<string, string>>({});
+  const [updatingApplication, setUpdatingApplication] = useState(false);
+  const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
+  const [loadingTransactions, setLoadingTransactions] = useState<boolean>(true);
+
+  const totalStudents = students.length;
+  const totalFaculty = lecturers.length;
+  const attendanceValues = students.flatMap((student) => Object.values(student.attendance || {}));
+  const dailyAttendancePercent = attendanceValues.length
+    ? Math.round(attendanceValues.reduce((sum, value) => sum + value, 0) / attendanceValues.length)
+    : 0;
+  const totalInvoiceAmount = students.flatMap((student) => student.ledger).reduce((sum, invoice) => sum + invoice.amount, 0);
+  const totalPaidAmount = students
+    .flatMap((student) => student.ledger)
+    .filter((invoice) => invoice.status === 'paid')
+    .reduce((sum, invoice) => sum + invoice.amount, 0);
+  const feesCollectedPercent = totalInvoiceAmount > 0 ? Math.round((totalPaidAmount / totalInvoiceAmount) * 100) : 0;
+
+  const facultyAttendanceSummary = students.reduce(
+    (summary, student) => {
+      Object.entries(student.attendance || {}).forEach(([subjectCode, value]) => {
+        if (subjectCode.startsWith('CS-')) {
+          summary.cs.total += value;
+          summary.cs.count += 1;
+        } else if (subjectCode.startsWith('EE-')) {
+          summary.ee.total += value;
+          summary.ee.count += 1;
+        }
+      });
+      return summary;
+    },
+    {
+      cs: { total: 0, count: 0 },
+      ee: { total: 0, count: 0 },
+    }
+  );
+
+  const csAttendanceAverage = facultyAttendanceSummary.cs.count
+    ? Math.round(facultyAttendanceSummary.cs.total / facultyAttendanceSummary.cs.count)
+    : 0;
+  const eeAttendanceAverage = facultyAttendanceSummary.ee.count
+    ? Math.round(facultyAttendanceSummary.ee.total / facultyAttendanceSummary.ee.count)
+    : 0;
+
+  const attendanceChartData = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].map((day) => ({
+    name: day,
+    CS: csAttendanceAverage,
+    EE: eeAttendanceAverage,
+  }));
+
+  useEffect(() => {
+    const fetchRecentTransactions = async () => {
+      try {
+        const response = await fetch('/api/transactions');
+        if (response.ok) {
+          const data = await response.json();
+          setRecentTransactions(data);
+        }
+      } catch (error) {
+        console.error('Failed to load recent transactions:', error);
+      } finally {
+        setLoadingTransactions(false);
+      }
+    };
+    fetchRecentTransactions();
+  }, []);
+
+  const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+  const { showToast, showError, showSuccess, showWarning, showInfo, showRegistrationModal } = useNotification();
+
+  const triggerToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    if (type === 'success') {
+      toast.success(message);
+    } else if (type === 'error') {
+      toast.error(message);
+    } else {
+      toast(message);
+    }
+  };
+
+  const [financeSubTab, setFinanceSubTab] = useState<'revenue' | 'vouchers' | 'budgets' | 'payroll' | 'audit'>('revenue');
+
+  // Interactive dynamic states for the Accountant suite
+  const [vouchers, setVouchers] = useState<Array<{
+    id: string;
+    voucherNo: string;
+    type: 'Debit' | 'Credit' | 'Journal' | 'Contra';
+    category: string;
+    description: string;
+    amount: number;
+    date: string;
+    approvedBy: string;
+  }>>(() => {
+    const saved = localStorage.getItem('zenti_vouchers');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('zenti_vouchers', JSON.stringify(vouchers));
+  }, [vouchers]);
+
+  const [imprests, setImprests] = useState<Array<{
+    id: string;
+    staffName: string;
+    amount: number;
+    purpose: string;
+    status: 'pending' | 'approved' | 'rejected' | 'surrendered';
+    date: string;
+    voucherId?: string;
+  }>>(() => {
+    const saved = localStorage.getItem('zenti_imprests');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('zenti_imprests', JSON.stringify(imprests));
+  }, [imprests]);
+
+  const [suppliers, setSuppliers] = useState<Array<{
+    id: string;
+    companyName: string;
+    contactPerson: string;
+    status: 'Active' | 'Inactive';
+    balance: number;
+    purchaseOrders: Array<{
+      id: string;
+      poNo: string;
+      itemName: string;
+      amount: number;
+      status: 'pending' | 'approved' | 'paid';
+      date: string;
+    }>;
+  }>>(() => {
+    const saved = localStorage.getItem('zenti_suppliers');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('zenti_suppliers', JSON.stringify(suppliers));
+  }, [suppliers]);
+
+  const [budgetPlan, setBudgetPlan] = useState<Record<string, number>>(() => {
+    const saved = localStorage.getItem('zenti_budgets');
+    return saved ? JSON.parse(saved) : {
+      'Operations & IT': 0,
+      'Estates & Facilities': 0,
+      'Admissions & Outreach': 0,
+      'Academic Affairs': 0,
+      'General Administration': 0
+    };
+  });
+
+  useEffect(() => {
+    localStorage.setItem('zenti_budgets', JSON.stringify(budgetPlan));
+  }, [budgetPlan]);
+
+  const [bankReconStatements, setBankReconStatements] = useState<Array<{
+    id: string;
+    date: string;
+    reference: string;
+    details: string;
+    amount: number;
+    isMatched: boolean;
+    matchedTxId?: string;
+  }>>(() => {
+    const saved = localStorage.getItem('zenti_bank_statements');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('zenti_bank_statements', JSON.stringify(bankReconStatements));
+  }, [bankReconStatements]);
+
+  const [auditTrails, setAuditTrails] = useState<Array<{
+    id: string;
+    timestamp: string;
+    user: string;
+    role: string;
+    action: string;
+    resource: string;
+    status: 'Success' | 'Warning' | 'Error';
+  }>>(() => {
+    const saved = localStorage.getItem('zenti_audit_trails');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('zenti_audit_trails', JSON.stringify(auditTrails));
+  }, [auditTrails]);
+
+  // General audit log function
+  const logAudit = (action: string, resource: string, status: 'Success' | 'Warning' | 'Error' = 'Success') => {
+    const now = new Date();
+    const timestamp = now.toISOString().replace('T', ' ').substring(0, 19);
+    setAuditTrails(prev => [
+      {
+        id: `aud-${Date.now()}`,
+        timestamp,
+        user: isLibrarianView ? 'Dr. Sarah Kendi (Librarian)' : isAccountantView ? 'Grace Wanjiku (Accountant)' : 'Admin Master',
+        role: isLibrarianView ? 'Librarian' : isAccountantView ? 'Accountant' : 'Administrator',
+        action,
+        resource,
+        status
+      },
+      ...prev
+    ]);
+  };
+
+  // Password reset request decision execution
+  const handleActionResetRequest = async (requestId: string, action: 'approve' | 'reject') => {
+    const reqItem = resetRequests.find(r => r.id === requestId);
+    if (!reqItem) return;
+
+    const feedback = resetFeedbackMap[requestId] || '';
+    const passcode = resetPasscodeMap[requestId] || '';
+
+    try {
+      const res = await fetch(`/api/admin/reset-requests/${requestId}/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, feedback, passcode })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          // Trigger the parent props callbacks to update state across Alika School Portal
+          const finalPass = data.request.temporaryPasscode || passcode || 'default123';
+          if (reqItem.role === 'student') {
+            if (onUpdateStudent) {
+              onUpdateStudent(reqItem.userId, { passcode: finalPass });
+            }
+          } else {
+            if (onUpdateLecturer) {
+              onUpdateLecturer(reqItem.userId, { passcode: finalPass });
+            }
+          }
+
+          logAudit(
+            `Password reset request for ${reqItem.name} (${reqItem.role}) was ${action === 'approve' ? 'Approved' : 'Rejected'}`,
+            'Authentication Access Control'
+          );
+
+          // Clear local maps
+          setResetFeedbackMap(prev => {
+            const copy = { ...prev };
+            delete copy[requestId];
+            return copy;
+          });
+          setResetPasscodeMap(prev => {
+            const copy = { ...prev };
+            delete copy[requestId];
+            return copy;
+          });
+
+          showToast(`Reset request successfully ${action === 'approve' ? 'approved' : 'rejected'}.`, 'success');
+          fetchResetRequests();
+        } else {
+          showError("Request Error", data.error || 'Failed to process request');
+        }
+      } else {
+        showError("Server Error", 'Server returned an error.');
+      }
+    } catch (err) {
+      showError("Connection Failure", 'Failed to connect to administrative server.');
+    }
+  };
+
+  // Student Search / Records filter states
+  const [studentSearch, setStudentSearch] = useState('');
+  const [roleSearch, setRoleSearch] = useState('');
+  const [studentTableRefetchTrigger, setStudentTableRefetchTrigger] = useState(0);
+
+  // Password reset requests administrative state
+  const [resetRequests, setResetRequests] = useState<PasswordResetRequest[]>([]);
+  const [isFetchingResets, setIsFetchingResets] = useState(false);
+  const [resetError, setResetError] = useState('');
+  const [resetFeedbackMap, setResetFeedbackMap] = useState<Record<string, string>>({});
+  const [resetPasscodeMap, setResetPasscodeMap] = useState<Record<string, string>>({});
+
+  // Password reset modal state for manually resetting a student's password
+  const [resetModalData, setResetModalData] = useState<{
+    isOpen: boolean;
+    studentName: string;
+    temporaryPasscode: string;
+  } | null>(null);
+
+  const handleResetStudentPassword = async (studentId: string, studentName: string) => {
+    try {
+      const res = await fetch(`/api/students/${studentId}/reset-password`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.temporaryPasscode) {
+          setResetModalData({
+            isOpen: true,
+            studentName,
+            temporaryPasscode: data.temporaryPasscode
+          });
+          
+          logAudit(
+            `Generated temporary passcode for student ${studentName} (${studentId})`,
+            'Authentication Access Control'
+          );
+          
+          if (onUpdateStudent) {
+            onUpdateStudent(studentId, { accountStatus: 'Pending Setup' });
+          }
+          
+          triggerToast(`Temporary passcode generated for ${studentName}`, 'success');
+        } else {
+          triggerToast(data.error || 'Failed to reset password.', 'error');
+        }
+      } else {
+        triggerToast('Failed to reset student password.', 'error');
+      }
+    } catch (err) {
+      console.error(err);
+      triggerToast('Network error while resetting password.', 'error');
+    }
+  };
+
+  const fetchResetRequests = async () => {
+    setIsFetchingResets(true);
+    setResetError('');
+    try {
+      const res = await fetch('/api/admin/reset-requests');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setResetRequests(data.requests || []);
+        } else {
+          setResetError(data.error || 'Failed to fetch reset requests');
+        }
+      } else {
+        setResetError('Failed to load reset requests from server.');
+      }
+    } catch (err) {
+      setResetError('Network error connecting to reset gateway.');
+    } finally {
+      setIsFetchingResets(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'roles') {
+      fetchResetRequests();
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === 'admissions') {
+      void fetchConsultations();
+      void fetchApplications();
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (selectedConsultationId) {
+      void fetchConsultationMessages(selectedConsultationId);
+    }
+  }, [selectedConsultationId]);
+
+  useEffect(() => {
+    if (initialActiveTab) {
+      setActiveTab(initialActiveTab);
+    }
+  }, [initialActiveTab]);
+
+  useEffect(() => {
+    if (initialAdmissionsSubTab) {
+      setAdmissionsSubTab(initialAdmissionsSubTab);
+    }
+  }, [initialAdmissionsSubTab]);
+
+  // Student registration states
+  const [regStudentName, setRegStudentName] = useState('');
+  const [regStudentEmail, setRegStudentEmail] = useState('');
+  const [regStudentPhone, setRegStudentPhone] = useState('');
+  const [regStudentAdmission, setRegStudentAdmission] = useState('');
+  const [regStudentCohort, setRegStudentCohort] = useState('');
+  const [regStudentCourseId, setRegStudentCourseId] = useState('');
+  const [enrollmentApplicationId, setEnrollmentApplicationId] = useState('');
+  const [confirmProgrammeChange, setConfirmProgrammeChange] = useState(false);
+  const [regStudentPasscode, setRegStudentPasscode] = useState('');
+
+  // Academic form states
+  const [newTitle, setNewTitle] = useState('');
+  const [newCode, setNewCode] = useState('');
+  const [newDesc, setNewDesc] = useState('');
+  const [newDuration, setNewDuration] = useState('4 Years');
+  const [newFees, setNewFees] = useState('');
+  const [newFaculty, setNewFaculty] = useState('School of Computing & AI');
+  const [newThumbnail, setNewThumbnail] = useState('https://images.unsplash.com/photo-1541339907198-e08756dedf3f?auto=format&fit=crop&q=80&w=600');
+  const [newThumbnailFile, setNewThumbnailFile] = useState<File | null>(null);
+  const [localThumbnailPreview, setLocalThumbnailPreview] = useState('');
+  const [thumbnailLoadError, setThumbnailLoadError] = useState(false);
+  const [thumbnailFailedUrl, setThumbnailFailedUrl] = useState('');
+  const [isThumbnailUploading, setIsThumbnailUploading] = useState(false);
+  const [thumbnailUploadError, setThumbnailUploadError] = useState('');
+
+  // Revoke temporary object URLs when the local preview changes or component unmounts
+  useEffect(() => {
+    return () => {
+      if (localThumbnailPreview && localThumbnailPreview.startsWith('blob:')) {
+        URL.revokeObjectURL(localThumbnailPreview);
+      }
+    };
+  }, [localThumbnailPreview]);
+
+  const resolveCourseThumbnailSrc = (src: string) => {
+    const value = src?.toString().trim();
+    if (!value) return '';
+    if (value.startsWith('blob:') || value.startsWith('/') || /^https?:\/\//i.test(value) || /^\/\//.test(value)) {
+      return value;
+    }
+    return `/${value}`;
+  };
+
+  const imagePreviewSrc = localThumbnailPreview || resolveCourseThumbnailSrc(newThumbnail);
+
+  const clearThumbnailSelection = () => {
+    if (localThumbnailPreview && localThumbnailPreview.startsWith('blob:')) {
+      URL.revokeObjectURL(localThumbnailPreview);
+    }
+    setNewThumbnail('');
+    setNewThumbnailFile(null);
+    setLocalThumbnailPreview('');
+    setThumbnailLoadError(false);
+    setThumbnailFailedUrl('');
+    setThumbnailUploadError('');
+  };
+
+  // Allocation subject states
+  const [allocateLecturerId, setAllocateLecturerId] = useState('');
+  const [allocateSubjectCode, setAllocateSubjectCode] = useState('');
+
+  // Financial form states
+  const [expenseDesc, setExpenseDesc] = useState('');
+  const [expenseCategory, setExpenseCategory] = useState('Utility Bills');
+  const [expenseAmount, setExpenseAmount] = useState('');
+
+  // Advanced Financial sub-tab states
+  const [billingStudentId, setBillingStudentId] = useState(students[0]?.id || '');
+  const [billingVoteHead, setBillingVoteHead] = useState<'Tuition' | 'Boarding' | 'Transport' | 'Lab Fee'>('Tuition');
+  const [billingAmount, setBillingAmount] = useState('');
+  const [billingDescription, setBillingDescription] = useState('');
+
+  const [waiverStudentId, setWaiverStudentId] = useState(students[0]?.id || '');
+  const [waiverAmount, setWaiverAmount] = useState('');
+  const [waiverDescription, setWaiverDescription] = useState('Bursary Award');
+
+  const [vouType, setVouType] = useState<'Debit' | 'Credit' | 'Journal' | 'Contra'>('Debit');
+  const [vouCategory, setVouCategory] = useState('Utility Bills');
+  const [vouDesc, setVouDesc] = useState('');
+  const [vouAmount, setVouAmount] = useState('');
+  const [vouPayee, setVouPayee] = useState('');
+  const [vouDate, setVouDate] = useState('2026-06-17');
+
+  const [impStaff, setImpStaff] = useState('');
+  const [impAmount, setImpAmount] = useState('');
+  const [impPurpose, setImpPurpose] = useState('');
+
+  const [activeSupplierId, setActiveSupplierId] = useState('');
+  const [poItem, setPoItem] = useState('');
+  const [poAmt, setPoAmt] = useState('');
+  const [newSupName, setNewSupName] = useState('');
+  const [newSupContact, setNewSupContact] = useState('');
+
+  // Editing budget ceilings
+  const [editBudgetDept, setEditBudgetDept] = useState('Operations & IT');
+  const [editBudgetLimit, setEditBudgetLimit] = useState('');
+
+  // Active Payslip & Receipt Modal objects
+  const [activePayslipLecturer, setActivePayslipLecturer] = useState<Lecturer | null>(null);
+  const [activeReceiptStudent, setActiveReceiptStudent] = useState<{ student: Student; payment: any } | null>(null);
+
+  // Inventory form states
+  const [newItemName, setNewItemName] = useState('');
+  const [newQuantity, setNewQuantity] = useState('');
+  const [newItemCate, setNewItemCate] = useState('Stationery');
+  const [newItemLoc, setNewItemLoc] = useState('');
+  const [newItemThresh, setNewItemThresh] = useState('5');
+
+  // HR form states
+  const [staffName, setStaffName] = useState('');
+  const [staffEmail, setStaffEmail] = useState('');
+  const [staffPhone, setStaffPhone] = useState('');
+  const [staffRate, setStaffRate] = useState('');
+  const [staffBank, setStaffBank] = useState('');
+  const [staffContract, setStaffContract] = useState('Permanent');
+  const [staffDesignation, setStaffDesignation] = useState('');
+  const [staffIsAccountant, setStaffIsAccountant] = useState(false);
+  const [staffIsLibrarian, setStaffIsLibrarian] = useState(false);
+  const [staffPasscode, setStaffPasscode] = useState('');
+  const [autoGeneratePasscode, setAutoGeneratePasscode] = useState(true);
+  const [autoGenerateAccPasscode, setAutoGenerateAccPasscode] = useState(true);
+
+  // Auto-Reconciliation stats helper
+  const allPayments = students.flatMap(s => s.payments);
+  const unreconciledPayments = allPayments.filter(p => p.status === 'unreconciled');
+  const lowStockItems = inventory.filter(item => item.quantity <= item.lowestThreshold);
+
+  // --- ACCOUNTANT RECONCILIATION AND BUDGETING STATE ---
+  const deptBudgets = budgetPlan;
+
+  const getDeptForCategory = (cat: string): string => {
+    switch (cat) {
+      case 'Utility Bills': return 'Operations & IT';
+      case 'Maintenance': return 'Estates & Facilities';
+      case 'Marketing': return 'Admissions & Outreach';
+      case 'Salaries': return 'Academic Affairs';
+      default: return 'General Administration';
+    }
+  };
+
+  const departmentTotals = expenses.reduce((acc, exp) => {
+    const dept = getDeptForCategory(exp.category);
+    acc[dept] = (acc[dept] || 0) + exp.amount;
+    return acc;
+  }, {} as Record<string, number>);
+
+  const currentMonthExpensesTotal = expenses.reduce((sum, e) => sum + e.amount, 0);
+
+  // Line Chart Data derived directly from real database expenses
+  const months = ['Jan 2026', 'Feb 2026', 'Mar 2026', 'Apr 2026', 'May 2026', 'Jun 2026', 'Jul 2026'];
+  const monthlyExpenditures = months.map(m => {
+    const totalForMonth = expenses.filter(e => {
+      if (!e.date) return false;
+      const d = new Date(e.date);
+      const label = d.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+      return label === m;
+    }).reduce((sum, e) => sum + e.amount, 0);
+    return { name: m, Expenditures: totalForMonth };
+  });
+
+  const handleExportDepartmentalReportCSV = () => {
+    const headers = [
+      'Department',
+      'Expense Categories Group',
+      'Approved Budget (KES)',
+      'Current Monthly Expenditures (KES)',
+      'Remaining Budget Balance (KES)',
+      'Utilization Rate (%)'
+    ];
+
+    const rows = Object.entries(deptBudgets).map(([dept, budget]) => {
+      const budgetNum = Number(budget);
+      const expensesTotal = departmentTotals[dept] || 0;
+      const remaining = budgetNum - expensesTotal;
+      const utilization = ((expensesTotal / budgetNum) * 100).toFixed(1);
+      
+      let catGroup = '';
+      if (dept === 'Operations & IT') catGroup = 'Utility Bills';
+      else if (dept === 'Estates & Facilities') catGroup = 'Maintenance';
+      else if (dept === 'Admissions & Outreach') catGroup = 'Marketing';
+      else if (dept === 'Academic Affairs') catGroup = 'Salaries';
+      else catGroup = 'Miscellaneous Operations';
+
+      return [
+        dept,
+        catGroup,
+        String(budget),
+        String(expensesTotal),
+        String(remaining),
+        `${utilization}%`
+      ];
+    });
+
+    downloadCSV(headers, rows, `departmental_financial_budget_report_${new Date().toLocaleDateString('en-CA')}.csv`);
+  };
+
+  // Student record listing filter and evaluation
+  const filteredStudents = students.filter(s => {
+    const term = studentSearch.toLowerCase();
+    return s.name.toLowerCase().includes(term) ||
+           s.admissionNo.toLowerCase().includes(term) ||
+           s.cohort.toLowerCase().includes(term) ||
+           s.email.toLowerCase().includes(term);
+  });
+
+  // Generic CSV Generator Utility
+  const downloadCSV = (headers: string[], rows: string[][], filename: string) => {
+    const escapeCell = (cell: string) => {
+      const stringified = String(cell ?? '');
+      if (stringified.includes(',') || stringified.includes('"') || stringified.includes('\n') || stringified.includes('\r')) {
+        return `"${stringified.replace(/"/g, '""')}"`;
+      }
+      return stringified;
+    };
+
+    const headerString = headers.map(escapeCell).join(',');
+    const rowStrings = rows.map(row => row.map(escapeCell).join(','));
+    const csvContent = [headerString, ...rowStrings].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', filename);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleExportStudentsCSV = () => {
+    const headers = [
+      'Admission Number',
+      'Full Name',
+      'Email Address',
+      'Phone Contact',
+      'Cohort Group',
+      'Registered Units Count',
+      'Registered Units (Pills)',
+      'Total Invoiced (KES)',
+      'Paid Fees (KES)',
+      'Pending Balance (KES)'
+    ];
+
+    const rows = filteredStudents.map(stud => {
+      const totalInvoiced = stud.ledger.reduce((sum, inv) => sum + inv.amount, 0);
+      const totalPaid = stud.ledger.filter(i => i.status === 'paid').reduce((sum, inv) => sum + inv.amount, 0);
+      const outstandingBal = totalInvoiced - totalPaid;
+      return [
+        stud.admissionNo,
+        stud.name,
+        stud.email,
+        stud.phone,
+        stud.cohort,
+        String(stud.enrolledUnits.length),
+        stud.enrolledUnits.join('; '),
+        String(totalInvoiced),
+        String(totalPaid),
+        String(outstandingBal)
+      ];
+    });
+
+    downloadCSV(headers, rows, `student_records_master_${new Date().toLocaleDateString('en-CA')}.csv`);
+  };
+
+  const handleExportPaymentsCSV = () => {
+    const headers = [
+      'Student Full Name',
+      'Student Admission No',
+      'Transaction Identifier',
+      'Amount Disbursed (KES)',
+      'Payment Modality',
+      'Date of Submission',
+      'Ledger Reconciliation Status'
+    ];
+
+    const rows = allPayments.map(p => {
+      const stud = students.find(s => s.id === p.studentId);
+      return [
+        stud?.name || 'Unknown Student',
+        stud?.admissionNo || 'N/A',
+        p.transactionId,
+        String(p.amount),
+        p.paymentMethod,
+        p.date,
+        p.status
+      ];
+    });
+
+    downloadCSV(headers, rows, `financials_payments_ledger_${new Date().toLocaleDateString('en-CA')}.csv`);
+  };
+
+  const handleExportExpensesCSV = () => {
+    const headers = [
+      'Ledger ID',
+      'Expenditure Category',
+      'Outlay Description',
+      'Cost Logged (KES)',
+      'Transaction Date'
+    ];
+
+    const rows = expenses.map(exp => [
+      exp.id,
+      exp.category,
+      exp.description,
+      String(exp.amount),
+      exp.date
+    ]);
+
+    downloadCSV(headers, rows, `institutional_expenses_ledger_${new Date().toLocaleDateString('en-CA')}.csv`);
+  };
+
+  const handleCreateCourse = (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsedFees = parseInt(newFees);
+    if (!newTitle || !newCode || isNaN(parsedFees)) {
+      showWarning("Missing Required Fields", 'Syllabus title, duration fees, and degree code are strictly required.');
+      return;
+    }
+    onAddCourse({
+      code: newCode,
+      title: newTitle,
+      description: newDesc || 'No course syllabus overview published.',
+      duration: newDuration,
+      fees: parsedFees,
+      thumbnail: newThumbnail,
+      faculty: newFaculty
+    });
+    // Clear fields
+    setNewTitle('');
+    setNewCode('');
+    setNewDesc('');
+    setNewFees('');
+    setNewThumbnail('https://images.unsplash.com/photo-1541339907198-e08756dedf3f?auto=format&fit=crop&q=80&w=600');
+    setNewThumbnailFile(null);
+    setThumbnailUploadError('');
+    triggerToast(`Course "${newTitle}" registered successfully! It is now published live on the public landing page.`, 'success');
+  };
+
+  const handleAllocateSubjectSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!allocateLecturerId || !allocateSubjectCode) {
+      triggerToast('Please choose matching lecturer and class module codes.', 'error');
+      return;
+    }
+    onAllocateSubject(allocateLecturerId, allocateSubjectCode);
+    triggerToast('Subject allocated successfully. Module added to targeted lecturer.', 'success');
+    setAllocateLecturerId('');
+    setAllocateSubjectCode('');
+  };
+
+  const handleAddExpenseSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const amountVal = parseFloat(expenseAmount);
+    if (!expenseDesc || isNaN(amountVal)) {
+      showWarning("Incomplete Entry", 'Operational description and expenditure amount are required.');
+      return;
+    }
+    onAddExpense({
+      description: expenseDesc,
+      category: expenseCategory,
+      amount: amountVal,
+      date: new Date().toLocaleDateString('en-CA')
+    });
+    setExpenseDesc('');
+    setExpenseAmount('');
+    showToast('College utility expense logged successfully into digital ledger.', 'success');
+  };
+
+  const getAuthHeaders = (includeJson = true) => {
+    const token = localStorage.getItem('zenti_session_token');
+    const headers: Record<string, string> = {};
+    if (includeJson) headers['Content-Type'] = 'application/json';
+    if (token) {
+      headers['x-session-token'] = token;
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    return headers;
+  };
+
+  const fetchConsultations = async () => {
+    setConsultationsLoading(true);
+    try {
+      const res = await fetch('/api/admin/consultations', { headers: getAuthHeaders(false) });
+      if (!res.ok) throw new Error('Unable to load consultations.');
+      const data = await res.json();
+      const rows = Array.isArray(data) ? data : [];
+      setConsultations(rows);
+      if (rows.length > 0 && !selectedConsultationId) {
+        setSelectedConsultationId(rows[0].id);
+      }
+    } catch (error) {
+      console.error(error);
+      showError('Admissions Error', 'Unable to load consultation requests.');
+    } finally {
+      setConsultationsLoading(false);
+    }
+  };
+
+  const fetchConsultationMessages = async (consultationId: string) => {
+    if (!consultationId) return;
+    setConsultationMessagesLoading(true);
+    try {
+      const res = await fetch(`/api/admin/consultations/${consultationId}/messages`, { headers: getAuthHeaders(false) });
+      if (!res.ok) throw new Error('Unable to load messages.');
+      const data = await res.json();
+      setConsultationMessages(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error(error);
+      showError('Admissions Error', 'Unable to load consultation thread.');
+    } finally {
+      setConsultationMessagesLoading(false);
+    }
+  };
+
+  const updateConsultationStatus = async (consultationId: string, status: string) => {
+    setUpdatingConsultation(true);
+    try {
+      const reply = (consultationReplyMap[consultationId] || '').trim();
+      const res = await fetch(`/api/admin/consultations/${consultationId}`, {
+        method: 'PATCH',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ status, reply })
+      });
+      if (!res.ok) throw new Error('Unable to update consultation.');
+      setConsultationReplyMap(prev => ({ ...prev, [consultationId]: '' }));
+      showSuccess('Consultation Updated', 'The consultation request was updated successfully.');
+      await fetchConsultations();
+      await fetchConsultationMessages(consultationId);
+    } catch (error) {
+      console.error(error);
+      showError('Admissions Error', 'The consultation request could not be updated.');
+    } finally {
+      setUpdatingConsultation(false);
+    }
+  };
+
+  const fetchApplications = async () => {
+    setApplicationsLoading(true);
+    try {
+      const res = await fetch('/api/admin/applications', { headers: getAuthHeaders(false) });
+      if (!res.ok) throw new Error('Unable to load applications.');
+      const data = await res.json();
+      const loadedApps = Array.isArray(data) ? data : [];
+      setApplications(loadedApps);
+      if (loadedApps.length > 0) {
+        setSelectedApplicationId((prev) => (prev && loadedApps.some((a: ApplicationRecord) => a.id === prev) ? prev : loadedApps[0].id));
+      }
+    } catch (error) {
+      console.error(error);
+      showError('Admissions Error', 'Unable to load applications.');
+    } finally {
+      setApplicationsLoading(false);
+    }
+  };
+
+  const updateApplicationStatus = async (applicationId: string, status: string) => {
+    setUpdatingApplication(true);
+    try {
+      const note = applicationNoteMap[applicationId] || '';
+      const res = await fetch(`/api/admin/applications/${applicationId}`, {
+        method: 'PATCH',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ status, internalNote: note })
+      });
+      if (!res.ok) throw new Error('Unable to update application.');
+      const updated = await res.json();
+      setApplications(prev => prev.map(item => item.id === applicationId ? { ...item, ...updated } : item));
+      setApplicationNoteMap(prev => ({ ...prev, [applicationId]: '' }));
+      if (status === 'approved') {
+        setStudentTableRefetchTrigger((prev) => prev + 1);
+        showSuccess('Applicant Admitted', 'Application approved. The student admission record is available for Academic Allocation under the same student ID.');
+      } else {
+        showSuccess('Application Updated', 'The application was updated successfully.');
+      }
+    } catch (error) {
+      console.error(error);
+      showError('Admissions Error', 'The application could not be updated.');
+    } finally {
+      setUpdatingApplication(false);
+    }
+  };
+
+  const handleAddStudentSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!regStudentName || !regStudentEmail || !regStudentPhone || !regStudentCourseId || !regStudentCohort) {
+      triggerToast('Please complete the student, programme, and intake details.', 'error');
+      return;
+    }
+    const selectedApplication = applications.find((application) => application.id === enrollmentApplicationId);
+    const approvedCourseId = selectedApplication?.approved_course_id || selectedApplication?.first_choice_course_id;
+    if (selectedApplication && regStudentCourseId !== approvedCourseId && !confirmProgrammeChange) {
+      triggerToast('Confirm the programme change before enrolling this approved application.', 'error');
+      return;
+    }
+    const payload = {
+      name: regStudentName,
+      email: regStudentEmail,
+      phone: regStudentPhone,
+      admissionNo: regStudentAdmission,
+      cohort: regStudentCohort,
+      courseId: regStudentCourseId,
+      applicationId: enrollmentApplicationId || undefined,
+      confirmProgrammeChange,
+      passcode: regStudentPasscode || undefined
+    };
+    try {
+      await Promise.resolve(onAddStudent(payload as any));
+      const shownAdmission = regStudentAdmission || '(auto-generated on save)';
+      showRegistrationModal({
+        name: regStudentName,
+        idOrAdmissionNo: shownAdmission,
+        temporaryPasscode: regStudentPasscode || 'issued on save',
+        role: 'Student',
+        department: courses.find((course) => course.id === regStudentCourseId)?.title || regStudentCohort,
+        email: regStudentEmail
+      });
+      setRegStudentName('');
+      setRegStudentEmail('');
+      setRegStudentPhone('');
+      setRegStudentAdmission('');
+      setRegStudentCohort('');
+      setRegStudentCourseId('');
+      setEnrollmentApplicationId('');
+      setConfirmProgrammeChange(false);
+      setRegStudentPasscode('');
+      setStudentTableRefetchTrigger(prev => prev + 1);
+    } catch {
+      // Parent surfaces enrollment errors.
+    }
+  };
+
+  const selectEnrollmentApplication = (applicationId: string) => {
+    setEnrollmentApplicationId(applicationId);
+    setConfirmProgrammeChange(false);
+    const application = applications.find((item) => item.id === applicationId);
+    if (!application) return;
+    setRegStudentName(application.full_name || '');
+    setRegStudentEmail(application.email || '');
+    setRegStudentPhone(application.phone || '');
+    setRegStudentAdmission(application.admission_no || '');
+    setRegStudentCohort(application.preferred_intake || '');
+    setRegStudentCourseId(application.approved_course_id || application.first_choice_course_id || '');
+  };
+
+  const handleAddLecturer = (e: React.FormEvent) => {
+    e.preventDefault();
+    const rateVal = parseFloat(staffRate);
+    if (!staffName || !staffEmail || isNaN(rateVal) || !staffDesignation) {
+      triggerToast('Please fill out all staff contract directories.', 'error');
+      return;
+    }
+    onAddLecturer({
+      name: staffName,
+      email: staffEmail,
+      phone: staffPhone || '+254 700 000000',
+      hourlyRate: rateVal,
+      bankDetails: staffBank || 'NCBA Bank - Acc Locked',
+      contractLength: staffContract,
+      designatorCode: staffDesignation,
+      subjects: [],
+      isAccountant: staffIsAccountant,
+      isLibrarian: staffIsLibrarian,
+      passcode: autoGeneratePasscode ? '' : staffPasscode
+    });
+    setStaffName('');
+    setStaffEmail('');
+    setStaffPhone('');
+    setStaffRate('');
+    setStaffBank('');
+    setStaffDesignation('');
+    setStaffIsAccountant(false);
+    setStaffIsLibrarian(false);
+    setStaffPasscode('');
+    setAutoGeneratePasscode(true);
+    showRegistrationModal({
+      name: staffName,
+      idOrAdmissionNo: staffDesignation || 'STF-REG',
+      temporaryPasscode: autoGeneratePasscode ? 'auto-passcode' : (staffPasscode || 'staff123'),
+      role: staffIsAccountant ? 'Finance / Accountant' : 'Lecturer / Faculty',
+      department: 'Academic Staff',
+      email: staffEmail
+    });
+  };
+
+  const handleAddStockSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const qtyVal = parseInt(newQuantity);
+    const threshVal = parseInt(newItemThresh);
+    if (!newItemName || isNaN(qtyVal) || isNaN(threshVal)) {
+      showWarning("Stock Entry Error", 'Please fill outstanding computer or stock attributes.');
+      return;
+    }
+    onAddStockItem({
+      name: newItemName,
+      quantity: qtyVal,
+      category: newItemCate,
+      location: newItemLoc || 'Wangige Facility Cupboards',
+      lowestThreshold: threshVal
+    });
+    setNewItemName('');
+    setNewQuantity('');
+    setNewItemLoc('');
+    showToast('Asset successfully logged into college inventory.', 'success');
+  };
+
+  const handleAutoReconciliationRun = () => {
+    if (unreconciledPayments.length === 0) {
+      showInfo("Auto-Reconciliation", 'No outstanding unreconciled student statements flagged.');
+      return;
+    }
+    
+    // Automatically match all unreconciled payments
+    const copyList = [...unreconciledPayments];
+    copyList.forEach(p => {
+      onReconcilePayment(p.id);
+    });
+    showSuccess("Auto-Reconciliation Engine", `Matched ${copyList.length} billing statement IDs. Fees receipts reconciled.`);
+  };
+
+  return (
+    <div className="min-h-screen flex bg-slate-50 dark:bg-slate-950 font-sans transition-colors duration-300 w-full animate-fade-in" id="admin-dashboard-root">
+      
+      {/* MOBILE NAVIGATION DRAWER */}
+      <MobileNavDrawer
+        isOpen={mobileMenuOpen}
+        onClose={() => setMobileMenuOpen(false)}
+        title="ALIKA"
+        subtitle="Admin Console"
+        profile={{
+          name: isLibrarianView ? 'Sarah Kendi' : isAccountantView ? 'Grace Wanjiku' : 'Admin Master',
+          role: isLibrarianView ? 'Librarian' : isAccountantView ? 'Accountant' : 'Administrator',
+          idOrAdmission: isLibrarianView ? 'LIB-001' : isAccountantView ? 'ACC-001' : 'ADM-MASTER',
+          subDetail: isLibrarianView ? 'Library Desk' : isAccountantView ? 'Finance Office' : 'MIS Department',
+        }}
+        groups={
+          isLibrarianView
+            ? [
+                {
+                  title: 'Library Operations',
+                  items: [
+                    { id: 'library', label: 'Library Registry', icon: Library, action: () => setActiveTab('library'), isActive: activeTab === 'library' },
+                  ],
+                },
+              ]
+            : isAccountantView
+            ? [
+                {
+                  title: 'Finance & Accounts',
+                  items: [
+                    { id: 'finances', label: 'Ledger & Finances', icon: Landmark, action: () => setActiveTab('finances'), isActive: activeTab === 'finances' },
+                    { id: 'payroll', label: 'HR & Payroll', icon: DollarSign, action: () => setActiveTab('payroll'), isActive: activeTab === 'payroll' },
+                  ],
+                },
+              ]
+            : [
+                {
+                  title: 'Core Administration',
+                  items: [
+                    { id: 'overview', label: 'Overview', icon: Sliders, action: () => setActiveTab('overview'), isActive: activeTab === 'overview' },
+                    {
+                      id: 'admissions',
+                      label: 'Admissions Desk',
+                      icon: School,
+                      action: () => {
+                        setActiveTab('admissions');
+                        setAdmissionsSubTab(prev => prev || 'dashboard');
+                        if (onNavigateRoute) onNavigateRoute('/admin/admissions/dashboard');
+                      },
+                      isActive: activeTab === 'admissions',
+                    },
+                    { id: 'finances', label: 'Ledger & Finances', icon: Landmark, action: () => setActiveTab('finances'), isActive: activeTab === 'finances' },
+                    { id: 'payroll', label: 'HR & Payroll', icon: DollarSign, action: () => setActiveTab('payroll'), isActive: activeTab === 'payroll' },
+                  ],
+                },
+                {
+                  title: 'Campus & Management',
+                  items: [
+                    { id: 'inventory', label: 'Procurement Stock', icon: Activity, action: () => setActiveTab('inventory'), isActive: activeTab === 'inventory' },
+                    { id: 'roles', label: 'Role Management', icon: User, action: () => setActiveTab('roles'), isActive: activeTab === 'roles' },
+                    { id: 'library', label: 'Library Registry', icon: Library, action: () => setActiveTab('library'), isActive: activeTab === 'library' },
+                    { id: 'diagnostics', label: 'Diagnostics', icon: CheckCircle2, action: () => setActiveTab('diagnostics'), isActive: activeTab === 'diagnostics' },
+                  ],
+                },
+              ]
+        }
+        onLogout={onLogout}
+      />
+      
+      {/* LEFT SIDEBAR NAVIGATION */}
+      <aside className="w-64 bg-slate-900 dark:bg-slate-950 text-slate-300 flex flex-col border-r border-slate-800 shrink-0 hidden md:flex font-sans">
+        {/* Brand Header */}
+        <div className="p-6 border-b border-slate-800 flex items-center gap-2">
+          <div className="w-8 h-8 bg-slate-800 rounded-lg flex items-center justify-center shrink-0 border border-slate-700">
+            <School className="w-5 h-5 text-white" />
+          </div>
+          <div>
+            <span className="text-sm font-black tracking-tight text-white block uppercase leading-none">ALIKA</span>
+            <span className="text-[8px] text-slate-500 font-bold uppercase tracking-widest block">Admin Console</span>
+          </div>
+        </div>
+        
+        {/* Navigation Menu */}
+        <nav className="flex-1 px-4 py-6 space-y-1.5 overflow-y-auto">
+          {isLibrarianView ? (
+            <button type="button" onClick={() => setActiveTab('library')} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold bg-amber-600 text-white shadow-md uppercase tracking-wider cursor-pointer">
+              <Library className="w-4 h-4" />
+              <span>Library Registry</span>
+            </button>
+          ) : isAccountantView ? (
+            <>
+              <button type="button" onClick={() => setActiveTab('finances')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'finances' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                <Landmark className="w-4 h-4" />
+                <span>Ledger & Finances</span>
+              </button>
+              <button type="button" onClick={() => setActiveTab('payroll')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'payroll' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                <DollarSign className="w-4 h-4" />
+                <span>HR & Payroll</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" onClick={() => setActiveTab('overview')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'overview' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                <Sliders className="w-4 h-4" />
+                <span>Overview</span>
+              </button>
+
+              {/* Admissions Module Top-Level Menu (desktop) */}
+              {(['super_admin','admissions_officer','admin'] as string[]).includes(currentUserRole || '') && (
+                <div className="space-y-1 my-1">
+                  <button type="button" onClick={() => {
+                    setActiveTab('admissions');
+                    setAdmissionsSubTab(prev => prev || 'dashboard');
+                    if (onNavigateRoute) onNavigateRoute('/admin/admissions/dashboard');
+                  }} className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'admissions' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                    <div className="flex items-center gap-3">
+                      <School className="w-4 h-4" />
+                      <span>Admissions</span>
+                    </div>
+                  </button>
+
+                  {/* Admissions Sub-items */}
+                  {activeTab === 'admissions' && (
+                    <div className="pl-4 pr-1 py-1 space-y-1 bg-slate-950/40 rounded-xl border border-slate-800/50 my-1">
+                      <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('dashboard'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/dashboard'); }} className={`w-full text-left px-3 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-2 ${admissionsSubTab === 'dashboard' ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                        <div className={`w-1.5 h-1.5 rounded-full ${admissionsSubTab === 'dashboard' ? 'bg-blue-400' : 'bg-slate-600'}`} />
+                        <span>Dashboard</span>
+                      </button>
+                      <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('consultations'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/consultations'); }} className={`w-full text-left px-3 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-2 ${admissionsSubTab === 'consultations' ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                        <div className={`w-1.5 h-1.5 rounded-full ${admissionsSubTab === 'consultations' ? 'bg-blue-400' : 'bg-slate-600'}`} />
+                        <span>Consultations</span>
+                      </button>
+                      <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('applications'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/applications'); }} className={`w-full text-left px-3 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-2 ${admissionsSubTab === 'applications' ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                        <div className={`w-1.5 h-1.5 rounded-full ${admissionsSubTab === 'applications' ? 'bg-blue-400' : 'bg-slate-600'}`} />
+                        <span>Applications</span>
+                      </button>
+                      <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('applicants'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/applicants'); }} className={`w-full text-left px-3 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-2 ${admissionsSubTab === 'applicants' ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                        <div className={`w-1.5 h-1.5 rounded-full ${admissionsSubTab === 'applicants' ? 'bg-blue-400' : 'bg-slate-600'}`} />
+                        <span>Applicants</span>
+                      </button>
+                      <button type="button" onClick={() => { setActiveTab('admissions'); setAdmissionsSubTab('enrollment'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/enrollment'); }} className={`w-full text-left px-3 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-2 ${admissionsSubTab === 'enrollment' ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                        <div className={`w-1.5 h-1.5 rounded-full ${admissionsSubTab === 'enrollment' ? 'bg-blue-400' : 'bg-slate-600'}`} />
+                        <span>Enrollment</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <button type="button" onClick={() => setActiveTab('academics')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'academics' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                <Award className="w-4 h-4" />
+                <span>Academics Allocation</span>
+              </button>
+              <button type="button" onClick={() => setActiveTab('finances')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'finances' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                <Landmark className="w-4 h-4" />
+                <span>Ledger & Finances</span>
+              </button>
+              <button type="button" onClick={() => setActiveTab('payroll')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'payroll' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                <DollarSign className="w-4 h-4" />
+                <span>HR & Payroll</span>
+              </button>
+              <button type="button" onClick={() => setActiveTab('inventory')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'inventory' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                <Activity className="w-4 h-4" />
+                <span>Procurement Stock</span>
+              </button>
+              <button type="button" onClick={() => setActiveTab('roles')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'roles' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                <User className="w-4 h-4" />
+                <span>Role Management</span>
+              </button>
+              <button type="button" onClick={() => setActiveTab('library')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'library' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                <Library className="w-4 h-4" />
+                <span>Library Registry</span>
+              </button>
+              <button type="button" onClick={() => setActiveTab('diagnostics')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${activeTab === 'diagnostics' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}>
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Diagnostics</span>
+              </button>
+            </>
+          )}
+        </nav>
+        
+        {/* Profile Info & Logout */}
+        <div className="p-4 border-t border-slate-800/60 bg-slate-950/40 space-y-3 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-slate-800 text-white flex items-center justify-center font-bold text-sm shrink-0 border border-slate-700">
+              {isLibrarianView ? 'L' : isAccountantView ? 'A' : 'M'}
+            </div>
+            <div className="truncate max-w-[120px]">
+              <h4 className="text-xs font-bold text-white leading-none truncate">
+                {isLibrarianView ? 'Sarah Kendi' : isAccountantView ? 'Grace Wanjiku' : 'Admin Master'}
+              </h4>
+              <span className="text-[9px] text-slate-500 font-mono block mt-1 truncate">
+                {isLibrarianView ? 'Librarian' : isAccountantView ? 'Accountant' : 'Administrator'}
+              </span>
+            </div>
+          </div>
+          <button type="button" onClick={onLogout} className="w-full py-2.5 bg-slate-800 hover:bg-rose-955/30 hover:text-rose-455 text-slate-400 hover:text-white text-xs font-bold rounded-lg uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5 cursor-pointer">
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Logout Portal</span>
+          </button>
+        </div>
+      </aside>
+      
+      {/* MAIN CONTAINER */}
+      <div className="flex-1 flex flex-col min-h-screen overflow-y-auto bg-slate-50 dark:bg-slate-950">
+        {/* TOP UTILITY BAR */}
+        <header className="bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 px-4 sm:px-6 py-3 sm:py-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 sm:gap-4 shadow-2xs shrink-0 font-sans sticky top-0 z-20">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              className="md:hidden p-2.5 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer min-w-[42px] min-h-[42px] flex items-center justify-center -ml-1"
+              title="Toggle Menu"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <div className="space-y-0.5 text-left min-w-0">
+              <h2 className="text-[9px] font-bold text-slate-450 uppercase tracking-widest leading-none font-mono">Restricted MIS Console</h2>
+              <h1 className="text-sm sm:text-base font-black text-slate-800 dark:text-white leading-tight font-display truncate">
+                {isLibrarianView ? 'Archival & Textbook Catalog' : isAccountantView ? 'Billing & Ledger Registry' : 'Master School Management'}
+              </h1>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 sm:gap-4 w-full sm:w-auto justify-end">
+            <div className="w-full sm:w-64 md:w-80">
+              <GlobalSearchBar students={students} courses={courses} inventory={inventory} />
+            </div>
+            <span className="hidden sm:inline-block w-px h-6 bg-slate-200 dark:bg-slate-800"></span>
+            <div className="hidden sm:flex items-center gap-2 shrink-0">
+              <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse"></div>
+              <span className="text-[9px] uppercase font-bold text-slate-400 tracking-wider font-mono">Management Mode</span>
+            </div>
+          </div>
+        </header>
+        
+        {/* WORKSPACE CONTENT AREA */}
+        <div className="p-4 sm:p-6 space-y-6 flex-1 bg-slate-50 dark:bg-slate-950 pb-28 md:pb-6">
+          <PageTransition transitionKey={activeTab} className="w-full">
+          
+          {/* Restricted Mode Alert Notice Box */}
+          {(isLibrarianView || isAccountantView) && (
+            <div className={`border rounded-xl p-4 flex items-center justify-between text-xs font-medium ${isLibrarianView ? 'bg-amber-50 border-amber-200 text-amber-950' : 'bg-blue-50 border-blue-150 text-blue-800'}`}>
+              <div className="flex items-center gap-2.5">
+                <span className={`w-2.5 h-2.5 rounded-full animate-pulse shrink-0 ${isLibrarianView ? 'bg-amber-600' : 'bg-blue-600'}`}></span>
+                <div>
+                  <span className="font-bold block">{isLibrarianView ? 'Restricted Librarian Privilege Enabled' : 'Restricted Accountant Privilege Enabled'}</span>
+                  <span>{isLibrarianView ? 'You have access to hold requests, checkouts, and text catalogs only.' : 'You have access to payrolls, expense logs and student billings only.'}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* WARNING BANNER FOR LOW STOCK ALERTS */}
+          {lowStockItems.length > 0 && !isLibrarianView && !isAccountantView && (
+            <div className="bg-amber-50 text-amber-900 border border-amber-250 p-4 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs leading-relaxed">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold block">Internal Low Stock Warning Level!</span>
+                  <span>The following college properties have depleted below thresholds: {lowStockItems.map(i => `"${i.name}"`).join(', ')}.</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('inventory')}
+                className="text-xs text-amber-955 font-bold hover:underline bg-white/50 py-1.5 px-3 rounded border border-amber-200 shrink-0 self-start sm:self-auto cursor-pointer"
+              >
+                Manage Stock Inventory
+              </button>
+            </div>
+          )}
+        
+        {/* TAB 0: OVERVIEW WORKSPACE (DASHBOARD A) */}
+        {activeTab === 'overview' && (
+          <div className="space-y-6">
+            {/* STUDENT ADMISSION QUICK-SEARCH & LEDGER STATION */}
+            <StudentAdmissionDossierStation
+              students={students}
+              role={isLibrarianView ? 'librarian' : isAccountantView ? 'accountant' : 'admin'}
+              books={books}
+              loans={loans}
+              reservations={reservations}
+              bookRequests={bookRequests}
+              libraryGateLogs={libraryGateLogs}
+              courses={courses}
+            />
+            {/* HIGH-DENSITY SUMMARY STRIP */}
+            <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-150 dark:border-slate-800 p-6 shadow-xs grid grid-cols-1 md:grid-cols-4 gap-6 divide-y md:divide-y-0 md:divide-x divide-slate-100 dark:divide-slate-800">
+              
+              {/* Card 1: Total Students */}
+              <div className="flex items-center justify-between pr-4 md:pr-0 md:px-4 first:pl-0">
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Total Students</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-2xl font-black text-slate-850 dark:text-white font-mono">{totalStudents}</span>
+                    <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-400">Live</span>
+                  </div>
+                  <span className="text-[9px] text-slate-550 block">Active admissions this semester</span>
+                </div>
+                <div className="w-10 h-10 bg-blue-500/10 text-blue-600 rounded-lg flex items-center justify-center shrink-0">
+                  <Users className="w-5 h-5" />
+                </div>
+              </div>
+
+              {/* Card 2: Total Faculty */}
+              <div className="flex items-center justify-between pt-4 md:pt-0 pr-4 md:pr-0 md:px-6">
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Total Faculty</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-2xl font-black text-slate-850 dark:text-white font-mono">{totalFaculty}</span>
+                    <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400">Live</span>
+                  </div>
+                  <span className="text-[9px] text-slate-550 block">Registered lecturers & staff</span>
+                </div>
+                <div className="w-10 h-10 bg-indigo-500/10 text-indigo-650 rounded-lg flex items-center justify-center shrink-0">
+                  <Users className="w-5 h-5" />
+                </div>
+              </div>
+
+              {/* Card 3: Daily Attendance % */}
+              <div className="flex items-center justify-between pt-4 md:pt-0 pr-4 md:pr-0 md:px-6">
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Daily Attendance %</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-2xl font-black text-slate-855 dark:text-white font-mono">{dailyAttendancePercent}%</span>
+                    <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-400">Live</span>
+                  </div>
+                  <span className="text-[9px] text-slate-555 block">Average system-wide scan today</span>
+                </div>
+                <div className="w-10 h-10 bg-emerald-500/10 text-emerald-650 rounded-lg flex items-center justify-center shrink-0">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+              </div>
+
+              {/* Card 4: Fees Collected % */}
+              <div className="flex items-center justify-between pt-4 md:pt-0 pr-4 md:pr-0 md:pl-6 last:pr-0">
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Fees Collected %</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-2xl font-black text-slate-855 dark:text-white font-mono">{feesCollectedPercent}%</span>
+                    <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 dark:bg-blue-950/20 dark:text-blue-400">Live</span>
+                  </div>
+                  <span className="text-[9px] text-slate-555 block">Relative to outstanding ledger balance</span>
+                </div>
+                <div className="w-10 h-10 bg-amber-500/10 text-amber-650 rounded-lg flex items-center justify-center shrink-0">
+                  <DollarSign className="w-5 h-5" />
+                </div>
+              </div>
+
+            </div>
+
+            {/* Main Content Layout (Two Columns) */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Left Column: daily attendance chart and upcoming events */}
+              <div className="lg:col-span-8 space-y-6">
+                {/* Visual daily attendance chart component */}
+                <div className="bg-white rounded-xl border border-slate-150 p-5 shadow-sm">
+                  <div className="flex justify-between items-center border-b border-slate-100 pb-3 mb-4">
+                    <div>
+                      <h3 className="text-xs font-black uppercase text-slate-800 dark:text-white tracking-wider flex items-center gap-1.5 font-display">
+                        <TrendingUp className="w-4 h-4 text-blue-600" />
+                        Daily Attendance Analytics (By Faculty)
+                      </h3>
+                      <p className="text-[10px] text-slate-500 mt-0.5 font-sans">Real-time attendance rates recorded from digital classroom scans.</p>
+                    </div>
+                    <div className="flex items-center gap-3 text-[10px]">
+                      <div className="flex items-center gap-1">
+                        <span className="w-2.5 h-2.5 bg-blue-500 rounded-full inline-block" />
+                        <span className="text-slate-650 font-bold">Computing & AI</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="w-2.5 h-2.5 bg-indigo-500 rounded-full inline-block" />
+                        <span className="text-slate-650 font-bold">Engineering</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="h-64 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={[
+                        { name: 'Mon', CS: 94, EE: 89 },
+                        { name: 'Tue', CS: 96, EE: 91 },
+                        { name: 'Wed', CS: 92, EE: 90 },
+                        { name: 'Thu', CS: 95, EE: 92 },
+                        { name: 'Fri', CS: 97, EE: 93 },
+                      ]}>
+                        <defs>
+                          <linearGradient id="adminColorCS" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#2563eb" stopOpacity={0.2}/>
+                            <stop offset="95%" stopColor="#2563eb" stopOpacity={0}/>
+                          </linearGradient>
+                          <linearGradient id="adminColorEE" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.2}/>
+                            <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" opacity={0.5} />
+                        <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                        <YAxis domain={[80, 100]} tick={{ fontSize: 10, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                        <Tooltip contentStyle={{ background: '#0f172a', border: 'none', borderRadius: '8px', color: '#fff', fontSize: '10px' }} />
+                        <Area type="monotone" dataKey="CS" name="Computing & AI" stroke="#2563eb" strokeWidth={2} fillOpacity={1} fill="url(#adminColorCS)" />
+                        <Area type="monotone" dataKey="EE" name="Engineering" stroke="#6366f1" strokeWidth={2} fillOpacity={1} fill="url(#adminColorEE)" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Upcoming school events timeline widget */}
+                <div className="bg-white rounded-xl border border-slate-150 p-5 shadow-sm">
+                  <div className="border-b border-slate-100 pb-3 mb-4">
+                    <h3 className="text-xs font-black uppercase text-slate-800 dark:text-white tracking-wider flex items-center gap-1.5 font-display">
+                      <Calendar className="w-4 h-4 text-blue-600" />
+                      Institutional Events & Deadlines Calendar
+                    </h3>
+                    <p className="text-[10px] text-slate-500 mt-0.5 font-sans">Chronological timeline of upcoming academic and staff administration events.</p>
+                  </div>
+                  <div className="relative pl-6 border-l border-slate-100 dark:border-slate-850 space-y-5 py-2 font-sans">
+                    <div className="relative">
+                      <span className="absolute -left-[30px] top-1 w-2.5 h-2.5 bg-blue-600 border-2 border-white dark:border-slate-900 rounded-full" />
+                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1">
+                        <h4 className="text-xs font-bold text-slate-850 dark:text-slate-100">Semester II Exam Period Commences</h4>
+                        <span className="text-[9px] font-mono text-slate-400 bg-slate-50 px-2 py-0.5 rounded border border-slate-200/50">July 14, 2026</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-0.5 font-sans">Official examination booklets distributed to departmental chairs. Invigilation roster published.</p>
+                    </div>
+                    <div className="relative">
+                      <span className="absolute -left-[30px] top-1 w-2.5 h-2.5 bg-emerald-600 border-2 border-white dark:border-slate-900 rounded-full" />
+                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1">
+                        <h4 className="text-xs font-bold text-slate-850 dark:text-slate-100">Alika Medical Healthcare Symposium & Practical Clinic</h4>
+                        <span className="text-[9px] font-mono text-slate-400 bg-slate-50 px-2 py-0.5 rounded border border-slate-200/50">July 18, 2026</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-0.5 font-sans">Caregiver and Nurse Assistant trainees present clinical case studies before external examiners.</p>
+                    </div>
+                    <div className="relative">
+                      <span className="absolute -left-[30px] top-1 w-2.5 h-2.5 bg-purple-600 border-2 border-white dark:border-slate-900 rounded-full" />
+                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1">
+                        <h4 className="text-xs font-bold text-slate-850 dark:text-slate-100">Board of Trustees Budget Review</h4>
+                        <span className="text-[9px] font-mono text-slate-400 bg-slate-50 px-2 py-0.5 rounded border border-slate-200/50">July 22, 2026</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-0.5 font-sans">Financial auditor presents Semester I reconciliations and Semester II requisitions approvals.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Column: critical system alerts and financial transactions */}
+              <div className="lg:col-span-4 space-y-6">
+                {/* Critical system/staff alerts widget */}
+                <div className="bg-white rounded-xl border border-slate-150 p-5 shadow-sm">
+                  <div className="border-b border-slate-100 pb-3 mb-4">
+                    <h3 className="text-xs font-black uppercase text-slate-800 dark:text-white tracking-wider flex items-center gap-1.5 font-display">
+                      <AlertCircle className="w-4 h-4 text-rose-500" />
+                      Critical Alerts & Alarms
+                    </h3>
+                    <p className="text-[9px] text-slate-500">Real-time system telemetry and action requirements.</p>
+                  </div>
+                  <div className="space-y-3 font-sans">
+                    <div className="p-3 bg-rose-50/45 dark:bg-rose-950/10 border border-rose-100 dark:border-rose-900/30 rounded-lg text-xs flex gap-2.5 items-start text-rose-850">
+                      <AlertCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <p className="font-medium leading-relaxed text-[11px]">System Backup failure detected on secondary cluster Node-B.</p>
+                        <span className="text-[9px] opacity-75 font-mono">12 mins ago</span>
+                      </div>
+                    </div>
+                    <div className="p-3 bg-amber-50/45 dark:bg-amber-950/10 border border-amber-100 dark:border-amber-900/30 rounded-lg text-xs flex gap-2.5 items-start text-amber-850">
+                      <AlertCircle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <p className="font-medium leading-relaxed text-[11px]">3 Faculty member timesheets awaiting approval for Period II.</p>
+                        <span className="text-[9px] opacity-75 font-mono">40 mins ago</span>
+                      </div>
+                    </div>
+                    <div className="p-3 bg-blue-50/45 dark:bg-blue-950/10 border border-blue-100 dark:border-blue-900/30 rounded-lg text-xs flex gap-2.5 items-start text-blue-850">
+                      <Info className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <p className="font-medium leading-relaxed text-[11px]">Automatic library loan scan completed: 18 overdue books auto-notified.</p>
+                        <span className="text-[9px] opacity-75 font-mono">2 hours ago</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Recent financial transactions module */}
+                <div className="bg-white rounded-xl border border-slate-150 p-5 shadow-sm">
+                  <div className="border-b border-slate-100 pb-3 mb-4">
+                    <h3 className="text-xs font-black uppercase text-slate-800 dark:text-white tracking-wider flex items-center gap-1.5 font-display">
+                      <DollarSign className="w-4 h-4 text-emerald-600" />
+                      Recent Financial Transactions
+                    </h3>
+                    <p className="text-[9px] text-slate-500 font-sans">Live ledger invoices and outgoing purchase accounts.</p>
+                  </div>
+                  <div className="divide-y divide-slate-100 dark:divide-slate-800 text-xs font-sans">
+                    {loadingTransactions ? (
+                      <p className="text-[10px] text-slate-400 py-3 text-center">Loading transactions...</p>
+                    ) : recentTransactions.length === 0 ? (
+                      <p className="text-[10px] text-slate-400 py-3 text-center">No recent transactions found.</p>
+                    ) : (
+                      recentTransactions.map((tx) => {
+                        const isIncome = Number(tx.amount) >= 0;
+                        return (
+                          <div key={tx.id || tx.reference_no} className="py-2.5 first:pt-0 flex items-center justify-between gap-3">
+                            <div>
+                              <div className="flex items-center gap-1.5 font-bold">
+                                <span>{tx.recipient_sender}</span>
+                                <span className="text-[9px] font-mono text-slate-400">{tx.reference_no}</span>
+                              </div>
+                              <p className="text-[9px] text-slate-500 font-sans">
+                                {tx.description} •{' '}
+                                <span className="font-mono text-slate-400">
+                                  {tx.created_at ? new Date(tx.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'Recent'}
+                                </span>
+                              </p>
+                            </div>
+                            <span className={`font-bold font-mono text-right ${isIncome ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              {isIncome ? '+' : ''}{tx.currency || 'KES'} {Math.abs(Number(tx.amount)).toLocaleString()}
+                            </span>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {/* TAB 1: ACADEMICS WORKSPACE */}
+        {activeTab === 'academics' && (
+          <div className="space-y-8">
+            
+            <div className="grid md:grid-cols-2 gap-8 items-start">
+              
+              {/* Course Creator Form Component */}
+              <div className="space-y-4">
+                <div className="border-b border-slate-100 pb-3">
+                  <h3 className="text-base font-bold text-slate-800 flex items-center gap-1.5">
+                    <Plus className="w-5 h-5 text-blue-600" />
+                    Publish Live Course Syllabus
+                  </h3>
+                  <p className="text-xs text-slate-500">Creating a course here instantly lists the program inside the public landing page portfolio grid.</p>
+                </div>
+
+                <form onSubmit={handleCreateCourse} className="space-y-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label htmlFor="course-title" className="block text-[11px] font-bold text-slate-650">Course Program Name</label>
+                      <input
+                        id="course-title"
+                        type="text"
+                        placeholder="B.Sc. Mechanical Eng"
+                        value={newTitle}
+                        onChange={(e) => setNewTitle(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-hidden"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="course-code" className="block text-[11px] font-bold text-slate-650">Program Subject Code</label>
+                      <input
+                        id="course-code"
+                        type="text"
+                        placeholder="MECH-401"
+                        value={newCode}
+                        onChange={(e) => setNewCode(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-hidden"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label htmlFor="course-desc" className="block text-[11px] font-bold text-slate-650">Syllabus Narrative Description</label>
+                    <textarea
+                      id="course-desc"
+                      placeholder="Comprehensive study of thermodynamics, physical fluids, machine mechanisms, CAD modeling..."
+                      value={newDesc}
+                      onChange={(e) => setNewDesc(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-hidden h-20"
+                    />
+                  </div>
+
+                  <div className="grid gap-3">
+                    <div className="space-y-1">
+                      <label htmlFor="course-thumbnail-url" className="block text-[11px] font-bold text-slate-650">Course Thumbnail URL</label>
+                      <input
+                        id="course-thumbnail-url"
+                        type="text"
+                        placeholder="https://example.com/course-cover.jpg"
+                        value={newThumbnail}
+                        onChange={(e) => setNewThumbnail(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-hidden"
+                      />
+                      <p className="text-[11px] text-slate-400">Paste an image URL or upload a cover image below.</p>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label htmlFor="course-thumbnail-file" className="block text-[11px] font-bold text-slate-650">Upload Course Image</label>
+                      <input
+                        id="course-thumbnail-file"
+                        type="file"
+                        accept="image/png,image/jpeg,image/jpg"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          setNewThumbnailFile(file);
+                          setThumbnailUploadError('');
+                          setThumbnailLoadError(false);
+
+                          const localUrl = URL.createObjectURL(file);
+                          setLocalThumbnailPreview(localUrl);
+                          setIsThumbnailUploading(true);
+
+                          try {
+                            const formData = new FormData();
+                            formData.append('image', file);
+
+                            const response = await fetch('/api/admin/courses/upload-thumbnail', {
+                              method: 'POST',
+                              body: formData,
+                              headers: { ...getAuthHeaders(false) },
+                            });
+
+                            if (!response.ok) {
+                              const errorData = await response.json();
+                              throw new Error(errorData?.error || 'Upload failed.');
+                            }
+
+                            const payload = await response.json();
+                            setNewThumbnail(payload.fileUrl || newThumbnail);
+                            setLocalThumbnailPreview('');
+                            toast.success('Course image uploaded successfully.');
+                          } catch (error: any) {
+                            console.error('Thumbnail upload error:', error);
+                            setThumbnailUploadError(error?.message || 'Failed to upload course image.');
+                          } finally {
+                            setIsThumbnailUploading(false);
+                          }
+                        }}
+                        className="w-full text-xs text-slate-700 file:border file:border-slate-200 file:bg-slate-50 file:px-3 file:py-2 file:text-xs file:text-slate-900 rounded-lg"
+                      />
+                      {isThumbnailUploading && <p className="text-[11px] text-slate-500">Uploading image...</p>}
+                      {thumbnailUploadError && <p className="text-[11px] text-rose-600">{thumbnailUploadError}</p>}
+                    </div>
+
+                    {(imagePreviewSrc || newThumbnail) && (
+                      <div className="rounded-xl overflow-hidden border border-slate-200 bg-slate-50">
+                        {thumbnailLoadError ? (
+                          <div className="w-full h-40 bg-slate-100 flex flex-col items-center justify-center gap-2 text-slate-500 text-xs">
+                            <div className="w-10 h-10 rounded-full bg-slate-200 flex items-center justify-center text-slate-400">!</div>
+                            <span>Image unavailable</span>
+                            <span className="text-[10px] text-slate-400">Please upload another image or verify the URL.</span>
+                          </div>
+                        ) : (
+                          <img
+                            src={imagePreviewSrc}
+                            alt="Course thumbnail preview"
+                            className="w-full h-40 object-cover"
+                            onError={(event) => {
+                              const failedUrl = (event.currentTarget as HTMLImageElement).src;
+                              setThumbnailLoadError(true);
+                              setThumbnailFailedUrl(failedUrl);
+                              const isDev = typeof import.meta !== 'undefined' && (import.meta as any).env?.DEV;
+                              if (isDev) {
+                                console.error('Course thumbnail failed to load:', failedUrl);
+                              }
+                            }}
+                          />
+                        )}
+                        <div className="p-2 flex gap-2 items-center justify-between">
+                          <button
+                            type="button"
+                            onClick={clearThumbnailSelection}
+                            className="text-[11px] text-rose-600 bg-rose-50 border border-rose-100 px-2 py-1 rounded"
+                          >
+                            Remove image
+                          </button>
+                          {thumbnailLoadError && (
+                            <span className="text-[10px] text-slate-400">Preview could not be loaded.</span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <label htmlFor="course-dur" className="block text-[11px] font-bold text-slate-650">Duration Title</label>
+                      <select
+                        id="course-dur"
+                        value={newDuration}
+                        onChange={(e) => setNewDuration(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-hidden"
+                      >
+                        <option>3 Years</option>
+                        <option>4 Years</option>
+                        <option>5 Years</option>
+                        <option>2 Years</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label htmlFor="course-fees" className="block text-[11px] font-bold text-slate-650">Fees (KES)</label>
+                      <input
+                        id="course-fees"
+                        type="number"
+                        placeholder="160000"
+                        value={newFees}
+                        onChange={(e) => setNewFees(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-hidden"
+                        required
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label htmlFor="course-fac" className="block text-[11px] font-bold text-slate-650">School Faculty</label>
+                      <select
+                        id="course-fac"
+                        value={newFaculty}
+                        onChange={(e) => setNewFaculty(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-hidden"
+                      >
+                        <option>School of Computing & AI</option>
+                        <option>School of Engineering</option>
+                        <option>School of Science Studies</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-lg text-xs cursor-pointer"
+                  >
+                    Publish Course Live
+                  </button>
+                </form>
+              </div>
+
+              {/* Subject Allocator Dropdown Engine */}
+              <div className="space-y-6">
+                <div className="border-b border-slate-100 pb-3">
+                  <h3 className="text-base font-bold text-slate-800 flex items-center gap-1.5">
+                    <ClipboardCheck className="w-5 h-5 text-blue-600" />
+                    Class & Lecturer Unit Allocator
+                  </h3>
+                  <p className="text-xs text-slate-500">Assign corresponding classes and subjects directly to certified lecturers inside rosters.</p>
+                </div>
+
+                <form onSubmit={handleAllocateSubjectSubmit} className="space-y-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
+                  <div className="space-y-1.5">
+                    <label htmlFor="alloc-lecturer" className="block text-[11px] font-bold text-slate-650">Certified Lecturer</label>
+                    <select
+                      id="alloc-lecturer"
+                      value={allocateLecturerId}
+                      onChange={(e) => setAllocateLecturerId(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-800 focus:outline-hidden"
+                      required
+                    >
+                      <option value="">-- Choose Lecturer profile --</option>
+                      {lecturers.map(l => (
+                        <option key={l.id} value={l.id}>{l.name} ({l.designatorCode})</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label htmlFor="alloc-subject" className="block text-[11px] font-bold text-slate-650">Subject Class Codes</label>
+                    <select
+                      id="alloc-subject"
+                      value={allocateSubjectCode}
+                      onChange={(e) => setAllocateSubjectCode(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-800 focus:outline-hidden"
+                      required
+                    >
+                      <option value="">-- Choose Class code --</option>
+                      {courses.filter((course) => course.active !== false).map((course) => (
+                        <option key={course.code} value={course.code}>{course.code} - {course.title}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full bg-indigo-650 hover:bg-slate-900 text-white font-bold py-2 rounded-lg text-xs cursor-pointer transition-colors"
+                  >
+                    Allocate Lecturer Subject
+                  </button>
+                </form>
+              </div>
+
+            </div>
+
+            {/* Course Catalog list table */}
+            <div className="space-y-3 pt-4 border-t border-slate-100">
+              <h3 className="text-xs uppercase font-bold text-slate-400 tracking-wider">Course Catalog Database Status</h3>
+              <div className="overflow-x-auto border border-slate-100 rounded-xl">
+                <table className="w-full text-left font-sans text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-500 font-bold uppercase tracking-wider text-[11px] border-b border-slate-100">
+                      <th className="py-3 px-4">Subject Code</th>
+                      <th className="py-3 px-4">Syllabus Title</th>
+                      <th className="py-3 px-4">Duration</th>
+                      <th className="py-3 px-5">Fees</th>
+                      <th className="py-3 px-4">Portal Visibility status</th>
+                      <th className="py-3 px-4 text-center">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {courses.map((c) => (
+                      <tr key={c.id} className="hover:bg-slate-50/20">
+                        <td className="py-3.5 px-4 font-mono font-bold text-slate-700">{c.code}</td>
+                        <td className="py-3.5 px-4 font-semibold text-slate-900">{c.title}</td>
+                        <td className="py-3.5 px-4 text-slate-505">{c.duration}</td>
+                        <td className="py-3.5 px-5 font-bold text-slate-850">KES {c.fees.toLocaleString()}</td>
+                        <td className="py-3.5 px-4">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                            c.active 
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-100' 
+                              : 'bg-slate-100 text-slate-500 border-slate-200'
+                          }`}>
+                            {c.active ? 'Visible Landing Grid' : 'Hidden Archival'}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          <button
+                            type="button"
+                            onClick={() => onToggleCourseActive(c.id)}
+                            className={`text-[10px] font-bold px-3 py-1 rounded transition-colors cursor-pointer ${
+                              c.active 
+                                ? 'bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100' 
+                                : 'bg-slate-900 text-white hover:bg-slate-805'
+                            }`}
+                          >
+                            {c.active ? 'Disable Listing' : 'Set Active'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Admitted students available for academic allocation (read from same PostgreSQL students table) */}
+            <div className="mt-6 space-y-3">
+              <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 p-4">
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Academic Allocation operates on students already admitted by Admissions. New student accounts are created under
+                  <span className="font-bold"> Admissions → Enrollment</span>, not here. The roster below uses the same student IDs from PostgreSQL.
+                </p>
+              </div>
+              <StudentRecordsTable
+                onUpdateStudent={onUpdateStudent}
+                refetchTrigger={studentTableRefetchTrigger}
+                canManageRecords={false}
+                title="Registered Students Eligible for Allocation"
+                description="Admitted/registered students from Admissions. Allocate classes, cohorts, and units using these existing records — do not create duplicate students."
+              />
+            </div>
+
+          </div>
+        )}
+
+        {/* TAB 2: FINANCIAL RECONCILIATION & ACCOUNTING HQ */}
+        {activeTab === 'finances' && (
+          <FinanceSuite
+            students={students}
+            lecturers={lecturers}
+            expenses={expenses}
+            onAddExpense={onAddExpense}
+            onUpdateStudent={onUpdateStudent}
+            onReconcilePayment={onReconcilePayment}
+            isAccountantView={isAccountantView}
+            currentUserId={currentUserId}
+          />
+        )}
+
+        {/* TAB 3: HR & PAYROLL MODULE */}
+        {activeTab === 'payroll' && (
+          <HRPayrollView
+            lecturers={lecturers}
+            onAddLecturer={onAddLecturer}
+            onUpdateLecturer={onUpdateLecturer}
+            onDeleteLecturer={onDeleteLecturer}
+          />
+        )}
+
+        {/* TAB 4: ASSETS & STOCK MANAGEMENT */}
+        {activeTab === 'inventory' && (
+          <div className="space-y-8">
+            
+            <div className="grid md:grid-cols-2 gap-8 items-start">
+              
+              {/* College property asset registrar form */}
+              <div className="space-y-4">
+                <div className="border-b border-slate-100 pb-3">
+                  <h3 className="text-base font-bold text-slate-800 flex items-center gap-1.5">
+                    <Package className="w-5 h-5 text-blue-600" />
+                    Asset Properties Registry Log
+                  </h3>
+                  <p className="text-xs text-slate-500">Track desktops, textbooks, dry erase pens, laboratory chemicals, and stationery levels.</p>
+                </div>
+
+                <form onSubmit={handleAddStockSubmit} className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-100">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label htmlFor="stock-item" className="block text-[11px] font-bold text-slate-650">Asset Property Name</label>
+                      <input
+                        id="stock-item"
+                        type="text"
+                        placeholder="Erlenmeyer Flasks 250ml"
+                        value={newItemName}
+                        onChange={(e) => setNewItemName(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs focus:outline-hidden text-slate-800"
+                        required
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label htmlFor="stock-qty" className="block text-[11px] font-bold text-slate-650">Quantity</label>
+                      <input
+                        id="stock-qty"
+                        type="number"
+                        placeholder="50"
+                        value={newQuantity}
+                        onChange={(e) => setNewQuantity(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs focus:outline-hidden text-slate-850"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <label htmlFor="stock-cat" className="block text-[11px] font-bold text-slate-650">Store Category</label>
+                      <select
+                        id="stock-cat"
+                        value={newItemCate}
+                        onChange={(e) => setNewItemCate(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs focus:outline-hidden border-slate-200 text-slate-800"
+                      >
+                        <option>Electronics</option>
+                        <option>Lab Equipment</option>
+                        <option>Stationery</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1 col-span-2">
+                      <label htmlFor="stock-loc" className="block text-[11px] font-bold text-slate-650">Warehouse Location / Shelf</label>
+                      <input
+                        id="stock-loc"
+                        type="text"
+                        placeholder="Science Annex Block Shelf B4"
+                        value={newItemLoc}
+                        onChange={(e) => setNewItemLoc(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs focus:outline-hidden text-slate-800"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label htmlFor="stock-thresh" className="block text text-[11px] font-bold text-slate-650">Lowest Warning Quantity Threshold</label>
+                    <input
+                      id="stock-thresh"
+                      type="number"
+                      placeholder="10"
+                      value={newItemThresh}
+                      onChange={(e) => setNewItemThresh(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs focus:outline-hidden text-slate-850"
+                      required
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full bg-blue-650 hover:bg-blue-750 text-white font-bold py-2 rounded-lg text-xs shadow-xs"
+                  >
+                    Add Property to Database
+                  </button>
+                </form>
+              </div>
+
+              {/* Digital Requisitionsapprovals list */}
+              <div className="space-y-4">
+                <div className="border-b border-slate-100 pb-3">
+                  <h3 className="text-base font-bold text-slate-800">Faculty Procurement & Requisition approvals</h3>
+                  <p className="text-xs text-slate-500">Approve or reject digital store requests submitted by on-campus personnel.</p>
+                </div>
+
+                {requisitions.length === 0 ? (
+                  <p className="text-xs italic text-slate-400">No student or lecturers requests logged in catalog.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {requisitions.map((req) => (
+                      <div key={req.id} className="bg-white border border-slate-200 p-4 rounded-xl shadow-2xs text-xs space-y-3">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <span className="bg-slate-105 bg-slate-50 border px-2 py-0.5 rounded text-[10px] uppercase font-bold text-slate-500">
+                              {req.status}
+                            </span>
+                            <h4 className="font-extrabold text-slate-900 text-sm mt-1">{req.itemName}</h4>
+                            <p className="text-[10px] text-slate-400">Requested by: {req.staffName} • {req.date}</p>
+                          </div>
+                          
+                          <span className="font-extrabold text-slate-900 text-sm">Qty: {req.quantity} units</span>
+                        </div>
+
+                        {req.status === 'pending' && (
+                          <div className="flex gap-2 pt-1 border-t border-slate-50">
+                            <button
+                              type="button"
+                              onClick={() => { onProcessRequisition(req.id, 'approved'); showToast('Requisition certified. Inventory dispatched.', 'success'); }}
+                              className="bg-emerald-50 hover:bg-emerald-100 text-emerald-850 hover:text-emerald-900 px-3 py-1.5 rounded-lg flex items-center gap-1 font-bold text-[10px] cursor-pointer"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                              <span>Authorize Dispatch</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => { onProcessRequisition(req.id, 'rejected'); showToast('Procurement query rejected.', 'info'); }}
+                              className="bg-red-50 hover:bg-red-105 text-red-650 hover:text-red-900 px-3 py-1.5 rounded-lg flex items-center gap-1 font-bold text-[10px] cursor-pointer border"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                              <span>Decline</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+            </div>
+
+            {/* Complete stock inventory table database */}
+            <div className="space-y-3 pt-4 border-t border-slate-100">
+              <h3 className="text-xs uppercase font-bold text-slate-400 tracking-wider">Physical Store Stock Database Registers</h3>
+              <div className="overflow-x-auto border border-slate-100 rounded-xl">
+                <table className="w-full text-left font-sans text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-500 font-bold uppercase tracking-wider text-[11px] border-b border-slate-100">
+                      <th className="py-3 px-4">Inventory Property Name</th>
+                      <th className="py-3 px-4">Log Category</th>
+                      <th className="py-3 px-4">Warehouse Location</th>
+                      <th className="py-3 px-4 text-center">Remaining Quantity</th>
+                      <th className="py-3 px-4 text-center">Threshold Alert Status</th>
+                      <th className="py-3 px-4 text-center">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {inventory.map((item) => {
+                      const isLow = item.quantity <= item.lowestThreshold;
+                      return (
+                        <tr key={item.id} className="hover:bg-slate-50/20">
+                          <td className="py-3.5 px-4 font-semibold text-slate-900">{item.name}</td>
+                          <td className="py-3.5 px-4 text-slate-505">{item.category}</td>
+                          <td className="py-3.5 px-4 font-mono text-slate-500">{item.location}</td>
+                          <td className="py-3.5 px-4 text-center font-bold text-slate-900">{item.quantity} units</td>
+                          
+                          <td className="py-3.5 px-4 text-center">
+                            <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black border ${
+                              isLow 
+                                ? 'bg-red-50 text-red-650 border-red-200 animate-pulse' 
+                                : 'bg-emerald-50 text-emerald-800 border-emerald-100'
+                            }`}>
+                              {isLow ? 'LOW STOCK RESTOCK NOW' : 'STOCK STABLE'}
+                            </span>
+                          </td>
+
+                          <td className="py-3.5 px-4 text-center">
+                            <div className="flex justify-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => onUpdateStockQuantity(item.id, 10)}
+                                className="bg-blue-600 hover:bg-slate-900 text-white font-bold p-1 px-2.5 rounded text-[10px] cursor-pointer"
+                                title="Add 10 items"
+                              >
+                                +10 units
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {activeTab === 'roles' && (
+          <div className="space-y-8 animate-fadeIn" id="role-management-workspace">
+            {/* Header Description Info card */}
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 flex flex-col md:flex-row gap-6 justify-between items-start md:items-center">
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                  <Shield className="w-5 h-5 text-blue-600" />
+                  Role & System Access Control Panel
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Assign user roles and configure restricted Accountant access to the college's balance ledgers & financial outlays.
+                </p>
+              </div>
+              <span className="text-[10px] bg-blue-100 text-blue-900 border border-blue-200 px-3 py-1 rounded font-mono font-bold uppercase tracking-wider">
+                Access Engine Status: Active
+              </span>
+            </div>
+
+            {/* PORTAL ACCESS LINKS FOR STAFF */}
+            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-slate-900/65 dark:to-indigo-950/20 border border-blue-150 dark:border-slate-800 rounded-3xl p-6 space-y-4 shadow-3xs" id="admin-portal-links-dispatcher">
+              <div className="flex items-start gap-3">
+                <Link className="w-5 h-5 text-indigo-600 dark:text-indigo-400 mt-0.5 shrink-0" />
+                <div className="space-y-1">
+                  <h4 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide">Administrative Portal Access Link Dispatcher</h4>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed max-w-4xl">
+                    Standard visitors are restricted to the Student login workspace. To allow faculty members, accountants, librarians, or administrators to access their respective workspaces, click to copy and distribute these secure access URLs.
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                {[
+                  { label: 'Lecturer Faculty Portal', param: 'lecturer', desc: 'Syllabus, Grades, Hours Logs' },
+                  { label: 'Finance Accountant Portal', param: 'accountant', desc: 'Fee Statements, Ledgers, Reports' },
+                  { label: 'Bibliotheca Librarian Portal', param: 'librarian', desc: 'LMS Reading List, Loans, Stock' },
+                  { label: 'Master Admin Portal', param: 'admin', desc: 'Global Control, Accounts, Payroll' },
+                  { label: 'General Staff Switchboard', param: 'staff', desc: 'Allows selection of all staff roles' },
+                ].map((item) => {
+                  const secureUrl = `${window.location.origin}/?portal=${item.param}`;
+                  return (
+                    <div key={item.param} className="bg-white dark:bg-slate-950 rounded-2xl border border-slate-200/80 dark:border-slate-800 p-4 flex flex-col justify-between gap-3 shadow-3xs hover:shadow-2xs transition-all">
+                      <div className="space-y-1">
+                        <span className="text-xs font-black text-slate-750 dark:text-slate-200 block tracking-tight leading-tight">{item.label}</span>
+                        <span className="text-[10px] text-slate-450 dark:text-slate-500 block font-light leading-snug">{item.desc}</span>
+                        <code className="text-[10px] bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-800/80 px-1.5 py-0.5 rounded font-mono text-indigo-600 dark:text-indigo-400 block mt-1.5 select-all break-all leading-tight">
+                          ?portal={item.param}
+                        </code>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(secureUrl);
+                          showToast(`Copied secure portal link for ${item.label} to clipboard!`, 'success');
+                        }}
+                        className="w-full inline-flex items-center justify-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:hover:bg-indigo-950/80 text-indigo-700 dark:text-indigo-400 font-extrabold py-2 px-3 rounded-xl text-[10.5px] cursor-pointer transition-colors"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copy URL</span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Grid layout of Roles Mapping Matrix */}
+            <div className="grid lg:grid-cols-3 md:grid-cols-2 gap-6">
+              {/* Role Matrix Explanation */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4">
+                <div>
+                  <h4 className="text-xs font-bold uppercase text-slate-700 tracking-wider flex items-center gap-1.5 mb-11">
+                    <Lock className="w-3.5 h-3.5 text-slate-500" />
+                    College Role Permissions Matrix
+                  </h4>
+                  <p className="text-[11px] text-slate-400">Current security guidelines for the Alika Medical portal system roles.</p>
+                </div>
+                
+                <div className="space-y-3.5 text-xs">
+                  {/* Row 1: Admin */}
+                  <div className="border border-slate-100 rounded-xl p-3 bg-slate-50/40">
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-blue-600"></span>
+                        Master Administrator (Admin)
+                      </span>
+                      <span className="text-[9px] bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded font-black uppercase">FULL ACCESS</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      Syllabus creation, student records modification, lecturer payroll conversions, bank disbursements, and global system configurations.
+                    </p>
+                  </div>
+
+                  {/* Row 2: Accountant */}
+                  <div className="border border-slate-100 rounded-xl p-3 bg-blue-50/10 border-blue-100">
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="font-bold text-blue-800 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                        Restricted Accountant
+                      </span>
+                      <span className="text-[9px] bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded font-black uppercase">RESTRICTED FINANCES</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      Assigned to specific staff. Grants exclusive access to the ledger entries, department expenditure summaries, payment reconciliation, and CSV reporting tools while locking out all other administrative panels.
+                    </p>
+                  </div>
+
+                  {/* Row 3: Lecturer */}
+                  <div className="border border-slate-100 rounded-xl p-3 bg-slate-50/40">
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-slate-400"></span>
+                        Lecturer / Faculty
+                      </span>
+                      <span className="text-[9px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-black uppercase">ACADEMICS ONLY</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      Manage course reviews, review enrolled student grades, and submit hourly logs for payment processing.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Fast Lookup and Accountant Promotion Card */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4">
+                <div>
+                  <h4 className="text-xs font-bold uppercase text-slate-700 tracking-wider flex items-center gap-1.5 mb-11">
+                    <Fingerprint className="w-4 h-4 text-blue-600" />
+                    Quick Accountant Assignment
+                  </h4>
+                  <p className="text-[11px] text-slate-400">Instantly toggle restricted Accountant access permissions for registered staff accounts.</p>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="relative">
+                    <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
+                      
+                    </span>
+                    <input
+                      type="text"
+                      placeholder="Search accounts by name or staff code..."
+                      value={roleSearch}
+                      onChange={(e) => setRoleSearch(e.target.value)}
+                      className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-hidden text-slate-800 animate-fadeIn"
+                      id="input-roles-search"
+                    />
+                    {roleSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setRoleSearch('')}
+                        className="absolute right-3 top-3 text-slate-400 hover:text-slate-600 font-bold text-xs"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                    {lecturers.filter(l => 
+                      l.name.toLowerCase().includes(roleSearch.toLowerCase()) ||
+                      l.designatorCode.toLowerCase().includes(roleSearch.toLowerCase())
+                    ).map(l => (
+                      <div key={l.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-xl border border-slate-150 text-xs text-slate-800">
+                        <div className="flex items-center gap-2.5">
+                          <img 
+                            src={l.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=150'} 
+                            alt={l.name}
+                            referrerPolicy="no-referrer"
+                            className="w-8 h-8 rounded-full border border-slate-200 object-cover opacity-80"
+                          />
+                          <div>
+                            <span className="font-bold block text-slate-800">{l.name}</span>
+                            <span className="font-mono text-[9px] text-slate-400">{l.designatorCode}</span>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (onUpdateLecturer) {
+                              onUpdateLecturer(l.id, { isAccountant: !l.isAccountant });
+                            }
+                          }}
+                          className={`px-3 py-1.5 rounded-lg text-[10px] font-extrabold cursor-pointer transition-all ${
+                            l.isAccountant 
+                              ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-3xs' 
+                              : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+                          }`}
+                        >
+                          {l.isAccountant ? '✓ Accountant Assigned' : 'Grant Accountant'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Quick Accountant Creation Card */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4">
+                <div>
+                  <h4 className="text-xs font-bold uppercase text-slate-700 tracking-wider flex items-center gap-1.5 mb-1 text-emerald-850">
+                    <Plus className="w-4 h-4 text-emerald-600" />
+                    Register New Accountant Staff
+                  </h4>
+                  <p className="text-[11px] text-slate-400">Add a dedicated financial staff directory folder with direct Accountant level clearance.</p>
+                </div>
+
+                <form onSubmit={(e) => {
+                  e.preventDefault();
+                  const targetName = (e.currentTarget.elements.namedItem('acc-name') as HTMLInputElement).value;
+                  const targetEmail = (e.currentTarget.elements.namedItem('acc-email') as HTMLInputElement).value;
+                  const targetCode = (e.currentTarget.elements.namedItem('acc-code') as HTMLInputElement).value;
+                  const targetRate = parseFloat((e.currentTarget.elements.namedItem('acc-rate') as HTMLInputElement).value);
+                  const targetPasscode = autoGenerateAccPasscode ? '' : (e.currentTarget.elements.namedItem('acc-passcode') as HTMLInputElement).value;
+
+                  if (!targetName || !targetEmail || !targetCode || isNaN(targetRate)) {
+                    showWarning("Missing Data", 'Please provide complete accountant data.');
+                    return;
+                  }
+
+                  onAddLecturer({
+                    name: targetName,
+                    email: targetEmail,
+                    phone: '+254 711 000000',
+                    hourlyRate: targetRate,
+                    bankDetails: 'NCBA Bank - Accountant Settlement',
+                    contractLength: 'Permanent',
+                    designatorCode: targetCode,
+                    subjects: [],
+                    isAccountant: true,
+                    passcode: targetPasscode
+                  });
+                  setAutoGenerateAccPasscode(true);
+
+                  e.currentTarget.reset();
+                  showRegistrationModal({
+                    name: targetName,
+                    idOrAdmissionNo: targetCode,
+                    temporaryPasscode: targetPasscode || 'accPass123',
+                    role: 'Finance / Accountant',
+                    department: 'Finance Department',
+                    email: targetEmail
+                  });
+                }} className="space-y-3.5">
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div className="space-y-1">
+                      <label htmlFor="acc-name" className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Full Name</label>
+                      <input
+                        id="acc-name"
+                        name="acc-name"
+                        type="text"
+                        placeholder="Grace Wanjiku"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs focus:outline-hidden text-slate-800"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="acc-code" className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Designation ID</label>
+                      <input
+                        id="acc-code"
+                        name="acc-code"
+                        type="text"
+                        placeholder="ACC-404"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs focus:outline-hidden text-slate-800"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div className="space-y-1">
+                      <label htmlFor="acc-email" className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Email Address</label>
+                      <input
+                        id="acc-email"
+                        name="acc-email"
+                        type="email"
+                        placeholder="g.wanjiku@alikamedical.co.ke"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs focus:outline-hidden text-slate-800"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="acc-rate" className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Hourly Pay (KES)</label>
+                      <input
+                        id="acc-rate"
+                        name="acc-rate"
+                        type="number"
+                        placeholder="1800"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs focus:outline-hidden text-slate-800"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Account Passcode Configuration</label>
+                    <div className="flex flex-col gap-2 bg-slate-50 p-3 rounded-xl border border-slate-100">
+                      <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={autoGenerateAccPasscode}
+                          onChange={(e) => setAutoGenerateAccPasscode(e.target.checked)}
+                          className="rounded border-slate-300 text-indigo-650 focus:ring-indigo-500 h-3.5 w-3.5 cursor-pointer"
+                        />
+                        <span>Securely auto-generate random passcode (Recommended)</span>
+                      </label>
+                      
+                      {!autoGenerateAccPasscode && (
+                        <div className="mt-1 space-y-1">
+                          <label htmlFor="acc-passcode" className="block text-[9px] font-bold text-slate-500 uppercase tracking-wider font-mono">Custom Passcode</label>
+                          <input
+                            id="acc-passcode"
+                            name="acc-passcode"
+                            type="password"
+                            placeholder="Enter custom passcode"
+                            className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs focus:outline-hidden text-slate-800 font-mono"
+                            required={!autoGenerateAccPasscode}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-2.5 rounded-xl text-xs transition-colors cursor-pointer shadow-3xs"
+                  >
+                    Create Accountant Account
+                  </button>
+                </form>
+              </div>
+            </div>
+
+            {/* List Table of System Access Directory */}
+            <div className="space-y-3">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-100 pb-3">
+                <div>
+                  <h4 className="text-xs font-bold uppercase text-slate-700 tracking-wider">Comprehensive Account Access Catalog</h4>
+                  <p className="text-[11px] text-slate-400">View and audit general, administrative, and financial authorization tokens of all personnel.</p>
+                </div>
+                <div className="text-[10px] font-mono text-slate-400">
+                  Total Active Personnel: {lecturers.length}
+                </div>
+              </div>
+
+              <div className="overflow-x-auto border border-slate-150 rounded-2xl bg-white shadow-3xs animate-fadeIn">
+                <table className="w-full text-left font-sans text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-500 font-bold uppercase tracking-wider text-[11px] border-b border-slate-100">
+                      <th className="py-3.5 px-5">Designation ID</th>
+                      <th className="py-3.5 px-5">Personnel Name</th>
+                      <th className="py-3.5 px-5">Email Address</th>
+                      <th className="py-3.5 px-5">Primary System Role</th>
+                      <th className="py-3.5 px-5">Accountant Access Control</th>
+                      <th className="py-3.5 px-5 text-center">Security Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {lecturers.map((l) => (
+                      <tr key={l.id} className="hover:bg-slate-50/30">
+                        <td className="py-4 px-5 font-mono text-[11px] font-bold text-slate-500">
+                          {l.designatorCode}
+                        </td>
+                        <td className="py-4 px-5 font-semibold text-slate-900">
+                          {l.name}
+                        </td>
+                        <td className="py-4 px-5 text-slate-505 font-medium">
+                          {l.email}
+                        </td>
+                        <td className="py-4 px-5">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase text-slate-700 bg-slate-100 border border-slate-200">
+                            LECTURER
+                          </span>
+                        </td>
+                        <td className="py-4 px-5">
+                          <div className="flex items-center gap-1.5">
+                            <span className={`w-1.5 h-1.5 rounded-full ${l.isAccountant ? 'bg-emerald-500' : 'bg-slate-350'}`}></span>
+                            <span className={`font-semibold ${l.isAccountant ? 'text-emerald-700' : 'text-slate-500'}`}>
+                              {l.isAccountant ? 'Authorized Accountant Account' : 'Standard Access'}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-4 px-5 text-center">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (onUpdateLecturer) {
+                                onUpdateLecturer(l.id, { isAccountant: !l.isAccountant });
+                              }
+                            }}
+                            className={`px-3 py-1.5 rounded-lg text-[10px] font-black cursor-pointer transition-colors ${
+                              l.isAccountant 
+                                ? 'bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200' 
+                                : 'bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200'
+                            }`}
+                          >
+                            {l.isAccountant ? 'Revoke accountant Role' : 'Grant Accountant Role'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Password Reset Requests Section */}
+            <div className="space-y-4 border-t border-slate-100 dark:border-slate-800 pt-6">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-2">
+                <div className="space-y-0.5">
+                  <h4 className="text-sm font-black uppercase text-slate-800 dark:text-slate-100 tracking-wide flex items-center gap-2">
+                    <KeyRound className="w-4 h-4 text-blue-600" />
+                    <span>Password Reset Requests Queue</span>
+                  </h4>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Review and action password reset requests submitted by students and faculty staff.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={fetchResetRequests}
+                  disabled={isFetchingResets}
+                  className="bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isFetchingResets ? 'animate-spin' : ''}`} />
+                  <span>Refresh Queue</span>
+                </button>
+              </div>
+
+              {resetError && (
+                <div className="bg-red-50 text-red-600 border border-red-100 text-xs p-3 rounded-xl">
+                  {resetError}
+                </div>
+              )}
+
+              {resetRequests.length === 0 ? (
+                <div className="border border-dashed border-slate-200 dark:border-slate-800 rounded-3xl p-8 text-center bg-slate-50/20">
+                  <KeyRound className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                  <p className="text-xs text-slate-450 dark:text-slate-500">No password reset requests are currently pending review.</p>
+                </div>
+              ) : (
+                <div className="grid md:grid-cols-2 gap-4">
+                  {resetRequests.map((req) => (
+                    <div 
+                      key={req.id} 
+                      className={`rounded-2xl border p-4.5 space-y-3.5 bg-white dark:bg-slate-950 transition-all ${
+                        req.status === 'pending' 
+                          ? 'border-blue-150 shadow-3xs hover:border-blue-300' 
+                          : 'border-slate-200 dark:border-slate-850 opacity-80'
+                      }`}
+                    >
+                      <div className="flex justify-between items-start gap-2">
+                        <div>
+                          <span className="text-[10px] font-bold text-slate-400 font-mono tracking-wider block uppercase">{req.date}</span>
+                          <h5 className="text-xs font-bold text-slate-800 dark:text-slate-200">{req.name}</h5>
+                          <p className="text-[11px] text-slate-500">{req.email}</p>
+                        </div>
+                        <span className={`text-[9px] font-black px-2 py-0.5 rounded-md border uppercase font-mono ${
+                          req.status === 'pending'
+                            ? 'bg-amber-50 text-amber-700 border-amber-200'
+                            : req.status === 'resolved'
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : 'bg-rose-50 text-rose-700 border-rose-200'
+                        }`}>
+                          {req.status}
+                        </span>
+                      </div>
+
+                      <div className="bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-850 p-2.5 rounded-xl">
+                        <span className="text-[10px] text-slate-400 block font-bold font-mono tracking-wider uppercase mb-1">Reason for request:</span>
+                        <p className="text-xs text-slate-700 dark:text-slate-300 italic">" {req.reason} "</p>
+                      </div>
+
+                      <div className="flex items-center gap-1 text-[11px] text-slate-600 dark:text-slate-400 font-medium">
+                        <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
+                        <span>Role: <strong className="capitalize">{req.role}</strong> (UID: {req.userId})</span>
+                      </div>
+
+                      {/* Pending actions form */}
+                      {req.status === 'pending' && (
+                        <div className="border-t border-slate-100 dark:border-slate-800/60 pt-3.5 space-y-3">
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="space-y-1">
+                              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">Assigned Temporary Passcode</label>
+                              <input
+                                type="text"
+                                placeholder="e.g. 5831 (Empty for random)"
+                                value={resetPasscodeMap[req.id] || ''}
+                                onChange={(e) => setResetPasscodeMap(prev => ({ ...prev, [req.id]: e.target.value }))}
+                                className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-2 text-xs focus:outline-hidden text-slate-800"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">Admin Response Feedback</label>
+                              <input
+                                type="text"
+                                placeholder="Optional instructions..."
+                                value={resetFeedbackMap[req.id] || ''}
+                                onChange={(e) => setResetFeedbackMap(prev => ({ ...prev, [req.id]: e.target.value }))}
+                                className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-2 text-xs focus:outline-hidden text-slate-800"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleActionResetRequest(req.id, 'reject')}
+                              className="flex-1 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-extrabold py-2 rounded-xl text-xs transition-colors cursor-pointer"
+                            >
+                              Decline Request
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleActionResetRequest(req.id, 'approve')}
+                              className="flex-2 bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-2 rounded-xl text-xs transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                            >
+                              <Check className="w-4 h-4" />
+                              <span>Approve & Reset</span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Resolved State Details */}
+                      {req.status === 'resolved' && (
+                        <div className="bg-emerald-50/20 border border-emerald-100/50 rounded-xl p-3 space-y-1.5 text-xs text-slate-650">
+                          <p className="font-semibold text-emerald-850 dark:text-emerald-400 flex items-center gap-1">
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Request Approved & Passcode Reset</span>
+                          </p>
+                          <p>
+                            <span className="font-bold text-slate-500">Temporary Passcode:</span> <code className="font-mono bg-white border border-emerald-150 px-1.5 py-0.5 rounded text-emerald-700 font-black">{req.temporaryPasscode}</code>
+                          </p>
+                          {req.adminFeedback && (
+                            <p className="text-[11px] leading-relaxed"><span className="font-bold text-slate-500">Note:</span> {req.adminFeedback}</p>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Rejected State Details */}
+                      {req.status === 'rejected' && (
+                        <div className="bg-rose-50/20 border border-rose-100/50 rounded-xl p-3 space-y-1 text-xs text-slate-650">
+                          <p className="font-semibold text-rose-850 dark:text-rose-400 flex items-center gap-1">
+                            <X className="w-3.5 h-3.5" />
+                            <span>Request Declined by Administrator</span>
+                          </p>
+                          {req.adminFeedback && (
+                            <p className="text-[11px] leading-relaxed"><span className="font-bold text-slate-500">Reason:</span> {req.adminFeedback}</p>
+                          )}
+                        </div>
+                      )}
+
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'library' && (
+          <LibraryHQ
+            books={books}
+            loans={loans}
+            reservations={reservations}
+            students={students}
+            lecturers={lecturers}
+            bookRequests={bookRequests}
+            libraryGateLogs={libraryGateLogs}
+            onAddBook={onAddBook}
+            onUpdateBook={onUpdateBook}
+            onCheckoutBook={onCheckoutBook}
+            onReturnBook={onReturnBook}
+            onUpdateBookRequestStatus={onUpdateBookRequestStatus}
+            onTriggerGateLog={onTriggerGateLog}
+          />
+        )}
+
+        {activeTab === 'admissions' && (
+          <div className="space-y-6">
+            {/* ADMISSIONS NAVIGATION HEADER & BREADCRUMB */}
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-widest mb-1">
+                    <School className="w-4 h-4" />
+                    <span>Admissions & Outreach Hub</span>
+                  </div>
+                  <h2 className="text-xl font-black text-slate-900 dark:text-white tracking-tight">
+                    {admissionsSubTab === 'dashboard' && 'Admissions Overview'}
+                    {admissionsSubTab === 'consultations' && 'Consultation Requests & Inquiries'}
+                    {admissionsSubTab === 'applications' && 'Application Management'}
+                    {admissionsSubTab === 'applicants' && 'Applicant Directory'}
+                    {admissionsSubTab === 'enrollment' && 'Student Admission & Enrollment'}
+                  </h2>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    {admissionsSubTab === 'enrollment'
+                      ? 'Admit students, issue admission numbers, create portal accounts, and maintain the student master registry.'
+                      : 'Streamline prospective student consultations, track application workflows, and review applicant dossiers.'}
+                  </p>
+                </div>
+
+                {/* Sub-tab Pills */}
+                <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-850 p-1.5 rounded-xl border border-slate-200 dark:border-slate-800 self-start md:self-auto">
+                  <button
+                    type="button"
+                    onClick={() => { setAdmissionsSubTab('dashboard'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/dashboard'); }}
+                    className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${admissionsSubTab === 'dashboard' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}
+                  >
+                    Dashboard
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAdmissionsSubTab('consultations'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/consultations'); }}
+                    className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${admissionsSubTab === 'consultations' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}
+                  >
+                    <span>Consultations</span>
+                    {consultations.filter(c => c.status === 'pending').length > 0 && (
+                      <span className="w-4 h-4 rounded-full bg-amber-500 text-slate-950 font-black text-[10px] flex items-center justify-center">
+                        {consultations.filter(c => c.status === 'pending').length}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAdmissionsSubTab('applications'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/applications'); }}
+                    className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${admissionsSubTab === 'applications' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}
+                  >
+                    Applications
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAdmissionsSubTab('applicants'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/applicants'); }}
+                    className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${admissionsSubTab === 'applicants' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}
+                  >
+                    Applicants
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAdmissionsSubTab('enrollment'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/enrollment'); }}
+                    className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${admissionsSubTab === 'enrollment' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}
+                  >
+                    Enrollment
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* SUB-TAB: DASHBOARD */}
+            {admissionsSubTab === 'dashboard' && (
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
+                    <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-2">
+                      <span className="text-xs font-bold uppercase tracking-wider">Total Consultations</span>
+                      <BookOpen className="w-4 h-4 text-blue-500" />
+                    </div>
+                    <div className="text-3xl font-black text-slate-900 dark:text-white">{consultations.length}</div>
+                    <p className="text-[11px] text-slate-500 mt-2 font-medium">Recorded consultation requests</p>
+                  </div>
+                  <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
+                    <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-2">
+                      <span className="text-xs font-bold uppercase tracking-wider">Pending Action</span>
+                      <Clock className="w-4 h-4 text-amber-500" />
+                    </div>
+                    <div className="text-3xl font-black text-amber-600 dark:text-amber-400">
+                      {consultations.filter(c => c.status === 'pending').length}
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-2 font-medium">Requests awaiting response</p>
+                  </div>
+                  <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
+                    <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-2">
+                      <span className="text-xs font-bold uppercase tracking-wider">Total Applications</span>
+                      <FileText className="w-4 h-4 text-emerald-500" />
+                    </div>
+                    <div className="text-3xl font-black text-slate-900 dark:text-white">{applications.length}</div>
+                    <p className="text-[11px] text-slate-500 mt-2 font-medium">Formal enrollment applications</p>
+                  </div>
+                  <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
+                    <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-2">
+                      <span className="text-xs font-bold uppercase tracking-wider">Active Applicants</span>
+                      <Users className="w-4 h-4 text-indigo-500" />
+                    </div>
+                    <div className="text-3xl font-black text-slate-900 dark:text-white">{applications.length}</div>
+                    <p className="text-[11px] text-slate-500 mt-2 font-medium">Unique applicant dossiers</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Quick Action Box */}
+                  <div className="bg-gradient-to-br from-blue-900 to-indigo-950 text-white rounded-2xl p-6 shadow-xl border border-blue-800/50">
+                    <h3 className="text-lg font-bold flex items-center gap-2 mb-2">
+                      <School className="w-5 h-5 text-blue-400" />
+                      Consultation Operations
+                    </h3>
+                    <p className="text-xs text-blue-200 leading-relaxed mb-4">
+                      Review prospective student inquiries, reply to consultation messages, and update appointment statuses to guide prospective students into enrollment.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => { setAdmissionsSubTab('consultations'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/consultations'); }}
+                      className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl transition-all cursor-pointer shadow-md flex items-center gap-2"
+                    >
+                      <span>Open Consultations Workspace</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Recent Consultations Snapshot */}
+                  <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="text-sm font-bold text-slate-900 dark:text-white">Recent Inquiries</h4>
+                      <button
+                        type="button"
+                        onClick={() => { setAdmissionsSubTab('consultations'); if (onNavigateRoute) onNavigateRoute('/admin/admissions/consultations'); }}
+                        className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline"
+                      >
+                        View All
+                      </button>
+                    </div>
+                    <div className="space-y-2.5">
+                      {consultations.slice(0, 4).map(c => (
+                        <div key={c.id} className="p-3 bg-slate-50 dark:bg-slate-850 rounded-xl border border-slate-200/60 dark:border-slate-800 flex items-center justify-between">
+                          <div>
+                            <h5 className="text-xs font-bold text-slate-900 dark:text-white">{c.full_name}</h5>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400">{c.consultation_type} • {c.email}</p>
+                          </div>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                            c.status === 'pending' ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300' :
+                            c.status === 'contacted' ? 'bg-blue-100 text-blue-800 dark:bg-blue-950/60 dark:text-blue-300' :
+                            c.status === 'scheduled' ? 'bg-purple-100 text-purple-800 dark:bg-purple-950/60 dark:text-purple-300' :
+                            c.status === 'completed' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300' :
+                            'bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-300'
+                          }`}>
+                            {c.status}
+                          </span>
+                        </div>
+                      ))}
+                      {consultations.length === 0 && (
+                        <p className="text-xs text-slate-400 py-4 text-center">No consultations recorded yet.</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* SUB-TAB: CONSULTATIONS WORKSPACE */}
+            {admissionsSubTab === 'consultations' && (
+              <div className="space-y-4">
+                {/* Search & Filter Toolbar */}
+                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-xs flex flex-col md:flex-row items-center justify-between gap-3">
+                  {/* Search box */}
+                  <div className="relative w-full md:w-80">
+                    <input
+                      type="text"
+                      value={consultationSearch}
+                      onChange={(e) => setConsultationSearch(e.target.value)}
+                      placeholder="Search name, email, phone, ref..."
+                      className="w-full pl-3 pr-3 py-2 text-xs bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white"
+                    />
+                  </div>
+
+                  {/* Status filter pills */}
+                  <div className="flex items-center gap-1 overflow-x-auto w-full md:w-auto pb-1 md:pb-0">
+                    {['all', 'pending', 'contacted', 'scheduled', 'completed', 'cancelled'].map((statusKey) => {
+                      const count = statusKey === 'all' 
+                        ? consultations.length 
+                        : consultations.filter(c => c.status === statusKey).length;
+                      return (
+                        <button
+                          key={statusKey}
+                          type="button"
+                          onClick={() => setConsultationStatusFilter(statusKey)}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider cursor-pointer whitespace-nowrap flex items-center gap-1.5 transition-all ${
+                            consultationStatusFilter === statusKey
+                              ? 'bg-slate-900 text-white dark:bg-blue-600 shadow-xs'
+                              : 'bg-slate-100 dark:bg-slate-850 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                          }`}
+                        >
+                          <span>{statusKey}</span>
+                          <span className="px-1.5 py-0.2 text-[10px] rounded-full bg-slate-200/80 dark:bg-slate-700 font-mono">
+                            {count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => fetchConsultations()}
+                    className="p-2 text-slate-500 hover:text-slate-900 dark:hover:text-white bg-slate-100 dark:bg-slate-850 rounded-xl transition-colors cursor-pointer shrink-0"
+                    title="Refresh Consultations"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* 3-Column Work Area */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                  {/* Column 1: Consultation Requests List */}
+                  <div className="lg:col-span-4 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-xs">
+                    <div className="flex items-center justify-between mb-3 border-b border-slate-100 dark:border-slate-800 pb-2">
+                      <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                        Consultation Requests ({consultations.filter(c => {
+                          const matchesSearch = !consultationSearch || 
+                            c.full_name.toLowerCase().includes(consultationSearch.toLowerCase()) ||
+                            c.email.toLowerCase().includes(consultationSearch.toLowerCase()) ||
+                            c.phone.includes(consultationSearch) ||
+                            c.request_no.toLowerCase().includes(consultationSearch.toLowerCase()) ||
+                            (c.course_name && c.course_name.toLowerCase().includes(consultationSearch.toLowerCase()));
+                          const matchesStatus = consultationStatusFilter === 'all' || c.status === consultationStatusFilter;
+                          return matchesSearch && matchesStatus;
+                        }).length})
+                      </h4>
+                    </div>
+
+                    {consultationsLoading ? (
+                      <div className="py-12 text-center text-xs text-slate-400">Loading consultation requests...</div>
+                    ) : (
+                      (() => {
+                        const filtered = consultations.filter(c => {
+                          const matchesSearch = !consultationSearch || 
+                            c.full_name.toLowerCase().includes(consultationSearch.toLowerCase()) ||
+                            c.email.toLowerCase().includes(consultationSearch.toLowerCase()) ||
+                            c.phone.includes(consultationSearch) ||
+                            c.request_no.toLowerCase().includes(consultationSearch.toLowerCase()) ||
+                            (c.course_name && c.course_name.toLowerCase().includes(consultationSearch.toLowerCase()));
+                          const matchesStatus = consultationStatusFilter === 'all' || c.status === consultationStatusFilter;
+                          return matchesSearch && matchesStatus;
+                        });
+
+                        if (filtered.length === 0) {
+                          return <div className="py-12 text-center text-xs text-slate-400">No consultation requests found.</div>;
+                        }
+
+                        return (
+                          <div className="space-y-2 max-h-[64vh] overflow-y-auto pr-1">
+                            {filtered.map(c => (
+                              <button
+                                key={c.id}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedConsultationId(c.id);
+                                  void fetchConsultationMessages(c.id);
+                                }}
+                                className={`w-full text-left p-3.5 rounded-xl border transition-all cursor-pointer ${
+                                  selectedConsultationId === c.id 
+                                    ? 'bg-blue-50/80 dark:bg-blue-950/40 border-blue-300 dark:border-blue-700 shadow-xs' 
+                                    : 'bg-slate-50/60 dark:bg-slate-850/60 border-slate-200/60 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+                                }`}
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <h5 className="font-bold text-xs text-slate-900 dark:text-white leading-snug">{c.full_name}</h5>
+                                    <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400 block mt-0.5">{c.request_no}</span>
+                                  </div>
+                                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-md uppercase tracking-wider shrink-0 ${
+                                    c.status === 'pending' ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300' :
+                                    c.status === 'contacted' ? 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300' :
+                                    c.status === 'scheduled' ? 'bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300' :
+                                    c.status === 'completed' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300' :
+                                    'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                                  }`}>
+                                    {c.status}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-slate-600 dark:text-slate-300 mt-1.5 font-medium truncate">
+                                  Course: {c.course_name || 'General Admissions Inquiry'}
+                                </div>
+                                <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 flex items-center justify-between">
+                                  <span>{c.email}</span>
+                                  <span className="font-mono">{c.phone}</span>
+                                </div>
+                                <div className="mt-2 flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 border-t border-slate-200/40 dark:border-slate-800/60 pt-2 font-mono">
+                                  <span>Submitted: {new Date(c.created_at).toLocaleDateString()}</span>
+                                  <span className="capitalize text-blue-600 dark:text-blue-400 font-semibold">{c.preferred_contact_method || c.consultation_type}</span>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        );
+                      })()
+                    )}
+                  </div>
+
+                  {/* Column 2: Message Thread & Reply Workspace */}
+                  <div className="lg:col-span-5 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-xs flex flex-col min-h-[60vh]">
+                    {selectedConsultationId ? (
+                      (() => {
+                        const selectedItem = consultations.find(x => x.id === selectedConsultationId);
+                        const currentReplyStatus = consultationStatusMap[selectedConsultationId] || selectedItem?.status || 'contacted';
+                        const hasAdminReply = consultationMessages.some(m => m.direction === 'admin');
+
+                        return (
+                          <div className="flex-1 flex flex-col justify-between">
+                            <div>
+                              {/* Header */}
+                              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800 mb-3">
+                                <div>
+                                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-900 dark:text-white">Conversation Thread</h4>
+                                  <p className="text-[11px] text-slate-500 dark:text-slate-400">{selectedItem?.full_name} • {selectedItem?.email}</p>
+                                </div>
+                                <span className="text-[10px] font-mono text-slate-400">ID: {selectedItem?.request_no}</span>
+                              </div>
+
+                              {/* Messages Box */}
+                              <div className="bg-slate-50 dark:bg-slate-950/60 rounded-xl p-3 border border-slate-200/60 dark:border-slate-850 max-h-[46vh] overflow-y-auto space-y-3">
+                                {consultationMessagesLoading ? (
+                                  <div className="py-8 text-center text-xs text-slate-400">Loading conversation history...</div>
+                                ) : consultationMessages.length === 0 ? (
+                                  <div className="py-8 text-center text-xs text-slate-400">No messages found in this thread.</div>
+                                ) : (
+                                  <>
+                                    {consultationMessages.map(m => (
+                                      <div
+                                        key={m.id}
+                                        className={`p-3 rounded-xl border text-xs max-w-[88%] ${
+                                          m.direction === 'admin'
+                                            ? 'ml-auto bg-blue-600 text-white border-blue-500 shadow-xs'
+                                            : 'mr-auto bg-white dark:bg-slate-850 text-slate-800 dark:text-slate-100 border-slate-200 dark:border-slate-800 shadow-xs'
+                                        }`}
+                                      >
+                                        <div className="flex items-center justify-between gap-2 mb-1 border-b border-white/20 dark:border-slate-700/60 pb-1">
+                                          <span className="font-bold text-[10px] uppercase tracking-wider">
+                                            {m.direction === 'admin' ? (m.sender_name || 'Admissions Officer') : (m.sender_name || selectedItem?.full_name || 'Applicant')}
+                                          </span>
+                                          <span className={`text-[9px] font-mono ${m.direction === 'admin' ? 'text-blue-100' : 'text-slate-400'}`}>
+                                            {new Date(m.created_at).toLocaleDateString()} • {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                          </span>
+                                        </div>
+                                        <p className="leading-relaxed whitespace-pre-wrap">{m.body}</p>
+                                      </div>
+                                    ))}
+
+                                    {!hasAdminReply && (
+                                      <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-center text-xs text-amber-600 dark:text-amber-400 font-medium">
+                                        No admissions officer has replied yet.
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Reply Input Box */}
+                            <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
+                              <textarea
+                                value={consultationReplyMap[selectedConsultationId] || ''}
+                                onChange={(e) => setConsultationReplyMap(prev => ({ ...prev, [selectedConsultationId]: e.target.value }))}
+                                rows={3}
+                                className="w-full p-3 text-xs bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white"
+                                placeholder="Type your response to the applicant..."
+                              />
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">Update Status:</span>
+                                  <select
+                                    value={currentReplyStatus}
+                                    onChange={(e) => setConsultationStatusMap(prev => ({ ...prev, [selectedConsultationId]: e.target.value }))}
+                                    className="text-xs p-2 bg-slate-100 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white font-semibold"
+                                  >
+                                    <option value="pending">Pending</option>
+                                    <option value="contacted">Contacted</option>
+                                    <option value="scheduled">Scheduled</option>
+                                    <option value="completed">Completed</option>
+                                    <option value="cancelled">Cancelled</option>
+                                  </select>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  disabled={updatingConsultation}
+                                  onClick={() => {
+                                    if (selectedConsultationId) {
+                                      const replyText = (consultationReplyMap[selectedConsultationId] || '').trim();
+                                      if (!replyText && currentReplyStatus === selectedItem?.status) {
+                                        showError('Validation Error', 'Please enter a reply message or select a new status.');
+                                        return;
+                                      }
+                                      void updateConsultationStatus(selectedConsultationId, currentReplyStatus);
+                                    }
+                                  }}
+                                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
+                                >
+                                  <span>{updatingConsultation ? 'Updating...' : 'Send Reply & Update'}</span>
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()
+                    ) : (
+                      <div className="flex-1 flex flex-col items-center justify-center py-16 text-center text-slate-400">
+                        <BookOpen className="w-10 h-10 text-slate-300 dark:text-slate-700 mb-2" />
+                        <p className="text-xs font-semibold">Select a consultation request from the left list to view conversation history and reply.</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Column 3: Full Consultation Details */}
+                  <div className="lg:col-span-3 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-xs">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300 pb-2 border-b border-slate-100 dark:border-slate-800 mb-3">
+                      Consultation Details
+                    </h4>
+
+                    {selectedConsultationId ? (
+                      (() => {
+                        const item = consultations.find(x => x.id === selectedConsultationId);
+                        if (!item) return <p className="text-xs text-slate-400">Consultation record not found.</p>;
+                        return (
+                          <div className="space-y-3 text-xs">
+                            <div className="p-3 bg-slate-50 dark:bg-slate-850 rounded-xl border border-slate-200/60 dark:border-slate-800">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Consultation Reference</span>
+                              <div className="font-mono font-bold text-sm text-blue-600 dark:text-blue-400 mt-0.5">{item.request_no}</div>
+                            </div>
+
+                            <div className="p-3 bg-slate-50 dark:bg-slate-850 rounded-xl border border-slate-200/60 dark:border-slate-800">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Applicant Name</span>
+                              <div className="font-bold text-sm text-slate-900 dark:text-white mt-0.5">{item.full_name}</div>
+                            </div>
+
+                            <div className="p-3 bg-slate-50 dark:bg-slate-850 rounded-xl border border-slate-200/60 dark:border-slate-800">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Contact Info</span>
+                              <div className="font-medium text-slate-800 dark:text-slate-200 mt-1">{item.email}</div>
+                              <div className="font-mono text-slate-500 dark:text-slate-400 mt-0.5">{item.phone}</div>
+                            </div>
+
+                            <div className="p-3 bg-slate-50 dark:bg-slate-850 rounded-xl border border-slate-200/60 dark:border-slate-800">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Interested Course</span>
+                              <div className="font-bold text-slate-900 dark:text-white mt-0.5">{item.course_name || 'General Admissions Inquiry'}</div>
+                            </div>
+
+                            <div className="p-3 bg-slate-50 dark:bg-slate-850 rounded-xl border border-slate-200/60 dark:border-slate-800">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Subject</span>
+                              <div className="font-semibold text-slate-800 dark:text-slate-200 mt-0.5">{item.subject || 'General Consultation Request'}</div>
+                            </div>
+
+                            <div className="p-3 bg-slate-50 dark:bg-slate-850 rounded-xl border border-slate-200/60 dark:border-slate-800">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Preferred Contact Method</span>
+                              <div className="font-bold text-blue-600 dark:text-blue-400 mt-0.5 capitalize">{item.preferred_contact_method || item.consultation_type}</div>
+                            </div>
+
+                            <div className="p-3 bg-slate-50 dark:bg-slate-850 rounded-xl border border-slate-200/60 dark:border-slate-800">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Preferred Consultation Date</span>
+                              <div className="font-semibold text-slate-900 dark:text-white mt-0.5">
+                                {item.preferred_date || 'Flexible'} {item.preferred_time ? `• ${item.preferred_time}` : ''}
+                              </div>
+                            </div>
+
+                            <div className="p-3 bg-slate-50 dark:bg-slate-850 rounded-xl border border-slate-200/60 dark:border-slate-800">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Date Submitted</span>
+                              <div className="font-mono text-slate-700 dark:text-slate-300 mt-0.5">{new Date(item.created_at).toLocaleString()}</div>
+                            </div>
+
+                            <div className="p-3 bg-slate-50 dark:bg-slate-850 rounded-xl border border-slate-200/60 dark:border-slate-800">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Current Status</span>
+                              <span className={`inline-block text-[10px] font-black px-2.5 py-1 rounded-md uppercase tracking-wider mt-1.5 ${
+                                item.status === 'pending' ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300' :
+                                item.status === 'contacted' ? 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300' :
+                                item.status === 'scheduled' ? 'bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300' :
+                                item.status === 'completed' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300' :
+                                'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                              }`}>
+                                {item.status}
+                              </span>
+                            </div>
+
+                            {item.message && (
+                              <div className="p-3 bg-slate-50 dark:bg-slate-850 rounded-xl border border-slate-200/60 dark:border-slate-800">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Original Message</span>
+                                <p className="text-slate-700 dark:text-slate-300 mt-1 leading-relaxed whitespace-pre-wrap">{item.message}</p>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()
+                    ) : (
+                      <p className="text-xs text-slate-400 py-8 text-center">No consultation selected.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {admissionsSubTab === 'applications' && (
+              <div className="space-y-4">
+                {/* Search & Filter Toolbar */}
+                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-xs flex flex-col md:flex-row items-center justify-between gap-3">
+                  {/* Search box */}
+                  <div className="relative w-full md:w-80">
+                    <input
+                      type="text"
+                      value={applicationSearch}
+                      onChange={(e) => setApplicationSearch(e.target.value)}
+                      placeholder="Search name, email, phone, ref, ID..."
+                      className="w-full pl-3 pr-3 py-2 text-xs bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white"
+                    />
+                  </div>
+
+                  {/* Status filter pills */}
+                  <div className="flex items-center gap-1 overflow-x-auto w-full md:w-auto pb-1 md:pb-0">
+                    {['all', 'submitted', 'under_review', 'additional_documents_requested', 'approved', 'rejected', 'waitlisted'].map((statusKey) => {
+                      const count = statusKey === 'all' 
+                        ? applications.length 
+                        : applications.filter(a => a.status === statusKey).length;
+                      return (
+                        <button
+                          key={statusKey}
+                          type="button"
+                          onClick={() => setApplicationStatusFilter(statusKey)}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider cursor-pointer whitespace-nowrap flex items-center gap-1.5 transition-all ${
+                            applicationStatusFilter === statusKey
+                              ? 'bg-slate-900 text-white dark:bg-blue-600 shadow-xs'
+                              : 'bg-slate-100 dark:bg-slate-850 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                          }`}
+                        >
+                          <span>{statusKey.replaceAll('_', ' ')}</span>
+                          <span className="px-1.5 py-0.2 text-[10px] rounded-full bg-slate-200/80 dark:bg-slate-700 font-mono">
+                            {count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => fetchApplications()}
+                    className="p-2 text-slate-500 hover:text-slate-900 dark:hover:text-white bg-slate-100 dark:bg-slate-850 rounded-xl transition-colors cursor-pointer shrink-0"
+                    title="Refresh Applications"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${applicationsLoading ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+
+                {/* 2-Column Split: Applications List & Dossier Workspace */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                  {/* Column 1: Application List */}
+                  <div className="lg:col-span-5 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-xs space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
+                      <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                        Applications ({applications.filter(a => {
+                          const matchesSearch = !applicationSearch ||
+                            a.full_name?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                            a.email?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                            a.phone?.includes(applicationSearch) ||
+                            a.application_no?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                            (a.national_id && a.national_id.includes(applicationSearch)) ||
+                            (a.first_choice_course_title && a.first_choice_course_title.toLowerCase().includes(applicationSearch.toLowerCase()));
+                          const matchesStatus = applicationStatusFilter === 'all' || a.status === applicationStatusFilter;
+                          return matchesSearch && matchesStatus;
+                        }).length})
+                      </h4>
+                      <span className="text-[11px] text-slate-400 font-medium">Select to review dossier</span>
+                    </div>
+
+                    {applicationsLoading ? (
+                      <div className="py-12 text-center text-slate-400 text-xs">
+                        <RefreshCw className="w-5 h-5 mx-auto mb-2 animate-spin text-blue-500" />
+                        Loading applications...
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-[620px] overflow-y-auto pr-1">
+                        {(() => {
+                          const filtered = applications.filter(a => {
+                            const matchesSearch = !applicationSearch ||
+                              a.full_name?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                              a.email?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                              a.phone?.includes(applicationSearch) ||
+                              a.application_no?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                              (a.national_id && a.national_id.includes(applicationSearch)) ||
+                              (a.first_choice_course_title && a.first_choice_course_title.toLowerCase().includes(applicationSearch.toLowerCase()));
+                            const matchesStatus = applicationStatusFilter === 'all' || a.status === applicationStatusFilter;
+                            return matchesSearch && matchesStatus;
+                          });
+
+                          if (filtered.length === 0) {
+                            return (
+                              <div className="py-12 text-center text-slate-400 text-xs italic">
+                                No applications match the current filter.
+                              </div>
+                            );
+                          }
+
+                          return filtered.map(app => {
+                            const isSelected = (selectedApplicationId === app.id) || (!selectedApplicationId && filtered[0]?.id === app.id);
+                            return (
+                              <div
+                                key={app.id}
+                                onClick={() => setSelectedApplicationId(app.id)}
+                                className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
+                                  isSelected
+                                    ? 'bg-blue-50/70 dark:bg-blue-950/40 border-blue-500/50 shadow-sm'
+                                    : 'bg-slate-50/50 dark:bg-slate-850/40 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+                                }`}
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <div className="font-bold text-xs text-slate-900 dark:text-white flex items-center gap-1.5">
+                                      <span>{app.full_name}</span>
+                                      {app.admission_no && (
+                                        <span className="text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 px-1.5 py-0.2 rounded">
+                                          {app.admission_no}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono mt-0.5">
+                                      {app.application_no}
+                                    </div>
+                                  </div>
+                                  <span
+                                    className={`px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-md border ${
+                                      app.status === 'approved'
+                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800'
+                                        : app.status === 'under_review'
+                                        ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800'
+                                        : app.status === 'additional_documents_requested'
+                                        ? 'bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/60 dark:text-purple-300 dark:border-purple-800'
+                                        : app.status === 'waitlisted'
+                                        ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800'
+                                        : app.status === 'rejected'
+                                        ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/60 dark:text-rose-300 dark:border-rose-800'
+                                        : 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+                                    }`}
+                                  >
+                                    {app.status.replaceAll('_', ' ')}
+                                  </span>
+                                </div>
+
+                                <div className="mt-2 text-[11px] text-slate-600 dark:text-slate-300 line-clamp-1 flex items-center gap-1.5">
+                                  <GraduationCap className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                  <span>{app.first_choice_course_title || 'Course choice'}</span>
+                                </div>
+
+                                <div className="mt-2 flex items-center justify-between text-[10px] text-slate-400">
+                                  <span>{app.email}</span>
+                                  <span>{app.created_at ? new Date(app.created_at).toLocaleDateString() : ''}</span>
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Column 2: Application Dossier & Action Workspace */}
+                  <div className="lg:col-span-7 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
+                    {(() => {
+                      const filtered = applications.filter(a => {
+                        const matchesSearch = !applicationSearch ||
+                          a.full_name?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                          a.email?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                          a.phone?.includes(applicationSearch) ||
+                          a.application_no?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                          (a.national_id && a.national_id.includes(applicationSearch)) ||
+                          (a.first_choice_course_title && a.first_choice_course_title.toLowerCase().includes(applicationSearch.toLowerCase()));
+                        const matchesStatus = applicationStatusFilter === 'all' || a.status === applicationStatusFilter;
+                        return matchesSearch && matchesStatus;
+                      });
+
+                      const selectedApp = applications.find(a => a.id === selectedApplicationId) || filtered[0] || null;
+
+                      if (!selectedApp) {
+                        return (
+                          <div className="py-16 text-center text-slate-400 text-xs space-y-2">
+                            <FileText className="w-8 h-8 mx-auto text-slate-300 dark:text-slate-700" />
+                            <p>Select an application to view full dossier details and process admissions action.</p>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="space-y-6">
+                          {/* Dossier Header */}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-4">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h3 className="text-lg font-black text-slate-900 dark:text-white">
+                                  {selectedApp.full_name}
+                                </h3>
+                                <span
+                                  className={`px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-md border ${
+                                    selectedApp.status === 'approved'
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800'
+                                      : selectedApp.status === 'under_review'
+                                      ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800'
+                                      : selectedApp.status === 'additional_documents_requested'
+                                      ? 'bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/60 dark:text-purple-300 dark:border-purple-800'
+                                      : selectedApp.status === 'waitlisted'
+                                      ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800'
+                                      : selectedApp.status === 'rejected'
+                                      ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/60 dark:text-rose-300 dark:border-rose-800'
+                                      : 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+                                  }`}
+                                >
+                                  {selectedApp.status.replaceAll('_', ' ')}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 mt-1 text-xs text-slate-500 font-mono">
+                                <span>Ref: {selectedApp.application_no}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(selectedApp.application_no);
+                                    showSuccess('Copied', `Copied ${selectedApp.application_no}`);
+                                  }}
+                                  className="text-blue-500 hover:text-blue-600 cursor-pointer"
+                                  title="Copy reference"
+                                >
+                                  <Copy className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="text-right text-xs text-slate-400">
+                              <div>Submitted: {selectedApp.created_at ? new Date(selectedApp.created_at).toLocaleString() : 'N/A'}</div>
+                              {selectedApp.admission_no && (
+                                <div className="text-emerald-600 dark:text-emerald-400 font-mono font-bold mt-0.5">
+                                  Admission No: {selectedApp.admission_no}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Dossier Information Grid */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                            <div className="bg-slate-50 dark:bg-slate-850 p-3 rounded-xl border border-slate-100 dark:border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Identity & Contact</span>
+                              <p><strong>National ID:</strong> {selectedApp.national_id || 'N/A'}</p>
+                              <p><strong>DOB:</strong> {selectedApp.date_of_birth || 'N/A'} • <strong>Gender:</strong> {selectedApp.gender || 'N/A'}</p>
+                              <p><strong>Email:</strong> {selectedApp.email}</p>
+                              <p><strong>Phone:</strong> {selectedApp.phone}</p>
+                              <p><strong>Address:</strong> {selectedApp.postal_address || 'N/A'}</p>
+                            </div>
+
+                            <div className="bg-slate-50 dark:bg-slate-850 p-3 rounded-xl border border-slate-100 dark:border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Academic Background</span>
+                              <p><strong>Previous School:</strong> {selectedApp.previous_school || 'N/A'}</p>
+                              <p><strong>Qualification:</strong> {selectedApp.highest_qualification || 'N/A'}</p>
+                              <p><strong>KCSE Grade:</strong> <span className="font-bold text-blue-600 dark:text-blue-400">{selectedApp.mean_grade || 'N/A'}</span></p>
+                              <p><strong>Graduation Year:</strong> {selectedApp.graduation_year || 'N/A'}</p>
+                            </div>
+
+                            <div className="bg-slate-50 dark:bg-slate-850 p-3 rounded-xl border border-slate-100 dark:border-slate-800 space-y-1 md:col-span-2">
+                              <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Course Selection</span>
+                              <p><strong>1st Choice:</strong> {selectedApp.first_choice_course_title || courses.find(c => c.id === selectedApp.first_choice_course_id)?.title || 'N/A'} {selectedApp.first_choice_course_code ? `(${selectedApp.first_choice_course_code})` : ''}</p>
+                              {selectedApp.second_choice_course_id && (
+                                <p><strong>2nd Choice:</strong> {selectedApp.second_choice_course_title || courses.find(c => c.id === selectedApp.second_choice_course_id)?.title || 'N/A'}</p>
+                              )}
+                              <p><strong>Preferred Intake:</strong> {selectedApp.preferred_intake || 'N/A'}</p>
+                            </div>
+                          </div>
+
+                          {/* Documents Section */}
+                          <div className="space-y-2">
+                            <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                              <FileCheck className="w-4 h-4 text-emerald-500" />
+                              <span>Attached Documents ({selectedApp.documents?.length || 0})</span>
+                            </h4>
+                            
+                            {selectedApp.documents && selectedApp.documents.length > 0 ? (
+                              <div className="space-y-1.5">
+                                {selectedApp.documents.map((doc: any, i: number) => (
+                                  <div key={doc.id || i} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 text-xs">
+                                    <div className="flex items-center gap-2">
+                                      <FileText className="w-4 h-4 text-blue-500" />
+                                      <div>
+                                        <div className="font-bold capitalize">{doc.document_type?.replaceAll('_', ' ')}</div>
+                                        <div className="text-[10px] text-slate-400">{doc.file_name} • {(Number(doc.size_bytes) / 1024).toFixed(1)} KB</div>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <a
+                                        href={doc.file_url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                                      >
+                                        <Eye className="w-3.5 h-3.5 text-blue-500" /> View
+                                      </a>
+                                      <a
+                                        href={doc.file_url}
+                                        download={doc.file_name}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-xs font-bold text-white shadow-xs"
+                                      >
+                                        <Download className="w-3.5 h-3.5" /> Download
+                                      </a>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-xs text-slate-400 italic p-3 bg-slate-50 dark:bg-slate-850 rounded-xl">No documents recorded.</p>
+                            )}
+                          </div>
+
+                          {/* Decision & Action Panel */}
+                          <div className="bg-slate-50 dark:bg-slate-850 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
+                            <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                              Admissions Decision & Internal Review
+                            </h4>
+
+                            <div className="space-y-1">
+                              <label className="text-[11px] font-bold text-slate-500">Internal Review Note</label>
+                              <input
+                                type="text"
+                                value={applicationNoteMap[selectedApp.id] || ''}
+                                onChange={(e) => setApplicationNoteMap(prev => ({ ...prev, [selectedApp.id]: e.target.value }))}
+                                placeholder="Enter rationale or review note for this application..."
+                                className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white"
+                              />
+                            </div>
+
+                            <div className="flex flex-wrap gap-2 pt-1">
+                              <button
+                                type="button"
+                                disabled={updatingApplication}
+                                onClick={() => updateApplicationStatus(selectedApp.id, 'under_review')}
+                                className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+                              >
+                                Move to Under Review
+                              </button>
+                              <button
+                                type="button"
+                                disabled={updatingApplication}
+                                onClick={() => updateApplicationStatus(selectedApp.id, 'approved')}
+                                className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+                              >
+                                Approve & Admit Student
+                              </button>
+                              <button
+                                type="button"
+                                disabled={updatingApplication}
+                                onClick={() => updateApplicationStatus(selectedApp.id, 'additional_documents_requested')}
+                                className="px-3 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+                              >
+                                Request Additional Docs
+                              </button>
+                              <button
+                                type="button"
+                                disabled={updatingApplication}
+                                onClick={() => updateApplicationStatus(selectedApp.id, 'waitlisted')}
+                                className="px-3 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+                              >
+                                Waitlist
+                              </button>
+                              <button
+                                type="button"
+                                disabled={updatingApplication}
+                                onClick={() => updateApplicationStatus(selectedApp.id, 'rejected')}
+                                className="px-3 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+                              >
+                                Reject
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {admissionsSubTab === 'applicants' && (
+              <div className="space-y-4">
+                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-xs flex flex-col md:flex-row items-center justify-between gap-3">
+                  <div className="relative w-full md:w-80">
+                    <input
+                      type="text"
+                      value={applicationSearch}
+                      onChange={(e) => setApplicationSearch(e.target.value)}
+                      placeholder="Search applicant directory..."
+                      className="w-full pl-3 pr-3 py-2 text-xs bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => fetchApplications()}
+                    className="p-2 text-slate-500 hover:text-slate-900 dark:hover:text-white bg-slate-100 dark:bg-slate-850 rounded-xl transition-colors cursor-pointer shrink-0"
+                    title="Refresh Directory"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${applicationsLoading ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+
+                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-xs">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-3">
+                    Applicant Directory ({applications.length})
+                  </h4>
+                  {applicationsLoading ? (
+                    <div className="py-12 text-center text-slate-400 text-xs">
+                      <RefreshCw className="w-5 h-5 mx-auto mb-2 animate-spin text-blue-500" />
+                      Loading applicant directory...
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {applications.filter(a => {
+                        return !applicationSearch ||
+                          a.full_name?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                          a.email?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                          a.phone?.includes(applicationSearch) ||
+                          a.application_no?.toLowerCase().includes(applicationSearch.toLowerCase()) ||
+                          (a.national_id && a.national_id.includes(applicationSearch));
+                      }).map(a => (
+                        <div key={a.id} className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/40 space-y-2">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <div className="font-bold text-xs text-slate-900 dark:text-white">{a.full_name}</div>
+                              <div className="text-[11px] text-slate-500 font-mono">{a.application_no}</div>
+                            </div>
+                            <span
+                              className={`px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-md border ${
+                                a.status === 'approved'
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800'
+                                  : a.status === 'under_review'
+                                  ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800'
+                                  : 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+                              }`}
+                            >
+                              {a.status.replaceAll('_', ' ')}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-500 space-y-0.5">
+                            <div>📧 {a.email}</div>
+                            <div>📞 {a.phone}</div>
+                            {a.national_id && <div>🪪 ID: {a.national_id}</div>}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedApplicationId(a.id);
+                              setAdmissionsSubTab('applications');
+                            }}
+                            className="w-full mt-2 py-1.5 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold transition text-center cursor-pointer"
+                          >
+                            View Full Dossier →
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {admissionsSubTab === 'enrollment' && (
+              <div className="space-y-6">
+                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 space-y-4 shadow-sm">
+                  <div className="flex items-center gap-2.5 border-b border-slate-100 dark:border-slate-800 pb-3">
+                    <div className="p-2 bg-indigo-50 dark:bg-slate-820 text-indigo-600 dark:text-indigo-400 rounded-xl">
+                      <Plus className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-black text-slate-900 dark:text-slate-100">Enrol New Undergraduate Student Account</h3>
+                      <p className="text-[11px] text-slate-500">
+                        Admissions-owned enrollment creates the student record, admission number, and portal credentials. Academic Allocation then assigns classes/units to the same student ID.
+                      </p>
+                    </div>
+                  </div>
+
+                  <form onSubmit={handleAddStudentSubmit} className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4 items-end">
+                    <div className="space-y-1 xl:col-span-2">
+                      <label htmlFor="adm-reg-application" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Approved Application</label>
+                      <select
+                        id="adm-reg-application"
+                        value={enrollmentApplicationId}
+                        onChange={(e) => selectEnrollmentApplication(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100 h-9"
+                      >
+                        <option value="">Manual enrollment</option>
+                        {applications.filter((application) => application.status === 'approved').map((application) => (
+                          <option key={application.id} value={application.id}>
+                            {application.application_no} — {application.full_name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="adm-reg-std-name" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Full Student Name</label>
+                      <input
+                        id="adm-reg-std-name"
+                        type="text"
+                        placeholder="Mary Wambui"
+                        value={regStudentName}
+                        onChange={(e) => setRegStudentName(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="adm-reg-std-email" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Email Address</label>
+                      <input
+                        id="adm-reg-std-email"
+                        type="email"
+                        placeholder="m.wambui@student.edu"
+                        value={regStudentEmail}
+                        onChange={(e) => setRegStudentEmail(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="adm-reg-std-phone" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Phone Number</label>
+                      <input
+                        id="adm-reg-std-phone"
+                        type="tel"
+                        placeholder="+254 700 000 000"
+                        value={regStudentPhone}
+                        onChange={(e) => setRegStudentPhone(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="adm-reg-std-adm" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Admission No</label>
+                      <input
+                        id="adm-reg-std-adm"
+                        type="text"
+                        placeholder="Auto if blank"
+                        value={regStudentAdmission}
+                        onChange={(e) => setRegStudentAdmission(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="adm-reg-std-programme" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Programme</label>
+                      <select
+                        id="adm-reg-std-programme"
+                        value={regStudentCourseId}
+                        onChange={(e) => setRegStudentCourseId(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100 h-9"
+                        required
+                      >
+                        <option value="">Select programme</option>
+                        {courses.map((c) => (
+                          <option key={c.id} value={c.id}>{c.code} — {c.title}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="adm-reg-std-cohort" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Intake Cohort</label>
+                      <input
+                        id="adm-reg-std-cohort"
+                        type="text"
+                        placeholder="Provided by approved application"
+                        value={regStudentCohort}
+                        onChange={(e) => setRegStudentCohort(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100 h-9"
+                        required
+                      />
+                    </div>
+                    {enrollmentApplicationId && regStudentCourseId !== (applications.find((application) => application.id === enrollmentApplicationId)?.approved_course_id || applications.find((application) => application.id === enrollmentApplicationId)?.first_choice_course_id) && (
+                      <label className="md:col-span-3 xl:col-span-6 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300">
+                        <input type="checkbox" checked={confirmProgrammeChange} onChange={(e) => setConfirmProgrammeChange(e.target.checked)} />
+                        I confirm changing the programme selected on this approved application.
+                      </label>
+                    )}
+                    <div className="space-y-1">
+                      <label htmlFor="adm-reg-std-passcode" className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Account Passcode</label>
+                      <input
+                        id="adm-reg-std-passcode"
+                        type="password"
+                        placeholder="Optional default"
+                        value={regStudentPasscode}
+                        onChange={(e) => setRegStudentPasscode(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs focus:outline-hidden text-slate-850 dark:text-slate-100 font-mono"
+                      />
+                    </div>
+                    <div className="md:col-span-3 xl:col-span-6">
+                      <button
+                        type="submit"
+                        className="w-full md:w-auto bg-indigo-600 hover:bg-indigo-750 text-white font-extrabold py-2.5 px-5 rounded-lg text-xs tracking-wider uppercase transition-colors cursor-pointer"
+                      >
+                        Enrol Student
+                      </button>
+                    </div>
+                  </form>
+                </div>
+
+                <StudentRecordsTable
+                  onDeleteStudent={onDeleteStudent}
+                  onUpdateStudent={onUpdateStudent}
+                  refetchTrigger={studentTableRefetchTrigger}
+                  canManageRecords={true}
+                  title="Student Master Registry"
+                  description="Admitted student records from PostgreSQL — admission numbers, account status, and credentials managed by Admissions."
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'diagnostics' && (
+          <SystemDiagnostics
+            courses={courses}
+            students={students}
+            mockEmails={mockEmails}
+            onTriggerOverdueScan={onTriggerOverdueScan}
+          />
+        )}
+        </PageTransition>
+
+        {/* Temporary passcode copy confirmation modal */}
+        {resetModalData && resetModalData.isOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center font-sans">
+            {/* Backdrop */}
+            <div 
+              onClick={() => setResetModalData(null)}
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs transition-opacity cursor-default"
+            />
+            
+            {/* Modal Card */}
+            <div className="relative bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 w-full max-w-md p-6 rounded-2xl shadow-2xl z-10 animate-in fade-in zoom-in-95 duration-200">
+              <div className="flex flex-col items-center text-center space-y-4">
+                {/* Shield Icon */}
+                <div className="w-12 h-12 bg-indigo-50 dark:bg-indigo-950/40 rounded-full flex items-center justify-center text-indigo-650 dark:text-indigo-400">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                </div>
+                
+                <div className="space-y-1">
+                  <h4 className="text-base font-bold text-slate-900 dark:text-white">Temporary Passcode Generated</h4>
+                  <p className="text-xs text-slate-500">
+                    A secure, single-use activation credential has been generated for <strong>{resetModalData.studentName}</strong>.
+                  </p>
+                </div>
+
+                {/* Secure Credentials Display */}
+                <div className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 p-4 rounded-xl flex flex-col items-center space-y-2 relative">
+                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest font-mono">Temporary Passcode</span>
+                  <code className="text-2xl font-black text-indigo-650 dark:text-indigo-400 tracking-wider font-mono select-all">
+                    {resetModalData.temporaryPasscode}
+                  </code>
+                  <p className="text-[10px] text-rose-500 font-semibold">
+                    ⚠️ This code will not be shown again. Please copy it now.
+                  </p>
+                </div>
+
+                {/* Action buttons */}
+                <div className="flex w-full gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(resetModalData.temporaryPasscode);
+                      triggerToast('Passcode copied to clipboard!', 'success');
+                    }}
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold py-2.5 rounded-xl text-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                    </svg>
+                    <span>Copy Passcode</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setResetModalData(null)}
+                    className="flex-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-350 font-extrabold py-2.5 rounded-xl text-xs transition-colors cursor-pointer"
+                  >
+                    Close Window
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+      </div>
+
+      {/* RESPONSIVE BOTTOM NAVIGATION (< 768px) */}
+      <BottomNavigation
+        items={
+          isLibrarianView
+            ? [
+                {
+                  id: 'library',
+                  label: 'Library',
+                  icon: Library,
+                  action: () => setActiveTab('library'),
+                  isActive: activeTab === 'library',
+                },
+                {
+                  id: 'more',
+                  label: 'More',
+                  icon: Menu,
+                  action: () => setMobileMenuOpen(true),
+                  isActive: false,
+                },
+              ]
+            : isAccountantView
+            ? [
+                {
+                  id: 'finances',
+                  label: 'Finances',
+                  icon: Landmark,
+                  action: () => setActiveTab('finances'),
+                  isActive: activeTab === 'finances',
+                },
+                {
+                  id: 'payroll',
+                  label: 'Payroll',
+                  icon: DollarSign,
+                  action: () => setActiveTab('payroll'),
+                  isActive: activeTab === 'payroll',
+                },
+                {
+                  id: 'more',
+                  label: 'More',
+                  icon: Menu,
+                  action: () => setMobileMenuOpen(true),
+                  isActive: false,
+                },
+              ]
+            : [
+                {
+                  id: 'overview',
+                  label: 'Overview',
+                  icon: Sliders,
+                  action: () => setActiveTab('overview'),
+                  isActive: activeTab === 'overview',
+                },
+                {
+                  id: 'admissions',
+                  label: 'Admissions',
+                  icon: School,
+                  action: () => {
+                    setActiveTab('admissions');
+                    setAdmissionsSubTab(prev => prev || 'dashboard');
+                    if (onNavigateRoute) onNavigateRoute('/admin/admissions/dashboard');
+                  },
+                  isActive: activeTab === 'admissions',
+                },
+                {
+                  id: 'finances',
+                  label: 'Finances',
+                  icon: Landmark,
+                  action: () => setActiveTab('finances'),
+                  isActive: activeTab === 'finances',
+                },
+                {
+                  id: 'payroll',
+                  label: 'Payroll',
+                  icon: DollarSign,
+                  action: () => setActiveTab('payroll'),
+                  isActive: activeTab === 'payroll',
+                },
+                {
+                  id: 'more',
+                  label: 'More',
+                  icon: Menu,
+                  action: () => setMobileMenuOpen(true),
+                  isActive: false,
+                },
+              ]
+        }
+      />
+    </div>
+  </div>
+  );
+}

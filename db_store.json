@@ -1,0 +1,151 @@
+{
+  "news": [],
+  "books": [],
+  "loans": [],
+  "courses": [
+    {
+      "id": "838779eb-1b87-4a1d-9d9c-dc6bf648979a",
+      "code": "CERT-CAREGIVER",
+      "title": "Certificate in Caregiver",
+      "description": "A practical healthcare training program focused on patient support, personal care, homecare, elderly care, basic clinical support, communication, nutrition, infection prevention, rehabilitation, and safe assistance with activities of daily living. Curriculum areas include Patient Care Foundations, Basic Human Anatomy & Physiology, Basic Pharmacology & Safety Protocols, Basic Physiotherapy & Rehabilitation, Mental Health & Dementia Care, Basic Hospital Procedures & Triage, Nutrition & Dietary Meal Planning, Common Diseases & Chronic Management, Empathy-Driven Communication, and Infection Prevention, Control & Microbiology.",
+      "duration": "4 Months",
+      "fees": 0,
+      "thumbnail": "",
+      "faculty": "Health Sciences",
+      "active": true
+    },
+    {
+      "id": "e96f6dda-0e52-4b26-b0fa-462ae5eb8d99",
+      "code": "CERT-NURSE-ASST",
+      "title": "Certificate in Nurse Assistant",
+      "description": "A practical healthcare support program preparing learners for supervised patient care, hospital support duties, basic clinical procedures, vital signs monitoring, infection prevention, patient communication, mobility assistance, and healthcare documentation.",
+      "duration": "4 Months",
+      "fees": 0,
+      "thumbnail": "",
+      "faculty": "Health Sciences",
+      "active": true
+    },
+    {
+      "id": "f6fb4a36-da00-4177-952e-c0f61d72ff47",
+      "code": "CERT-HOMECARE",
+      "title": "Certificate in Homecare Assistant",
+      "description": "A practical home-based healthcare support program focused on personal care, elderly care, patient mobility, nutrition, medication safety, chronic disease support, rehabilitation, infection prevention, communication, and safe homecare practices.",
+      "duration": "4 Months",
+      "fees": 0,
+      "thumbnail": "",
+      "faculty": "Health Sciences",
+      "active": true
+    }
+  ],
+  "reviews": [],
+  "expenses": [],
+  "students": [],
+  "inventory": [],
+  "lecturers": [],
+  "examPapers": [],
+  "bookReviews": [],
+  "testimonies": [],
+  "bookRequests": [],
+  "readingLists": [],
+  "requisitions": [],
+  "reservations": [],
+  "financeAudits": [
+    {
+      "id": "2e73fddd-d0bf-41de-8669-a835e6976fc9",
+      "role": "Accountant",
+      "user": "Grace Wanjiku (Accountant)",
+      "action": "CREATE_INVOICE",
+      "status": "Success",
+      "resource": "Billed KES 67,000 to student ID f969a18b-42de-4274-9227-27c9fd76a4c8 (INV-2026-43143197)",
+      "timestamp": "2026-08-19 13:50:31"
+    },
+    {
+      "id": "60d173f4-a396-4ef5-bfe8-ed7fee086c8d",
+      "role": "Accountant",
+      "user": "Grace Wanjiku (Accountant)",
+      "action": "CREATE_INVOICE",
+      "status": "Success",
+      "resource": "Billed KES 70,000 to student ID fe237e2d-088d-4c86-bee8-09e9f754fa68 (INV-2026-26194646)",
+      "timestamp": "2026-08-19 07:24:22"
+    }
+  ],
+  "notifications": [
+    {
+      "id": "31236e4e-509f-4ca1-9250-6c3ef7ab0131",
+      "targetUserRole": "all",
+      "type": "payment",
+      "title": " [Invoice Generated] New Billing Invoice #INV-2026-26194646",
+      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
+      "status": "unread",
+      "dateTime": "2026-08-19 10:24:22+03"
+    },
+    {
+      "id": "90bf8028-8fad-4623-b8c5-ad477d37f288",
+      "targetUserRole": "all",
+      "type": "library",
+      "title": " [Grade Posted] New Grade for Unit CERT-CAREGIVER",
+      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
+      "status": "unread",
+      "dateTime": "2026-08-19 11:40:13+03"
+    },
+    {
+      "id": "0e2a5ebd-fa52-477f-a990-9a1ea8e77853",
+      "targetUserRole": "all",
+      "type": "library",
+      "title": " [Grade Posted] New Grade for Unit CERT-CAREGIVER",
+      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
+      "status": "unread",
+      "dateTime": "2026-08-19 11:40:07+03"
+    },
+    {
+      "id": "826f2125-a3a4-4773-8a7a-8e7a0081a4df",
+      "targetUserRole": "all",
+      "type": "library",
+      "title": " [Grade Posted] New Grade for Unit CERT-CAREGIVER",
+      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
+      "status": "unread",
+      "dateTime": "2026-08-19 14:59:50+03"
+    },
+    {
+      "id": "79f50eae-8b07-4ad3-9c71-d344787208e9",
+      "targetUserRole": "all",
+      "type": "library",
+      "title": " [Grade Posted] New Grade for Unit CERT-CAREGIVER",
+      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
+      "status": "unread",
+      "dateTime": "2026-08-19 16:56:44+03"
+    },
+    {
+      "id": "ed08ded6-e0b2-4e83-8128-12ee2869b181",
+      "targetUserRole": "all",
+      "type": "library",
+      "title": " [Grade Posted] New Grade for Unit CERT-CAREGIVER",
+      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
+      "status": "unread",
+      "dateTime": "2026-08-19 16:56:41+03"
+    },
+    {
+      "id": "576e223d-344e-49ef-83ad-3a688bb57efc",
+      "targetUserRole": "all",
+      "type": "payment",
+      "title": " [Invoice Generated] New Billing Invoice #INV-2026-43143197",
+      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
+      "status": "unread",
+      "dateTime": "2026-08-19 16:50:31+03"
+    }
+  ],
+  "libraryGateLogs": [],
+  "teacherResources": [],
+  "attendanceSessions": [
+    {
+      "id": "f2db794f-a904-67d1-f220-dc2123fba25a",
+      "date": "2026-08-19",
+      "subjectCode": "CERT-CAREGIVER",
+      "absentStudents": [],
+      "presentStudents": [
+        "f969a18b-42de-4274-9227-27c9fd76a4c8"
+      ]
+    }
+  ],
+  "passwordResetRequests": []
+}

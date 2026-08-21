@@ -1,0 +1,548 @@
+import React, { useState } from 'react';
+import {
+  ShieldCheck, User, Users, GraduationCap, ArrowRight, X,
+  LockKeyhole, Landmark, ChevronRight, BookOpen, KeyRound, School
+} from 'lucide-react';
+import { Student, Lecturer, UserRole } from '../types';
+import PasswordRecoveryModal from './PasswordRecoveryModal';
+import {
+  clearPendingPasswordChange,
+  forgetRememberedLogin,
+  getRememberedLogin,
+  pickLoginIdentifier,
+  rememberLogin,
+  setPendingPasswordChange
+} from '../authIdentity';
+
+interface LoginPageProps {
+  students: Student[];
+  lecturers: Lecturer[];
+  onLogin: (role: UserRole, userId: string) => void;
+  onClose: () => void;
+  infoMessage?: string;
+}
+
+type ExtendedRole = 'student' | 'lecturer' | 'accountant' | 'librarian' | 'admin';
+
+interface RolePortalConfig {
+  id: ExtendedRole;
+  name: string;
+  tagline: string;
+  themeColor: 'blue' | 'violet' | 'emerald' | 'amber' | 'slate';
+  themeBg: string;
+  brandColor: string;
+  accentBg: string;
+  textColor: string;
+  buttonBg: string;
+  hoverBg: string;
+  gradient: string;
+  description: string;
+  features: string[];
+}
+
+const GENERIC_AUTH_ERROR = 'Invalid username or password.';
+
+export default function LoginPage({
+  students,
+  lecturers,
+  onLogin,
+  onClose,
+  infoMessage
+}: LoginPageProps) {
+  const rememberedLogin = getRememberedLogin();
+
+  const [activePortal, setActivePortal] = useState<ExtendedRole>(
+    () => (rememberedLogin?.role as ExtendedRole) || 'student'
+  );
+  // Never pre-fill demo credentials. Remember-me may restore a prior identifier only.
+  const [selectedUser, setSelectedUser] = useState<string>(
+    () => (rememberedLogin?.role ? rememberedLogin.identifier : '') || ''
+  );
+  const [passcode, setPasscode] = useState<string>('');
+  const [rememberMe, setRememberMe] = useState<boolean>(() => !!rememberedLogin);
+  const [errorText, setErrorText] = useState<string>('');
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [isRecoveryMode, setIsRecoveryMode] = useState<boolean>(false);
+
+  const handlePortalSwitch = (portal: ExtendedRole) => {
+    setActivePortal(portal);
+    setErrorText('');
+    setPasscode('');
+    // Keep remembered identifier only when switching back to the same remembered role
+    if (rememberedLogin && rememberedLogin.role === portal) {
+      setSelectedUser(rememberedLogin.identifier);
+    } else {
+      setSelectedUser('');
+    }
+  };
+
+  const portalConfigs: Record<ExtendedRole, RolePortalConfig> = {
+    student: {
+      id: 'student',
+      name: 'Undergraduate Student Hub',
+      tagline: 'Student Academic Portal Access',
+      themeColor: 'blue',
+      themeBg: 'bg-blue-600',
+      brandColor: 'text-blue-600',
+      accentBg: 'bg-blue-50 dark:bg-blue-950/30 text-blue-800 dark:text-blue-300 border-blue-100 dark:border-blue-900/50',
+      textColor: 'text-blue-600 dark:text-blue-400',
+      buttonBg: 'bg-blue-600 hover:bg-blue-700 shadow-blue-100 dark:shadow-none',
+      hoverBg: 'hover:bg-blue-50/80 dark:hover:bg-blue-950/20',
+      gradient: 'from-blue-600 to-indigo-900',
+      description: 'Your central hub for academic progress, lecture modules, registered units, grades, billing ledgers, and digital libraries.',
+      features: [
+        'Real-time grades (CAT, Exam grids)',
+        'Class attendance telemetry logs',
+        'Academic fee statement invoices',
+        'LMS digital textbook loans & feedback',
+        'Syllabus & dynamic office hours booking'
+      ],
+    },
+    lecturer: {
+      id: 'lecturer',
+      name: 'Faculty Workspace Console',
+      tagline: 'Academic Instructors Entrance',
+      themeColor: 'violet',
+      themeBg: 'bg-violet-600',
+      brandColor: 'text-violet-600',
+      accentBg: 'bg-violet-50 dark:bg-violet-950/30 text-violet-800 dark:text-violet-300 border-violet-100 dark:border-violet-900/50',
+      textColor: 'text-violet-600 dark:text-violet-400',
+      buttonBg: 'bg-violet-600 hover:bg-violet-700 shadow-violet-100 dark:shadow-none',
+      hoverBg: 'hover:bg-violet-50/80 dark:hover:bg-violet-950/20',
+      gradient: 'from-violet-600 to-purple-900',
+      description: 'The secure gateway for course directors, professors, and adjunct faculty to administrate classes and review statistics.',
+      features: [
+        'Direct student grades spreadsheet editing',
+        'Logged hours payroll tracking',
+        'Interactive office hours slot scheduler',
+        'Class research publication indices',
+        'Curriculum reading list dispatch'
+      ],
+    },
+    accountant: {
+      id: 'accountant',
+      name: 'Corporate Finance & Ledger',
+      tagline: 'Treasury & Disbursements Office',
+      themeColor: 'emerald',
+      themeBg: 'bg-emerald-600',
+      brandColor: 'text-emerald-600',
+      accentBg: 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300 border-emerald-100 dark:border-emerald-900/50',
+      textColor: 'text-emerald-600 dark:text-emerald-400',
+      buttonBg: 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-100 dark:shadow-none',
+      hoverBg: 'hover:bg-emerald-50/80 dark:hover:bg-emerald-950/20',
+      gradient: 'from-emerald-600 to-teal-955',
+      description: 'Audited double-entry ledger portal for fee reconciliation, corporate partnerships, budgeting, and operations payroll routing.',
+      features: [
+        'Corporate partner supplier databases',
+        'Auditable debit/credit double-entry vouchers',
+        'Departmental expenditure ceilings & warning alerts',
+        'Financial audit trail logs with category filters',
+        'Excel-compatible CSV spreadsheet export'
+      ],
+    },
+    librarian: {
+      id: 'librarian',
+      name: 'Bibliotheca Catalog & Archivist',
+      tagline: 'Library HQ Control Room',
+      themeColor: 'amber',
+      themeBg: 'bg-amber-600',
+      brandColor: 'text-amber-600',
+      accentBg: 'bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 border-amber-100 dark:border-amber-900/50',
+      textColor: 'text-amber-600 dark:text-amber-400',
+      buttonBg: 'bg-amber-600 hover:bg-amber-700 shadow-amber-100 dark:shadow-none',
+      hoverBg: 'hover:bg-amber-50/80 dark:hover:bg-amber-950/20',
+      gradient: 'from-amber-600 to-red-950',
+      description: 'Archive control station to track textbook procurement, catalog checkout logs, overdue fines, and physical gate entries.',
+      features: [
+        'Comprehensive textbook master catalogs',
+        'Real-time checkout, return and damage audits',
+        'Student hold request approval & comments',
+        'Physical library gate attendance logs',
+        'Procurement feedback & suggestion routing'
+      ],
+    },
+    admin: {
+      id: 'admin',
+      name: 'System Administrator Gateway',
+      tagline: 'Master Operational Command Station',
+      themeColor: 'slate',
+      themeBg: 'bg-slate-700',
+      brandColor: 'text-slate-700',
+      accentBg: 'bg-slate-50 dark:bg-slate-900/50 text-slate-800 dark:text-slate-300 border-slate-200 dark:border-slate-850',
+      textColor: 'text-slate-700 dark:text-slate-300',
+      buttonBg: 'bg-slate-800 hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600',
+      hoverBg: 'hover:bg-slate-100 dark:hover:bg-slate-900/30',
+      gradient: 'from-slate-700 to-slate-950',
+      description: 'High-security master operations center granting global database reads, profile creation, and core system parameters allocation.',
+      features: [
+        'Global HR payroll & ledger oversight',
+        'Granular role-management permission assigns',
+        'Undergraduate profile registrations & removals',
+        'Lecturer faculty appointments & code allocations',
+        'Audit telemetry and procurement clearances'
+      ],
+    }
+  };
+
+  const currentConfig = portalConfigs[activePortal];
+
+  const identifierLabel =
+    activePortal === 'student'
+      ? 'Admission Number / Email'
+      : activePortal === 'admin'
+        ? 'Admin Username / Email'
+        : 'Staff Code / Email';
+
+  const handleFormSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorText('');
+
+    const submittedIdentifier = selectedUser.trim();
+    if (!submittedIdentifier || !passcode) {
+      setErrorText(GENERIC_AUTH_ERROR);
+      return;
+    }
+
+    localStorage.removeItem('zenti_session_token');
+    localStorage.removeItem('zenti_refresh_token');
+    clearPendingPasswordChange();
+    setIsSubmitting(true);
+
+    fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        role: activePortal,
+        userId: submittedIdentifier,
+        passcode,
+      }),
+    })
+      .then(async (res) => {
+        const text = await res.text();
+        let data: any;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          throw new Error('Unable to reach authentication service.');
+        }
+        if (!res.ok) {
+          if (res.status === 403) {
+            throw new Error('You are not authorized to access this portal. Please use the correct login page.');
+          }
+          if (res.status === 401) {
+            throw new Error(GENERIC_AUTH_ERROR);
+          }
+          throw new Error(data.error || 'Unable to reach authentication service.');
+        }
+        return data;
+      })
+      .then((data) => {
+        if (!data.success) {
+          setErrorText(GENERIC_AUTH_ERROR);
+          return;
+        }
+
+        const canonicalIdentifier = pickLoginIdentifier(
+          data.username,
+          submittedIdentifier,
+          data.email
+        );
+
+        if (rememberMe) {
+          rememberLogin(canonicalIdentifier, data.role || activePortal);
+        } else {
+          forgetRememberedLogin();
+        }
+
+        if (data.status === 'REQUIRES_PASSWORD_CHANGE') {
+          // Persist the authenticated forced-change session before redirecting.
+          // /change-password and /api/auth/change-password require this JWT.
+          if (data.token) {
+            localStorage.setItem('zenti_session_token', data.token);
+          }
+          if (data.refreshToken) {
+            localStorage.setItem('zenti_refresh_token', data.refreshToken);
+          }
+          setPendingPasswordChange({
+            identifier: canonicalIdentifier,
+            userId: data.userId,
+            role: data.role,
+            email: data.email
+          });
+          window.history.pushState({}, '', '/change-password');
+          window.dispatchEvent(new Event('popstate'));
+          return;
+        }
+
+        localStorage.setItem('zenti_session_token', data.token);
+        if (data.refreshToken) {
+          localStorage.setItem('zenti_refresh_token', data.refreshToken);
+        }
+
+        if (data.role === 'lecturer' && data.profile?.isAccountant) {
+          onLogin('accountant', data.userId);
+        } else if (data.role === 'lecturer' && data.profile?.isLibrarian) {
+          onLogin('librarian', data.userId);
+        } else {
+          onLogin(data.role, data.userId);
+        }
+      })
+      .catch((err) => {
+        const message = err?.message || '';
+        if (
+          message === GENERIC_AUTH_ERROR ||
+          /invalid|credential|password|username|not found|authentication failed/i.test(message)
+        ) {
+          setErrorText(GENERIC_AUTH_ERROR);
+        } else {
+          setErrorText(message || 'Unable to reach authentication service.');
+        }
+      })
+      .finally(() => {
+        setIsSubmitting(false);
+      });
+  };
+
+  const getRoleIcon = (roleId: ExtendedRole, size: string = 'w-5 h-5') => {
+    switch (roleId) {
+      case 'student': return <GraduationCap className={size} />;
+      case 'lecturer': return <Users className={size} />;
+      case 'accountant': return <Landmark className={size} />;
+      case 'librarian': return <BookOpen className={size} />;
+      case 'admin': return <LockKeyhole className={size} />;
+    }
+  };
+
+  if (isRecoveryMode) {
+    return (
+      <PasswordRecoveryModal
+        isOpen={isRecoveryMode}
+        onClose={() => {
+          setIsRecoveryMode(false);
+          onClose();
+        }}
+        onSwitchToLogin={() => setIsRecoveryMode(false)}
+        students={students}
+        lecturers={lecturers}
+      />
+    );
+  }
+
+  return (
+    <div className="min-h-screen w-full flex flex-col md:flex-row bg-white dark:bg-slate-900 transition-colors duration-300">
+
+      <div className={`w-full md:w-[45%] lg:w-[40%] bg-gradient-to-br ${currentConfig.gradient} text-white p-10 md:p-14 flex flex-col justify-between relative overflow-hidden shrink-0`}>
+
+        <div className="absolute inset-0 opacity-10 font-mono text-[9px] select-none pointer-events-none leading-relaxed overflow-hidden">
+          {Array.from({ length: 40 }).map((_, i) => (
+            <div key={i} className="whitespace-nowrap tracking-widest leading-none py-0.5">
+              {`MIS_SEC_LEVEL_${activePortal.toUpperCase()}_TOKEN_STATE_0x${(i * 1234).toString(16).toUpperCase()}_VALIDATED_ACCESS_GRANTED`}
+            </div>
+          ))}
+        </div>
+
+        <div className="relative z-10 space-y-12">
+          <div className="flex items-center gap-3 cursor-pointer" onClick={onClose}>
+            <div className="w-11 h-11 bg-white text-blue-600 rounded-xl flex items-center justify-center font-black shadow-lg">
+              <School className="w-6 h-6" />
+            </div>
+            <div>
+              <span className="font-mono text-[10px] tracking-widest text-blue-200 font-bold block uppercase leading-none">Training College & Medical Center</span>
+              <span className="font-extrabold text-white text-lg leading-none tracking-tight">ALIKA MEDICAL</span>
+            </div>
+          </div>
+
+          <div className="space-y-4 pt-6">
+            <div className="inline-flex items-center gap-2 px-3 py-1 bg-white/15 backdrop-blur-xs border border-white/10 text-[9.5px] font-black tracking-widest uppercase rounded-full">
+              {getRoleIcon(activePortal, 'w-3 h-3 text-amber-300')}
+              <span>{currentConfig.tagline}</span>
+            </div>
+            <h2 className="text-3xl lg:text-4xl font-black font-display tracking-tight leading-tight">
+              {currentConfig.name}
+            </h2>
+            <p className="text-sm text-blue-100 dark:text-slate-300 leading-relaxed font-light">
+              {currentConfig.description}
+            </p>
+          </div>
+
+          <div className="space-y-3.5 pt-4 border-t border-white/10">
+            <span className="text-[10px] uppercase font-mono tracking-widest text-white/60 font-bold block">Authorized Gateway Scope</span>
+            <ul className="space-y-2">
+              {currentConfig.features.map((feat, index) => (
+                <li key={index} className="flex items-start gap-2.5 text-xs text-blue-50/90 leading-tight">
+                  <ChevronRight className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+                  <span>{feat}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+
+        <div className="relative z-10 pt-10 border-t border-white/5 flex items-center justify-between text-xs text-white/65 font-mono">
+          <div className="flex items-center gap-1.5">
+            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            <span>SSL SECURE PORTAL</span>
+          </div>
+          <span>256-BIT CRYPTO</span>
+        </div>
+      </div>
+
+      <div className="flex-1 p-8 md:p-14 lg:p-20 flex flex-col justify-between bg-slate-50 dark:bg-slate-900/40 relative min-h-screen md:min-h-0">
+
+        <div className="flex justify-between items-center mb-8 shrink-0">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors"
+            title="Cancel and return to homepage"
+          >
+            <X className="w-4 h-4" />
+            <span>Return to Homepage</span>
+          </button>
+
+          <span className="text-[10px] bg-slate-200/60 dark:bg-slate-800 text-slate-600 dark:text-slate-400 font-bold px-2.5 py-1 rounded-full uppercase tracking-wider">
+            Portal V1.2.0
+          </span>
+        </div>
+
+        <div className="max-w-md w-full mx-auto space-y-8 flex-1 flex flex-col justify-center">
+
+          <div className="space-y-2 text-center md:text-left">
+            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest font-mono">Choose Portal Access</h4>
+            <h2 className="text-2xl font-black text-slate-800 dark:text-slate-100 tracking-tight">Select your gateway role</h2>
+          </div>
+
+          <div className="grid grid-cols-5 gap-2" id="login-role-switchboard">
+            {(Object.keys(portalConfigs) as ExtendedRole[]).map((roleId) => {
+              const isActive = activePortal === roleId;
+              const config = portalConfigs[roleId];
+              return (
+                <button
+                  key={roleId}
+                  type="button"
+                  onClick={() => handlePortalSwitch(roleId)}
+                  className={`p-3 rounded-2xl flex flex-col items-center gap-1.5 border transition-all text-center cursor-pointer ${
+                    isActive
+                      ? 'border-blue-600 bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 font-bold shadow-md scale-105 ring-2 ring-blue-100 dark:ring-blue-900/30'
+                      : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100/30'
+                  }`}
+                  title={config.name}
+                >
+                  <div className={`p-1.5 rounded-xl ${isActive ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400' : 'text-slate-400'}`}>
+                    {getRoleIcon(roleId, 'w-4 h-4')}
+                  </div>
+                  <span className="text-[10px] tracking-tight leading-none capitalize font-bold">{roleId}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="h-px bg-slate-200 dark:bg-slate-800" />
+
+          <form onSubmit={handleFormSubmit} className="space-y-6 bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-lg" autoComplete="on">
+
+            {infoMessage && (
+              <div className="flex items-center gap-2 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 text-xs px-4 py-3 rounded-2xl border border-blue-100 dark:border-blue-900/40 font-medium animate-fadeIn">
+                <span className="w-2 h-2 rounded-full bg-blue-600 shrink-0 animate-ping"></span>
+                <span>{infoMessage}</span>
+              </div>
+            )}
+
+            {errorText && (
+              <div className="flex items-center gap-2 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-300 text-xs px-4 py-3 rounded-2xl border border-rose-100 dark:border-rose-900/40 font-medium">
+                <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0 animate-ping"></span>
+                <span>{errorText}</span>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <label htmlFor="login-identifier-input" className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                {identifierLabel}
+              </label>
+              <div className="relative">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">
+                  <User className="w-4 h-4" />
+                </span>
+                <input
+                  id="login-identifier-input"
+                  type="text"
+                  name="username"
+                  autoComplete="username"
+                  required
+                  value={selectedUser}
+                  onChange={(e) => {
+                    setSelectedUser(e.target.value);
+                    setErrorText('');
+                  }}
+                  className="w-full bg-slate-50/70 dark:bg-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-700 rounded-2xl pl-11 pr-4 py-3 text-xs text-slate-900 focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-500/20 font-medium transition-all"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label htmlFor="login-password-field" className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                Password
+              </label>
+              <div className="relative">
+                <input
+                  id="login-password-field"
+                  type="password"
+                  name="password"
+                  autoComplete="current-password"
+                  value={passcode}
+                  onChange={(e) => {
+                    setPasscode(e.target.value);
+                    setErrorText('');
+                  }}
+                  className="w-full bg-slate-50/70 dark:bg-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-700 rounded-2xl px-4 py-3 text-xs text-slate-900 focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-500/20 font-mono transition-all pr-10"
+                  required
+                />
+                <KeyRound className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between text-xs pt-1">
+              <label className="flex items-center gap-2 text-slate-500 dark:text-slate-400 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="rounded-md border-slate-300 text-blue-600 focus:ring-blue-500/20"
+                />
+                <span className="font-medium">Remember Me</span>
+              </label>
+
+              <button
+                type="button"
+                onClick={() => setIsRecoveryMode(true)}
+                className="font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 hover:underline cursor-pointer"
+              >
+                Forgot Password?
+              </button>
+            </div>
+
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className={`w-full mt-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 px-6 rounded-2xl text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all duration-200 cursor-pointer text-center shadow-md shadow-blue-500/20 ${isSubmitting ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              <span>{isSubmitting ? 'Signing In...' : 'Sign In'}</span>
+              <ArrowRight className={`w-4 h-4 ${isSubmitting ? 'animate-ping' : ''}`} />
+            </button>
+
+          </form>
+        </div>
+
+        <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono uppercase tracking-widest text-center mt-8 pt-4 border-t border-slate-200 dark:border-slate-800/80 flex flex-col sm:flex-row items-center justify-between gap-2 shrink-0">
+          <span>ALIKA MEDICAL TRAINING COLLEGE &amp; MEDICAL CENTER</span>
+          <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span>Secure System Active</span>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+  );
+}

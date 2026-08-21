@@ -1,0 +1,107 @@
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { sql } from "drizzle-orm";
+import { db, isDatabaseConfigured } from "./index.ts";
+
+const currentDir =
+  typeof __dirname !== "undefined"
+    ? __dirname
+    : typeof import.meta !== "undefined" && import.meta.url
+      ? path.dirname(fileURLToPath(import.meta.url))
+      : process.cwd();
+
+const drizzleCandidates = [
+  path.resolve(process.cwd(), "backend/drizzle"),
+  path.resolve(process.cwd(), "drizzle"),
+  path.resolve(currentDir, "../../drizzle"),
+  path.resolve(currentDir, "../drizzle"),
+  path.resolve(currentDir, "./drizzle"),
+];
+const drizzleDir = drizzleCandidates.find((dir) => fs.existsSync(dir)) || path.resolve(process.cwd(), "backend/drizzle");
+
+const studentSchemaMigrations = [
+  "0004_student_registry_fields.sql",
+  "0005_student_account_status.sql",
+  "0006_archive_records.sql",
+  "0007_attendance_late_students.sql",
+  "0008_allow_negative_invoice_amounts.sql",
+  "0009_admissions_academics_production.sql",
+  "0010_add_course_thumbnail.sql",
+  "0011_admin_password_reset_tokens.sql",
+  "0012_student_course_id.sql",
+  "0013_student_assessment_marks.sql",
+  "0014_assessment_config.sql",
+  "0015_invoice_number_sequence.sql",
+];
+
+export async function runMigrations(retries = 3, delayMs = 2000): Promise<void> {
+  if (!isDatabaseConfigured) {
+    console.log("[Migrations] No external database configured. Skipping relational migrations (local storage mode active).");
+    return;
+  }
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      await db.execute(sql`
+        CREATE TABLE IF NOT EXISTS app_migrations (
+          name VARCHAR(255) PRIMARY KEY,
+          applied_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+        )
+      `);
+
+      const appliedRows = await db.execute(sql`SELECT name FROM app_migrations`);
+      const applied = new Set(
+        appliedRows.rows
+          .map((row: any) => row?.name)
+          .filter((name: unknown): name is string => typeof name === "string"),
+      );
+
+      for (const migrationFile of studentSchemaMigrations) {
+        if (applied.has(migrationFile)) {
+          continue;
+        }
+
+        const migrationPath = path.join(drizzleDir, migrationFile);
+        const migrationSql = fs.readFileSync(migrationPath, "utf8");
+        const statements = migrationSql
+          .split("--> statement-breakpoint")
+          .map((statement) => statement.trim())
+          .filter(Boolean);
+
+        for (const statement of statements) {
+          await db.execute(sql.raw(statement));
+        }
+
+        await db.execute(
+          sql`INSERT INTO app_migrations (name) VALUES (${migrationFile}) ON CONFLICT (name) DO NOTHING`,
+        );
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+      console.warn(
+        `[Migrations] Attempt ${attempt}/${retries} failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      if (attempt < retries) {
+        console.log(`[Migrations] Retrying in ${delayMs / 1000}s...`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  throw lastError;
+}
+
+if (process.argv[1]?.endsWith("migrate.ts") || process.argv[1]?.endsWith("migrate.js")) {
+  runMigrations()
+    .then(() => {
+      console.log("Drizzle migrations completed successfully.");
+      process.exit(0);
+    })
+    .catch((error) => {
+      console.error("Drizzle migrations failed:", error);
+      process.exit(1);
+    });
+}

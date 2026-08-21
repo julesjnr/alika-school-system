@@ -1,0 +1,249 @@
+{
+  "news": [],
+  "books": [],
+  "loans": [],
+  "courses": [
+    {
+      "id": "84052583-cc1f-4208-8fbb-e44a0af4db24",
+      "code": "CERT-CAREGIVER",
+      "title": "Certificate in Caregiver",
+      "description": "A practical healthcare training programme preparing learners to provide professional patient, elderly and home-based care.",
+      "duration": "4 Months",
+      "fees": 0,
+      "thumbnail": "",
+      "faculty": "Health Sciences",
+      "active": true
+    },
+    {
+      "id": "5409825d-438a-4c36-871f-3990c92097e9",
+      "code": "CERT-NURSE-ASSISTANT",
+      "title": "Certificate in Nurse Assistant",
+      "description": "A healthcare support training programme preparing learners for supervised patient care and clinical support roles.",
+      "duration": "4 Months",
+      "fees": 0,
+      "thumbnail": "",
+      "faculty": "Health Sciences",
+      "active": true
+    },
+    {
+      "id": "b49d59ae-dd15-4098-9c7e-1d7ad4db880c",
+      "code": "CERT-HOMECARE-ASSISTANT",
+      "title": "Certificate in Homecare Assistant",
+      "description": "A practical healthcare programme preparing learners to provide safe and professional health support in home and family care environments.",
+      "duration": "4 Months",
+      "fees": 0,
+      "thumbnail": "",
+      "faculty": "Health Sciences",
+      "active": true
+    }
+  ],
+  "reviews": [],
+  "expenses": [],
+  "students": [
+    {
+      "id": "5ed57c6e-d502-4263-85a5-c64700ade5ee",
+      "name": "Eva wambui",
+      "email": "wambui@gmail.com",
+      "phone": "07984677621",
+      "admissionNo": "ALK-002",
+      "cohort": "2026",
+      "courseId": "5409825d-438a-4c36-871f-3990c92097e9",
+      "programme": "Certificate in Nurse Assistant",
+      "accountStatus": "Active",
+      "createdAt": "2026-08-17 04:06:53.461+00",
+      "enrolledUnits": [
+        "CERT-NURSE-ASSISTANT"
+      ],
+      "grades": {},
+      "unpublishedSubjects": [],
+      "ledger": [
+        {
+          "id": "cb2eea97-5bc6-4f39-96d5-7e44a69b27ee",
+          "invoiceNo": "INV-2026-000001",
+          "description": "please pay",
+          "amount": 8000,
+          "date": "2026-08-17",
+          "status": "unpaid"
+        }
+      ],
+      "payments": [],
+      "attendance": {}
+    },
+    {
+      "id": "21fea12e-ff1d-4b62-9ff6-7568b7c7246c",
+      "name": "Kenneth kyalo",
+      "email": "kyalo@gmail.com",
+      "phone": "078856544555",
+      "admissionNo": "ALK-001",
+      "cohort": "2026",
+      "courseId": "84052583-cc1f-4208-8fbb-e44a0af4db24",
+      "programme": "Certificate in Caregiver",
+      "accountStatus": "Active",
+      "createdAt": "2026-08-17 20:29:14.646+00",
+      "enrolledUnits": [
+        "CERT-CAREGIVER"
+      ],
+      "grades": {},
+      "unpublishedSubjects": [],
+      "ledger": [
+        {
+          "id": "6948a420-129d-4a65-ad60-f7ec19dd058a",
+          "invoiceNo": "INV-2026-85316157",
+          "description": "please pay",
+          "amount": 577577,
+          "date": "2026-08-17",
+          "status": "unpaid"
+        }
+      ],
+      "payments": [
+        {
+          "id": "ad2ccca6-76b2-4480-9166-ccc10bc71947",
+          "amount": 577577,
+          "invoiceId": "6948a420-129d-4a65-ad60-f7ec19dd058a",
+          "studentId": "21fea12e-ff1d-4b62-9ff6-7568b7c7246c",
+          "paymentMethod": "M-Pesa",
+          "transactionId": "QLUICBTOI",
+          "date": "2026-08-18",
+          "status": "unreconciled"
+        }
+      ],
+      "attendance": {}
+    }
+  ],
+  "inventory": [],
+  "lecturers": [
+    {
+      "id": "e7d73e76-a5a5-43b8-9630-104791220520",
+      "name": "mwaniki njogu",
+      "email": "njogu@alikamedical.edu.co.ke",
+      "phone": "0986576435",
+      "hourlyRate": 200,
+      "loggedHours": 80,
+      "bankDetails": "Co-operative Bank of Kenya - 04587687567 (Nairobi Central)",
+      "contractLength": "Permanent",
+      "designatorCode": "STF-2026-003",
+      "bio": "",
+      "avatar": "",
+      "isActive": true,
+      "isAccountant": false,
+      "isLibrarian": false,
+      "subjects": [],
+      "publications": [],
+      "researchInterests": [],
+      "officeHours": []
+    },
+    {
+      "id": "cea98343-cedb-4dd5-8b2a-752d5ab9e08f",
+      "name": "mercy mueni",
+      "email": "mueni@alikamedical.edu.co.ke",
+      "phone": "07986437656",
+      "hourlyRate": 150,
+      "loggedHours": 82,
+      "bankDetails": "KCB Bank Kenya - 086257673546213 (Nairobi Central)",
+      "contractLength": "Permanent",
+      "designatorCode": "STF-2026-002",
+      "bio": "",
+      "avatar": "",
+      "isActive": true,
+      "isAccountant": false,
+      "isLibrarian": false,
+      "subjects": [
+        "CERT-NURSE-ASSISTANT"
+      ],
+      "publications": [],
+      "researchInterests": [],
+      "officeHours": []
+    },
+    {
+      "id": "3cc17dfe-28e2-4f89-a5ca-82cda0b6bb90",
+      "name": "maina kageni",
+      "email": "maina@alikamedical.edu.co.ke",
+      "phone": "07874763452",
+      "hourlyRate": 100,
+      "loggedHours": 82,
+      "bankDetails": "Equity Bank Kenya - 049463984373 (Nairobi Central)",
+      "contractLength": "Permanent",
+      "designatorCode": "STF-2026-001",
+      "bio": "",
+      "avatar": "",
+      "isActive": true,
+      "isAccountant": false,
+      "isLibrarian": false,
+      "subjects": [
+        "CERT-CAREGIVER"
+      ],
+      "publications": [],
+      "researchInterests": [],
+      "officeHours": []
+    }
+  ],
+  "examPapers": [],
+  "bookReviews": [],
+  "testimonies": [],
+  "bookRequests": [],
+  "readingLists": [],
+  "requisitions": [],
+  "reservations": [],
+  "financeAudits": [
+    {
+      "id": "63cbf6c7-7c6b-464a-9476-ec63514f096b",
+      "role": "Accountant",
+      "user": "Grace Wanjiku (Accountant)",
+      "action": "CREATE_INVOICE",
+      "status": "Success",
+      "resource": "Billed KES 577,577 to student ID 21fea12e-ff1d-4b62-9ff6-7568b7c7246c (INV-2026-85316157)",
+      "timestamp": "2026-08-17 21:57:34"
+    },
+    {
+      "id": "63658552-9d43-423e-be6c-70d332165668",
+      "role": "Accountant",
+      "user": "Grace Wanjiku (Accountant)",
+      "action": "CREATE_INVOICE",
+      "status": "Success",
+      "resource": "Billed KES 8,000 to student ID 5ed57c6e-d502-4263-85a5-c64700ade5ee (INV-2026-000001)",
+      "timestamp": "2026-08-17 20:13:43"
+    }
+  ],
+  "notifications": [
+    {
+      "id": "49c2568b-40e1-4db4-8cb5-92f90fde4f5f",
+      "targetUserRole": "all",
+      "type": "payment",
+      "title": " [Invoice Generated] New Billing Invoice #INV-2026-85316157",
+      "message": "Kenneth kyalo (kenneth.kyalo@alikamedical.co.ke): Dear Kenneth kyalo,",
+      "status": "unread",
+      "dateTime": "2026-08-17 21:57:34+00"
+    },
+    {
+      "id": "25cdbb73-a8e5-417c-8f3f-b6fda978a6a3",
+      "targetUserRole": "all",
+      "type": "library",
+      "title": " [Grade Posted] New Grade for Unit CERT-CAREGIVER",
+      "message": "Kenneth kyalo (kenneth.kyalo@alikamedical.co.ke): Dear Kenneth kyalo,",
+      "status": "unread",
+      "dateTime": "2026-08-17 21:35:28+00"
+    },
+    {
+      "id": "b36df254-d4d8-4ee7-861f-e18992f3f37f",
+      "targetUserRole": "all",
+      "type": "library",
+      "title": " [Grade Posted] New Grade for Unit CERT-NURSE-ASSISTANT",
+      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
+      "status": "unread",
+      "dateTime": "2026-08-17 06:03:14+00"
+    },
+    {
+      "id": "7b705552-ef41-470f-9e14-c3d01f0d9193",
+      "targetUserRole": "all",
+      "type": "library",
+      "title": " [Grade Posted] New Grade for Unit CERT-NURSE-ASSISTANT",
+      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
+      "status": "unread",
+      "dateTime": "2026-08-17 05:54:07+00"
+    }
+  ],
+  "libraryGateLogs": [],
+  "teacherResources": [],
+  "attendanceSessions": [],
+  "passwordResetRequests": []
+}

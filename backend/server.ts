@@ -1,0 +1,7745 @@
+import dotenv from 'dotenv';
+dotenv.config({ override: true });
+import express from "express";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
+import crypto from "crypto";
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
+import multer from 'multer';
+import { createCorsMiddleware } from "./src/cors.ts";
+import { db, isDatabaseConfigured } from "./src/db/index.ts";
+import { runMigrations } from "./src/db/migrate.ts";
+import {
+  clientSafeDbError,
+  resolveStudentSortField,
+  resolveStudentSortOrder,
+  toIlikeContainsPattern,
+} from "./src/db/sqlSafety.ts";
+import {
+  systemState,
+  students,
+  studentEnrollments,
+  payments,
+  invoices,
+  studentAttendance,
+  grades,
+  examPapers,
+  lecturers,
+  courses,
+  lecturerSubjects,
+  lecturerPublications,
+  lecturerResearchInterests,
+  officeHourSlots,
+  courseReviews,
+  expenses,
+  stockItems,
+  requisitions,
+  testimonies,
+  books,
+  loans,
+  reservations,
+  readingLists,
+  readingListBooks,
+  bookReviews,
+  bookRequests,
+  teacherResources,
+  libraryGateLogs,
+  notifications,
+  passwordResetRequests,
+  transactions,
+  studentLedger,
+  users,
+  teachingSessions,
+  lectureSchedules,
+  syllabusTopics,
+  classAttendanceSessions,
+  studentAssessmentMarks,
+  assessmentConfigurations,
+  archiveRecords,
+  archiveAuditLogs,
+} from "./src/db/schema.ts";
+import { eq, notInArray, and, or, desc, asc, count, inArray, sql } from "drizzle-orm";
+import { supabase } from "./src/db/supabaseClient.ts";
+import {
+  hashPassword,
+  verifyPassword,
+  resolvePassword,
+  upsertUserAuthRecord,
+  sanitizeProfile,
+  issueAuthToken,
+  issueAccessToken,
+  issueRefreshToken,
+  migrateAuthSchemaAndData,
+  authenticateUser,
+  changeUserPassword,
+  adminResetUserPassword,
+  resetStudentPassword,
+  PasswordResetError,
+  findUserByIdentifier,
+} from "./src/auth.ts";
+import {
+  calculateOverallPercentage,
+  calculateWeightedAssessmentResult,
+  continuousAssessmentTotal,
+  letterGradeFromOverallPercentage,
+  maxMarksForField,
+  sanitizeStudentGradesRecord,
+  validateAggregateGrade,
+  validateMarkBreakdown,
+  validateAssessmentWeights,
+} from "./src/marksValidation.ts";
+import {
+  computePublishedAssessmentSummary,
+  computeStudentAcademicSummary,
+  deriveAcademicStanding,
+} from "./src/studentLookup.ts";
+import { ensureStudentCanonicalEnrollment } from "./src/studentEnrollmentSync.ts";
+import { generateInvoiceNumber, resolveInvoiceDefaults } from "./src/invoiceNumber.ts";
+
+// Import initial mock databases from src/data.ts to bootstrap our persistent store
+import { 
+  initialCourses, initialLecturers, initialStudents, 
+  initialExpenses, initialInventory, initialRequisitions, 
+  initialNews, initialTestimonies, initialReviews,
+  initialBooks, initialLoans, initialReservations, initialReadingLists,
+  initialBookReviews, initialBookRequests, initialExamPapers, initialTeacherResources, initialLibraryGateLogs,
+  initialNotifications
+} from "./src/data";
+
+const app = express();
+const PORT = Number(process.env.PORT) || 3000;
+
+const uploadBaseDirectory = process.env.UPLOAD_DIR || (
+  fs.existsSync(path.join(process.cwd(), 'uploads'))
+    ? path.join(process.cwd(), 'uploads')
+    : (fs.existsSync(path.join(process.cwd(), 'backend/uploads'))
+        ? path.join(process.cwd(), 'backend/uploads')
+        : path.join(process.cwd(), 'uploads'))
+);
+function ensureUploadsDirectory() {
+  if (!fs.existsSync(uploadBaseDirectory)) {
+    fs.mkdirSync(uploadBaseDirectory, { recursive: true });
+  }
+}
+app.use('/uploads/schools', express.static(path.join(uploadBaseDirectory, 'schools')));
+app.use('/uploads/misc', express.static(path.join(uploadBaseDirectory, 'misc')));
+app.use('/uploads/applications', (req: any, res: any, next: any) => {
+  authenticateJWT(req, res, () => {
+    const userRole = req.user?.role;
+    if (userRole && (['admin', 'super_admin', 'admissions_officer', 'student', 'lecturer'].includes(userRole))) {
+      return express.static(path.join(uploadBaseDirectory, 'applications'))(req, res, next);
+    }
+    return res.status(403).json({ error: "Access Denied: You do not have permission to view private applicant documents." });
+  });
+});
+app.use('/uploads', express.static(uploadBaseDirectory));
+
+const uploadStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    try {
+      // Use roleId (tenant/school) when available; fall back to a public bucket
+      const user = (req && req.user) || {};
+      const rawSchool = (user.roleId || req.headers['x-school-id'] || req.headers['x-user-id'] || 'public').toString();
+      const safeSchool = rawSchool.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 100) || 'public';
+
+      // Route uploads into logical subfolders depending on the field name
+      let dir = uploadBaseDirectory;
+      if (file && file.fieldname === 'image') {
+        dir = path.join(uploadBaseDirectory, 'schools', safeSchool, 'courses');
+      } else if (file && file.fieldname === 'file') {
+        dir = path.join(uploadBaseDirectory, 'applications');
+      } else {
+        dir = path.join(uploadBaseDirectory, 'misc');
+      }
+
+      fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    } catch (err) {
+      cb(err as any, uploadBaseDirectory);
+    }
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const cleanExt = (ext && ['.pdf', '.jpg', '.jpeg', '.png'].includes(ext)) ? ext : '';
+    const uniquePrefix = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+    const safeBaseName = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
+    const prefix = (file && file.fieldname === 'image') ? 'course' : 'doc';
+    cb(null, `${prefix}-${uniquePrefix}-${safeBaseName}${cleanExt}`);
+  }
+});
+
+const upload = multer({
+  storage: uploadStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowedMimeTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg', 'image/pjpeg'];
+    const isAllowedExt = /\.(pdf|jpg|jpeg|png)$/i.test(file.originalname);
+    if (allowedMimeTypes.includes(file.mimetype) || isAllowedExt) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only PDF, JPG, JPEG, and PNG files are allowed.'));
+    }
+  }
+});
+
+// Set up larger limit for full state synchronizations
+app.use(express.json({ limit: "20mb" }));
+
+// JWT Secret Key configuration (loads from environment, fallback to secure random on the fly)
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+
+// CORS must be enabled on the API layer that serves database routes.
+app.use(createCorsMiddleware());
+
+const DB_FILE = path.join(process.cwd(), "db_store.json");
+
+// Local cache for Postgres DB state to support synchronous access inside existing API controllers
+let cachedDb: any = null;
+
+// Load full state from individual database tables
+export async function loadFullDatabaseState(): Promise<any> {
+  const existing = await db.select().from(systemState).where(eq(systemState.id, 1));
+  let dbState: any = {};
+  if (existing.length > 0) {
+    dbState = { ...(existing[0].data as any) };
+  } else {
+    dbState = {
+      news: initialNews,
+      attendanceSessions: [],
+    };
+  }
+
+  // 1. Courses
+  const courseRows = await db.select().from(courses);
+  dbState.courses = courseRows.map(c => ({
+    id: c.id,
+    code: c.code,
+    title: c.title,
+    description: c.description ?? "",
+    duration: c.duration,
+    fees: Number(c.fees),
+    thumbnail: c.thumbnail ?? "",
+    faculty: c.faculty,
+    active: c.active
+  }));
+
+  // 2. Reviews (Course reviews)
+  const courseReviewRows = await db.select().from(courseReviews);
+  dbState.reviews = courseReviewRows.map(r => ({
+    id: r.id,
+    courseId: r.courseId ?? "",
+    studentId: r.studentId,
+    studentName: r.studentName,
+    rating: r.rating,
+    comment: r.comment ?? "",
+    date: r.date
+  }));
+
+  // 3. Lecturers
+  const lecturerRows = await db.select().from(lecturers);
+  const lecturerSubjRows = await db.select().from(lecturerSubjects);
+  const lecturerPubRows = await db.select().from(lecturerPublications);
+  const lecturerResRows = await db.select().from(lecturerResearchInterests);
+  const officeSlotRows = await db.select().from(officeHourSlots);
+
+  dbState.lecturers = lecturerRows.map(l => ({
+    id: l.id,
+    name: l.name,
+    email: l.email,
+    phone: l.phone,
+    hourlyRate: Number(l.hourlyRate),
+    loggedHours: Number(l.loggedHours),
+    bankDetails: l.bankDetails ?? "",
+    contractLength: l.contractLength,
+    designatorCode: l.designatorCode,
+    bio: l.bio ?? "",
+    avatar: l.avatar ?? "",
+    isActive: l.isActive,
+    isAccountant: l.isAccountant,
+    isLibrarian: l.isLibrarian,
+    subjects: lecturerSubjRows.filter(s => s.lecturerId === l.id).map(s => s.subjectCode),
+    publications: lecturerPubRows.filter(p => p.lecturerId === l.id).map(p => p.publicationText),
+    researchInterests: lecturerResRows.filter(r => r.lecturerId === l.id).map(r => r.interestText),
+    officeHours: officeSlotRows.filter(o => o.lecturerId === l.id).map(o => ({
+      id: o.id,
+      day: o.day,
+      time: o.timeSlot,
+      status: o.status as 'available' | 'booked',
+      studentId: o.studentId ?? undefined,
+      studentName: o.studentName ?? undefined,
+      studentEmail: o.studentEmail ?? undefined,
+      studentNotes: o.studentNotes ?? undefined
+    }))
+  }));
+
+  // 4. Students
+  const studentRows = await db.select().from(students);
+  const enrollmentRows = await db.select().from(studentEnrollments);
+  const gradeRows = await db.select().from(grades);
+  const assessmentRowsAll = await db.select({
+    studentId: studentAssessmentMarks.studentId,
+    subjectCode: studentAssessmentMarks.subjectCode,
+    rawMark: studentAssessmentMarks.rawMark,
+    maxMarks: studentAssessmentMarks.maxMarks,
+    weight: studentAssessmentMarks.weight,
+    assessmentKind: studentAssessmentMarks.assessmentKind,
+  }).from(studentAssessmentMarks);
+  const invoiceRows = await db.select().from(invoices);
+  const paymentRows = await db.select().from(payments);
+  const attendanceRows = await db.select().from(studentAttendance);
+
+  const oldStudents = dbState.students || [];
+
+  dbState.students = studentRows.map(s => {
+    const enrolledUnits = enrollmentRows.filter(e => e.studentId === s.id).map(e => e.courseCode);
+    
+    const studentGrades: Record<string, { cat: number; exam: number }> = {};
+    const studentAssessments = assessmentRowsAll.filter(a => a.studentId === s.id);
+    const grouped = new Map<string, typeof studentAssessments>();
+    for (const a of studentAssessments) {
+      const key = String(a.subjectCode || '').trim();
+      if (!key) continue;
+      const arr = grouped.get(key) || [];
+      arr.push(a);
+      grouped.set(key, arr);
+    }
+
+    const unpublishedSubjectsForStudent: string[] = [];
+    for (const [subjectCode, rows] of grouped.entries()) {
+      let weightedPercentTotal = 0;
+      let totalWeight = 0;
+      for (const r of rows) {
+        const rawMark = Number(r.rawMark ?? 0);
+        const maxMarks = Number(r.maxMarks ?? 0);
+        const weight = Number(r.weight ?? 0) || 0;
+        if (!Number.isFinite(rawMark) || !Number.isFinite(maxMarks) || maxMarks <= 0) continue;
+        weightedPercentTotal += (Math.min((rawMark / maxMarks) * 100, 100)) * weight;
+        totalWeight += weight;
+      }
+      if ((Number(totalWeight) || 0) <= 0) {
+        // marks present but no configured weights — treat as unpublished
+        unpublishedSubjectsForStudent.push(subjectCode);
+        continue;
+      }
+      const overallPercent = totalWeight > 0 ? Number((weightedPercentTotal / totalWeight).toFixed(2)) : 0;
+      // split into CAT/Exam parts for legacy UI: 30% CAT, 70% Exam
+      const cat = Math.round(Number((overallPercent * 0.3).toFixed(2)));
+      const exam = Math.round(Number((overallPercent * 0.7).toFixed(2)));
+      studentGrades[subjectCode] = { cat, exam };
+    }
+
+    const ledger = invoiceRows.filter(i => i.studentId === s.id).map(i => ({
+      id: i.id,
+      invoiceNo: i.invoiceNo,
+      description: i.description,
+      amount: Number(i.amount),
+      date: i.date,
+      status: i.status as 'unpaid' | 'paid'
+    }));
+
+    const paymentsList = paymentRows.filter(p => p.studentId === s.id).map(p => ({
+      id: p.id,
+      amount: Number(p.amount),
+      invoiceId: p.invoiceId ?? "",
+      studentId: p.studentId,
+      paymentMethod: p.paymentMethod as 'M-Pesa' | 'Bank Transfer' | 'Card',
+      transactionId: p.transactionId,
+      date: p.date,
+      status: p.status as 'unreconciled' | 'reconciled'
+    }));
+
+    const attendanceMap: Record<string, number> = {};
+    attendanceRows.filter(a => a.studentId === s.id).forEach(a => {
+      attendanceMap[a.subjectCode] = a.attendanceRate;
+    });
+
+    const matchedCachedStudent = oldStudents.find((cs: any) => cs.id === s.id);
+    const cachedStatus = matchedCachedStudent?.accountStatus;
+    const accountStatus = cachedStatus || "Active";
+
+    return {
+      id: s.id,
+      name: s.name,
+      email: s.email,
+      phone: s.phone,
+      admissionNo: s.admissionNo,
+      cohort: s.cohort,
+      courseId: s.courseId ?? undefined,
+      programme: s.programme ?? undefined,
+      department: s.department ?? undefined,
+      avatar: s.avatar ?? undefined,
+      accountStatus,
+      createdAt: s.createdAt ?? undefined,
+      enrolledUnits,
+      grades: studentGrades,
+      unpublishedSubjects: unpublishedSubjectsForStudent,
+      ledger,
+      payments: paymentsList,
+      attendance: attendanceMap
+    };
+  });
+
+  // 5. Expenses
+  const expenseRows = await db.select().from(expenses);
+  dbState.expenses = expenseRows.map(e => ({
+    id: e.id,
+    description: e.description,
+    category: e.category,
+    amount: Number(e.amount),
+    date: e.date
+  }));
+
+  // 6. Inventory (Stock Items)
+  const stockRows = await db.select().from(stockItems);
+  dbState.inventory = stockRows.map(s => ({
+    id: s.id,
+    name: s.name,
+    quantity: s.quantity,
+    category: s.category,
+    location: s.location,
+    lowestThreshold: s.lowestThreshold
+  }));
+
+  // 7. Requisitions
+  const reqRows = await db.select().from(requisitions);
+  dbState.requisitions = reqRows.map(r => ({
+    id: r.id,
+    itemName: r.itemName,
+    quantity: r.quantity,
+    staffName: r.staffName,
+    date: r.date,
+    status: r.status as 'pending' | 'approved' | 'rejected'
+  }));
+
+  // 8. Testimonies
+  const testimonyRows = await db.select().from(testimonies);
+  dbState.testimonies = testimonyRows.map(t => ({
+    id: t.id,
+    name: t.name,
+    role: t.role,
+    content: t.content,
+    avatar: t.avatar ?? ""
+  }));
+
+  // 9. Books
+  const bookRows = await db.select().from(books);
+  dbState.books = bookRows.map(b => ({
+    id: b.id,
+    title: b.title,
+    author: b.author,
+    isbn: b.isbn,
+    publisher: b.publisher ?? "",
+    edition: b.edition ?? "",
+    purchasePrice: Number(b.purchasePrice),
+    rackNumber: b.rackNumber,
+    shelfRow: b.shelfRow,
+    libraryCode: b.libraryCode,
+    type: b.type as 'Physical Book' | 'E-Book',
+    eUrl_aid: b.eUrl ?? undefined,
+    copiesTotal: b.copiesTotal,
+    copiesAvailable: b.copiesAvailable,
+    category: b.category
+  }));
+
+  // 10. Loans
+  const loanRows = await db.select().from(loans);
+  dbState.loans = loanRows.map(l => ({
+    id: l.id,
+    bookId: l.bookId,
+    bookTitle: l.bookTitle,
+    patronId: l.patronId,
+    patronName: l.patronName,
+    patronRole: l.patronRole as 'student' | 'lecturer',
+    checkoutDate: l.checkoutDate,
+    dueDate: l.dueDate,
+    returnDate: l.returnDate ?? undefined,
+    status: l.status as 'borrowed' | 'returned' | 'overdue' | 'lost' | 'damaged',
+    lateFeeAssessed: l.lateFeeAssessed ? Number(l.lateFeeAssessed) : 0
+  }));
+
+  // 11. Reservations
+  const reservationRows = await db.select().from(reservations);
+  dbState.reservations = reservationRows.map(r => ({
+    id: r.id,
+    bookId: r.bookId,
+    bookTitle: r.bookTitle,
+    patronId: r.patronId,
+    patronName: r.patronName,
+    reservationDate: r.reservationDate,
+    status: r.status as 'pending' | 'fulfilled' | 'cancelled'
+  }));
+
+  // 12. Reading Lists
+  const readingListRows = await db.select().from(readingLists);
+  const readingListBookRows = await db.select().from(readingListBooks);
+  dbState.readingLists = readingListRows.map(rl => ({
+    id: rl.id,
+    subjectCode: rl.subjectCode,
+    lecturerId: rl.lecturerId,
+    notes: rl.notes ?? "",
+    bookIds: readingListBookRows.filter(b => b.readingListId === rl.id).map(b => b.bookId)
+  }));
+
+  // 13. Book Reviews
+  const bookReviewRows = await db.select().from(bookReviews);
+  dbState.bookReviews = bookReviewRows.map(br => ({
+    id: br.id,
+    bookId: br.bookId,
+    studentId: br.studentId,
+    studentName: br.studentName,
+    rating: br.rating,
+    comment: br.comment ?? "",
+    date: br.date
+  }));
+
+  // 14. Book Requests
+  const bookRequestRows = await db.select().from(bookRequests);
+  dbState.bookRequests = bookRequestRows.map(br => ({
+    id: br.id,
+    title: br.title,
+    author: br.author,
+    isbn: br.isbn ?? undefined,
+    suggestedBy: br.suggestedBy,
+    suggestorRole: br.suggestorRole as 'student' | 'lecturer',
+    date: br.date,
+    reason: br.reason ?? undefined,
+    status: br.status as 'pending' | 'approved' | 'rejected',
+    adminFeedback: br.adminFeedback ?? undefined
+  }));
+
+  // 15. Exam Papers
+  const examPaperRows = await db.select().from(examPapers);
+  dbState.examPapers = examPaperRows.map(ep => ({
+    id: ep.id,
+    title: ep.title,
+    subjectCode: ep.subjectCode,
+    year: ep.year,
+    semester: ep.semester,
+    examType: ep.examType as 'Midterm' | 'Final' | 'National Exam (KCSE/IGCSE)',
+    downloadUrl_aid: ep.downloadUrl,
+    downloadsCount: ep.downloadsCount
+  }));
+
+  // 16. Teacher Resources
+  const resourceRows = await db.select().from(teacherResources);
+  dbState.teacherResources = resourceRows.map(tr => ({
+    id: tr.id,
+    name: tr.name,
+    category: tr.category as 'Instructional Guide' | 'Lab Manual' | 'Hardware/Projector' | 'Scientific Kit',
+    serialNo: tr.serialNo,
+    status: tr.status as 'available' | 'reserved',
+    reservedByLecturerId: tr.reservedByLecturerId ?? undefined,
+    reservedByLecturerName: tr.reservedByLecturerName ?? undefined,
+    reservationDate: tr.reservationDate ?? undefined
+  }));
+
+  // 17. Library Gate Logs
+  const gateLogRows = await db.select().from(libraryGateLogs);
+  dbState.libraryGateLogs = gateLogRows.map(gl => ({
+    id: gl.id,
+    timestamp: gl.timestamp,
+    patronName: gl.patronName,
+    patronId: gl.patronId,
+    role: gl.role as 'student' | 'lecturer',
+    authMethod: gl.authMethod as 'biometric_fingerprint' | 'biometric_facial' | 'rfid_tap',
+    gateAction: gl.gateAction as 'Entry' | 'Exit',
+    status: 'success'
+  }));
+
+  // 18. Notifications
+  const notificationRows = await db.select().from(notifications);
+  dbState.notifications = notificationRows.map(n => ({
+    id: n.id,
+    targetUserId: n.targetUserId ?? undefined,
+    targetUserRole: n.targetUserRole as 'student' | 'lecturer' | 'accountant' | 'librarian' | 'admin' | 'all',
+    type: n.type as 'library' | 'payment' | 'announcement',
+    title: n.title,
+    message: n.message,
+    status: n.status as 'unread' | 'read',
+    dateTime: n.dateTime
+  }));
+
+  // 19. Password Reset Requests
+  const pwdReqRows = await db.select().from(passwordResetRequests);
+  dbState.passwordResetRequests = pwdReqRows.map(pr => ({
+    id: pr.id,
+    userId: pr.userId,
+    name: pr.name,
+    email: pr.email,
+    role: pr.role as 'student' | 'lecturer' | 'accountant' | 'librarian' | 'admin',
+    date: pr.date,
+    reason: pr.reason,
+    status: pr.status as 'pending' | 'resolved' | 'rejected',
+    adminFeedback: pr.adminFeedback ?? undefined,
+    temporaryPasscode: pr.temporaryPasscode ?? undefined
+  }));
+
+  return dbState;
+}
+
+function toUuid(str: any): any {
+  if (typeof str !== 'string') return str;
+  // If it's already a valid UUID, return it
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (uuidRegex.test(str)) {
+    return str.toLowerCase();
+  }
+  // Deterministic MD5 hash to produce a 32-character hex string
+  const hash = crypto.createHash('md5').update(str).digest('hex');
+  // Format as 8-4-4-4-12
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+}
+
+// Recursively traverse and convert all ID fields to valid UUIDs
+export function sanitizeStateIds(obj: any): any {
+  if (obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) {
+    return obj.map(sanitizeStateIds);
+  }
+  if (typeof obj === 'object') {
+    const res: any = {};
+    const idKeys = new Set([
+      'id', 'courseId', 'studentId', 'lecturerId', 'patronId', 
+      'bookId', 'readingListId', 'invoiceId', 'targetUserId', 
+      'userId', 'reservedByLecturerId'
+    ]);
+    for (const [key, val] of Object.entries(obj)) {
+      if (idKeys.has(key) && typeof val === 'string' && val.trim() !== '') {
+        res[key] = toUuid(val);
+      } else {
+        res[key] = sanitizeStateIds(val);
+      }
+    }
+    return res;
+  }
+  return obj;
+}
+
+let isSavingFullState = false;
+let pendingSaveState: any = null;
+let saveTimeout: any = null;
+let lastSaveTime = 0;
+const DEBOUNCE_DELAY = 3000;
+const THROTTLE_LIMIT = 5000;
+// Stable advisory-lock key so only one full-state sync can hold courses/lecturer
+// writes at a time across Node processes sharing the same database.
+const FULL_DB_SYNC_LOCK_KEY = 872314001;
+
+let syncFailureCount = 0;
+let isSyncPausedUntil = 0;
+
+function dedupeCoursesForSync(rawCourses: any[]): any[] {
+  const byId = new Map<string, any>();
+  for (const course of rawCourses || []) {
+    if (!course?.id) continue;
+    byId.set(String(course.id), course);
+  }
+
+  // `courses_code_key` is unique. Keep the last occurrence per code so repeated
+  // sync payloads cannot deadlock themselves on the code index.
+  const byCode = new Map<string, any>();
+  for (const course of byId.values()) {
+    const code = String(course.code || "").trim().toUpperCase();
+    if (!code) continue;
+    byCode.set(code, course);
+  }
+  return Array.from(byCode.values());
+}
+
+async function performDatabaseSync(dbState: any): Promise<void> {
+  if (!isDatabaseConfigured) {
+    // Database environment variables not configured; skip remote DB sync and rely on local storage
+    return;
+  }
+  lastSaveTime = Date.now();
+
+  try {
+    // Full-state sync touches many tables. Keep it on one pooled connection and
+    // roll it back as a unit if the database connection is interrupted.
+    await db.transaction(async (tx) => {
+    // Serialize syncs across processes. Without this, orphaned/overlapping
+    // backends leave idle-in-transaction locks on courses and the next INSERT
+    // dies with SQLSTATE 57014 while inserting index tuples.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${FULL_DB_SYNC_LOCK_KEY})`);
+    // Fail fast if a client stalls mid-sync instead of holding locks forever.
+    await tx.execute(sql`SET LOCAL idle_in_transaction_session_timeout = '60s'`);
+    await tx.execute(sql`SET LOCAL lock_timeout = '15s'`);
+
+    // 1. Courses
+    if (dbState.courses) {
+      const syncedCourses = dedupeCoursesForSync(dbState.courses);
+      const ids = syncedCourses.map((c: any) => c.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(courses).where(notInArray(courses.id, ids));
+      } else {
+        await tx.delete(courses);
+      }
+      if (syncedCourses.length > 0) {
+        const courseValues = syncedCourses.map((c: any) => ({
+          id: c.id,
+          code: c.code,
+          title: c.title,
+          description: c.description || null,
+          duration: c.duration,
+          fees: String(c.fees || 0),
+          thumbnail: c.thumbnail || null,
+          active: c.active !== false,
+          faculty: c.faculty || "School of Computing",
+        }));
+        // One batched upsert keeps the courses lock window short and idempotent.
+        await tx
+          .insert(courses)
+          .values(courseValues)
+          .onConflictDoUpdate({
+            target: courses.id,
+            set: {
+              code: sql`excluded.code`,
+              title: sql`excluded.title`,
+              description: sql`excluded.description`,
+              duration: sql`excluded.duration`,
+              fees: sql`excluded.fees`,
+              thumbnail: sql`excluded.thumbnail`,
+              active: sql`excluded.active`,
+              faculty: sql`excluded.faculty`,
+            },
+          });
+      }
+    }
+
+    // 2. Course Reviews (dbState.reviews)
+    if (dbState.reviews) {
+      const ids = dbState.reviews.map((r: any) => r.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(courseReviews).where(notInArray(courseReviews.id, ids));
+      } else {
+        await tx.delete(courseReviews);
+      }
+      for (const r of dbState.reviews) {
+        const val = {
+          id: r.id,
+          courseId: r.courseId || null,
+          studentId: r.studentId,
+          studentName: r.studentName,
+          rating: Number(r.rating) || 5,
+          comment: r.comment || null,
+          date: r.date || new Date().toISOString().split('T')[0]
+        };
+        await tx.insert(courseReviews).values(val).onConflictDoUpdate({
+          target: courseReviews.id,
+          set: val
+        });
+      }
+    }
+
+    // 3. Lecturers
+    if (dbState.lecturers) {
+      const ids = dbState.lecturers.map((l: any) => l.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(lecturers).where(notInArray(lecturers.id, ids));
+      } else {
+        await tx.delete(lecturers);
+      }
+
+      for (const l of dbState.lecturers) {
+        const lecturerVal = {
+          id: l.id,
+          name: l.name,
+          email: l.email,
+          phone: l.phone,
+          hourlyRate: String(l.hourlyRate || 0),
+          loggedHours: String(l.loggedHours || 0),
+          bankDetails: l.bankDetails || null,
+          contractLength: l.contractLength || "Permanent",
+          designatorCode: l.designatorCode || `LEC-${Date.now()}`,
+          bio: l.bio || null,
+          avatar: l.avatar || null,
+          isActive: l.isActive !== false,
+          isAccountant: l.isAccountant === true,
+          isLibrarian: l.isLibrarian === true,
+        };
+        await tx.insert(lecturers).values(lecturerVal).onConflictDoUpdate({
+          target: lecturers.id,
+          set: lecturerVal
+        });
+
+        await tx.delete(lecturerPublications).where(eq(lecturerPublications.lecturerId, l.id));
+        if (l.publications) {
+          for (const pub of l.publications) {
+            await tx.insert(lecturerPublications).values({
+              lecturerId: l.id,
+              publicationText: pub
+            });
+          }
+        }
+
+        await tx.delete(lecturerResearchInterests).where(eq(lecturerResearchInterests.lecturerId, l.id));
+        if (l.researchInterests) {
+          for (const res of l.researchInterests) {
+            await tx.insert(lecturerResearchInterests).values({
+              lecturerId: l.id,
+              interestText: res
+            });
+          }
+        }
+
+        await tx.delete(lecturerSubjects).where(eq(lecturerSubjects.lecturerId, l.id));
+        if (l.subjects) {
+          for (const sub of l.subjects) {
+            await tx.insert(lecturerSubjects).values({
+              lecturerId: l.id,
+              subjectCode: sub
+            });
+          }
+        }
+
+        const slotIds = (l.officeHours || []).map((s: any) => s.id).filter(Boolean);
+        if (slotIds.length > 0) {
+          await tx.delete(officeHourSlots).where(and(eq(officeHourSlots.lecturerId, l.id), notInArray(officeHourSlots.id, slotIds)));
+        } else {
+          await tx.delete(officeHourSlots).where(eq(officeHourSlots.lecturerId, l.id));
+        }
+        for (const s of (l.officeHours || [])) {
+          const slotVal = {
+            id: s.id,
+            lecturerId: l.id,
+            day: s.day,
+            timeSlot: s.time,
+            status: s.status || 'available',
+            studentId: s.studentId || null,
+            studentName: s.studentName || null,
+            studentEmail: s.studentEmail || null,
+            studentNotes: s.studentNotes || null
+          };
+          await tx.insert(officeHourSlots).values(slotVal).onConflictDoUpdate({
+            target: officeHourSlots.id,
+            set: slotVal
+          });
+        }
+      }
+    }
+
+    // 4. Students
+    if (dbState.students) {
+      const ids = dbState.students.map((s: any) => s.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(students).where(notInArray(students.id, ids));
+      } else {
+        await tx.delete(students);
+      }
+
+      for (const s of dbState.students) {
+        const studentVal = {
+          id: s.id,
+          name: s.name,
+          email: s.email,
+          phone: s.phone,
+          admissionNo: s.admissionNo,
+          cohort: s.cohort,
+          courseId: s.courseId || null,
+          programme: s.programme || null,
+          department: s.department || null,
+          avatar: s.avatar || null,
+        };
+        await tx.insert(students).values(studentVal).onConflictDoUpdate({
+          target: students.id,
+          set: studentVal
+        });
+
+        await tx.delete(studentEnrollments).where(eq(studentEnrollments.studentId, s.id));
+        if (s.enrolledUnits) {
+          for (const code of s.enrolledUnits) {
+            await tx.insert(studentEnrollments).values({
+              studentId: s.id,
+              courseCode: code
+            });
+          }
+        }
+
+        await tx.delete(grades).where(eq(grades.studentId, s.id));
+        if (s.grades) {
+          const sanitizedGrades = sanitizeStudentGradesRecord(s.grades, s.grades);
+          for (const [subjCode, gr] of Object.entries(sanitizedGrades)) {
+            await tx.insert(grades).values({
+              studentId: s.id,
+              subjectCode: subjCode,
+              catScore: String(gr.cat),
+              examScore: String(gr.exam)
+            });
+          }
+        }
+
+        const invoiceIds = (s.ledger || []).map((i: any) => i.id).filter(Boolean);
+        if (invoiceIds.length > 0) {
+          await tx.delete(invoices).where(and(eq(invoices.studentId, s.id), notInArray(invoices.id, invoiceIds)));
+        } else {
+          await tx.delete(invoices).where(eq(invoices.studentId, s.id));
+        }
+        for (const inv of (s.ledger || [])) {
+          const invVal = {
+            id: inv.id,
+            studentId: s.id,
+            invoiceNo: inv.invoiceNo,
+            description: inv.description,
+            amount: String(inv.amount || 0),
+            date: inv.date || new Date().toISOString().split('T')[0],
+            status: inv.status || 'unpaid'
+          };
+          await tx.insert(invoices).values(invVal).onConflictDoUpdate({
+            target: invoices.id,
+            set: invVal
+          });
+        }
+
+        const paymentIds = (s.payments || []).map((p: any) => p.id).filter(Boolean);
+        if (paymentIds.length > 0) {
+          await tx.delete(payments).where(and(eq(payments.studentId, s.id), notInArray(payments.id, paymentIds)));
+        } else {
+          await tx.delete(payments).where(eq(payments.studentId, s.id));
+        }
+        for (const p of (s.payments || [])) {
+          const payVal = {
+            id: p.id,
+            studentId: s.id,
+            invoiceId: p.invoiceId || null,
+            amount: String(p.amount || 0),
+            paymentMethod: p.paymentMethod,
+            transactionId: p.transactionId,
+            date: p.date || new Date().toISOString().split('T')[0],
+            status: p.status || 'unreconciled'
+          };
+          await tx.insert(payments).values(payVal).onConflictDoUpdate({
+            target: payments.id,
+            set: payVal
+          });
+        }
+
+        await tx.delete(studentAttendance).where(eq(studentAttendance.studentId, s.id));
+        if (s.attendance) {
+          for (const [subjCode, rate] of Object.entries(s.attendance)) {
+            await tx.insert(studentAttendance).values({
+              studentId: s.id,
+              subjectCode: subjCode,
+              attendanceRate: Number(rate) || 100
+            });
+          }
+        }
+      }
+    }
+
+    // 5. Expenses
+    if (dbState.expenses) {
+      const ids = dbState.expenses.map((e: any) => e.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(expenses).where(notInArray(expenses.id, ids));
+      } else {
+        await tx.delete(expenses);
+      }
+      for (const e of dbState.expenses) {
+        const val = {
+          id: e.id,
+          description: e.description,
+          category: e.category,
+          amount: String(e.amount || 0),
+          date: e.date || new Date().toISOString().split('T')[0]
+        };
+        await tx.insert(expenses).values(val).onConflictDoUpdate({
+          target: expenses.id,
+          set: val
+        });
+      }
+    }
+
+    // 6. Inventory (Stock Items)
+    if (dbState.inventory) {
+      const ids = dbState.inventory.map((i: any) => i.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(stockItems).where(notInArray(stockItems.id, ids));
+      } else {
+        await tx.delete(stockItems);
+      }
+      for (const i of dbState.inventory) {
+        const val = {
+          id: i.id,
+          name: i.name,
+          quantity: Number(i.quantity) || 0,
+          category: i.category,
+          location: i.location,
+          lowestThreshold: Number(i.lowestThreshold) || 5
+        };
+        await tx.insert(stockItems).values(val).onConflictDoUpdate({
+          target: stockItems.id,
+          set: val
+        });
+      }
+    }
+
+    // 7. Requisitions
+    if (dbState.requisitions) {
+      const ids = dbState.requisitions.map((r: any) => r.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(requisitions).where(notInArray(requisitions.id, ids));
+      } else {
+        await tx.delete(requisitions);
+      }
+      for (const r of dbState.requisitions) {
+        const val = {
+          id: r.id,
+          itemName: r.itemName,
+          quantity: Number(r.quantity) || 1,
+          staffName: r.staffName,
+          date: r.date || new Date().toISOString().split('T')[0],
+          status: r.status || 'pending'
+        };
+        await tx.insert(requisitions).values(val).onConflictDoUpdate({
+          target: requisitions.id,
+          set: val
+        });
+      }
+    }
+
+    // 8. Testimonies
+    if (dbState.testimonies) {
+      const ids = dbState.testimonies.map((t: any) => t.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(testimonies).where(notInArray(testimonies.id, ids));
+      } else {
+        await tx.delete(testimonies);
+      }
+      for (const t of dbState.testimonies) {
+        const val = {
+          id: t.id,
+          name: t.name,
+          role: t.role,
+          content: t.content,
+          avatar: t.avatar || null
+        };
+        await tx.insert(testimonies).values(val).onConflictDoUpdate({
+          target: testimonies.id,
+          set: val
+        });
+      }
+    }
+
+    // 9. Books
+    if (dbState.books) {
+      const ids = dbState.books.map((b: any) => b.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(books).where(notInArray(books.id, ids));
+      } else {
+        await tx.delete(books);
+      }
+      for (const b of dbState.books) {
+        const val = {
+          id: b.id,
+          title: b.title,
+          author: b.author,
+          isbn: b.isbn || `ISBN-${Date.now()}`,
+          publisher: b.publisher || null,
+          edition: b.edition || null,
+          purchasePrice: String(b.purchasePrice || 0),
+          rackNumber: b.rackNumber || 'N/A',
+          shelfRow: b.shelfRow || 'N/A',
+          libraryCode: b.libraryCode || `LIB-${Date.now()}`,
+          type: b.type || 'Physical Book',
+          eUrl: b.eUrl_aid || null,
+          copiesTotal: Number(b.copiesTotal) || 1,
+          copiesAvailable: Number(b.copiesAvailable) || 1,
+          category: b.category
+        };
+        await tx.insert(books).values(val).onConflictDoUpdate({
+          target: books.id,
+          set: val
+        });
+      }
+    }
+
+    // 10. Loans
+    if (dbState.loans) {
+      const ids = dbState.loans.map((l: any) => l.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(loans).where(notInArray(loans.id, ids));
+      } else {
+        await tx.delete(loans);
+      }
+      for (const l of dbState.loans) {
+        const val = {
+          id: l.id,
+          bookId: l.bookId,
+          bookTitle: l.bookTitle || 'N/A',
+          patronId: l.patronId,
+          patronName: l.patronName || 'N/A',
+          patronRole: l.patronRole || 'student',
+          checkoutDate: l.checkoutDate || new Date().toISOString().split('T')[0],
+          dueDate: l.dueDate || new Date().toISOString().split('T')[0],
+          returnDate: l.returnDate || null,
+          status: l.status || 'borrowed',
+          lateFeeAssessed: String(l.lateFeeAssessed || 0)
+        };
+        await tx.insert(loans).values(val).onConflictDoUpdate({
+          target: loans.id,
+          set: val
+        });
+      }
+    }
+
+    // 11. Reservations
+    if (dbState.reservations) {
+      const ids = dbState.reservations.map((r: any) => r.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(reservations).where(notInArray(reservations.id, ids));
+      } else {
+        await tx.delete(reservations);
+      }
+      for (const r of dbState.reservations) {
+        const val = {
+          id: r.id,
+          bookId: r.bookId,
+          bookTitle: r.bookTitle || 'N/A',
+          patronId: r.patronId,
+          patronName: r.patronName || 'N/A',
+          reservationDate: r.reservationDate || new Date().toISOString().split('T')[0],
+          status: r.status || 'pending'
+        };
+        await tx.insert(reservations).values(val).onConflictDoUpdate({
+          target: reservations.id,
+          set: val
+        });
+      }
+    }
+
+    // 12. Reading Lists
+    if (dbState.readingLists) {
+      const ids = dbState.readingLists.map((rl: any) => rl.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(readingLists).where(notInArray(readingLists.id, ids));
+      } else {
+        await tx.delete(readingLists);
+      }
+      for (const rl of dbState.readingLists) {
+        const val = {
+          id: rl.id,
+          subjectCode: rl.subjectCode,
+          lecturerId: rl.lecturerId,
+          notes: rl.notes || null
+        };
+        await tx.insert(readingLists).values(val).onConflictDoUpdate({
+          target: readingLists.id,
+          set: val
+        });
+
+        await tx.delete(readingListBooks).where(eq(readingListBooks.readingListId, rl.id));
+        if (rl.bookIds) {
+          for (const bId of rl.bookIds) {
+            await tx.insert(readingListBooks).values({
+              readingListId: rl.id,
+              bookId: bId
+            });
+          }
+        }
+      }
+    }
+
+    // 13. Book Reviews
+    if (dbState.bookReviews) {
+      const ids = dbState.bookReviews.map((br: any) => br.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(bookReviews).where(notInArray(bookReviews.id, ids));
+      } else {
+        await tx.delete(bookReviews);
+      }
+      for (const br of dbState.bookReviews) {
+        const val = {
+          id: br.id,
+          bookId: br.bookId,
+          studentId: br.studentId,
+          studentName: br.studentName,
+          rating: Number(br.rating) || 5,
+          comment: br.comment || null,
+          date: br.date || new Date().toISOString().split('T')[0]
+        };
+        await tx.insert(bookReviews).values(val).onConflictDoUpdate({
+          target: bookReviews.id,
+          set: val
+        });
+      }
+    }
+
+    // 14. Book Requests
+    if (dbState.bookRequests) {
+      const ids = dbState.bookRequests.map((br: any) => br.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(bookRequests).where(notInArray(bookRequests.id, ids));
+      } else {
+        await tx.delete(bookRequests);
+      }
+      for (const br of dbState.bookRequests) {
+        const val = {
+          id: br.id,
+          title: br.title,
+          author: br.author,
+          isbn: br.isbn || null,
+          suggestedBy: br.suggestedBy,
+          suggestorRole: br.suggestorRole,
+          date: br.date || new Date().toISOString().split('T')[0],
+          reason: br.reason || null,
+          status: br.status || 'pending',
+          adminFeedback: br.adminFeedback || null
+        };
+        await tx.insert(bookRequests).values(val).onConflictDoUpdate({
+          target: bookRequests.id,
+          set: val
+        });
+      }
+    }
+
+    // 15. Exam Papers
+    if (dbState.examPapers) {
+      const ids = dbState.examPapers.map((ep: any) => ep.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(examPapers).where(notInArray(examPapers.id, ids));
+      } else {
+        await tx.delete(examPapers);
+      }
+      for (const ep of dbState.examPapers) {
+        const val = {
+          id: ep.id,
+          title: ep.title,
+          subjectCode: ep.subjectCode,
+          year: Number(ep.year) || 2026,
+          semester: ep.semester,
+          examType: ep.examType,
+          downloadUrl: ep.downloadUrl_aid,
+          downloadsCount: Number(ep.downloadsCount) || 0
+        };
+        await tx.insert(examPapers).values(val).onConflictDoUpdate({
+          target: examPapers.id,
+          set: val
+        });
+      }
+    }
+
+    // 16. Teacher Resources
+    if (dbState.teacherResources) {
+      const ids = dbState.teacherResources.map((tr: any) => tr.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(teacherResources).where(notInArray(teacherResources.id, ids));
+      } else {
+        await tx.delete(teacherResources);
+      }
+      for (const tr of dbState.teacherResources) {
+        const val = {
+          id: tr.id,
+          name: tr.name,
+          category: tr.category,
+          serialNo: tr.serialNo,
+          status: tr.status || 'available',
+          reservedByLecturerId: tr.reservedByLecturerId || null,
+          reservedByLecturerName: tr.reservedByLecturerName || null,
+          reservationDate: tr.reservationDate || null
+        };
+        await tx.insert(teacherResources).values(val).onConflictDoUpdate({
+          target: teacherResources.id,
+          set: val
+        });
+      }
+    }
+
+    // 17. Library Gate Logs
+    if (dbState.libraryGateLogs) {
+      const ids = dbState.libraryGateLogs.map((gl: any) => gl.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(libraryGateLogs).where(notInArray(libraryGateLogs.id, ids));
+      } else {
+        await tx.delete(libraryGateLogs);
+      }
+      for (const gl of dbState.libraryGateLogs) {
+        const ts = gl.timestamp ? new Date(gl.timestamp).toISOString() : new Date().toISOString();
+        const val = {
+          id: gl.id,
+          timestamp: ts,
+          patronName: gl.patronName,
+          patronId: gl.patronId || '00000000-0000-0000-0000-000000000000',
+          role: gl.role || 'student',
+          authMethod: gl.authMethod || 'rfid_tap',
+          gateAction: gl.gateAction || 'Entry'
+        };
+        await tx.insert(libraryGateLogs).values(val).onConflictDoUpdate({
+          target: libraryGateLogs.id,
+          set: val
+        });
+      }
+    }
+
+    // 18. Notifications
+    if (dbState.notifications) {
+      const ids = dbState.notifications.map((n: any) => n.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(notifications).where(notInArray(notifications.id, ids));
+      } else {
+        await tx.delete(notifications);
+      }
+      for (const n of dbState.notifications) {
+        const val = {
+          id: n.id,
+          targetUserId: n.targetUserId || null,
+          targetUserRole: n.targetUserRole || 'all',
+          type: n.type || 'announcement',
+          title: n.title,
+          message: n.message,
+          status: n.status || 'unread',
+          dateTime: n.dateTime ? new Date(n.dateTime).toISOString() : new Date().toISOString()
+        };
+        await tx.insert(notifications).values(val).onConflictDoUpdate({
+          target: notifications.id,
+          set: val
+        });
+      }
+    }
+
+    // 19. Password Reset Requests
+    if (dbState.passwordResetRequests) {
+      const ids = dbState.passwordResetRequests.map((pr: any) => pr.id).filter(Boolean);
+      if (ids.length > 0) {
+        await tx.delete(passwordResetRequests).where(notInArray(passwordResetRequests.id, ids));
+      } else {
+        await tx.delete(passwordResetRequests);
+      }
+      for (const pr of dbState.passwordResetRequests) {
+        const val = {
+          id: pr.id,
+          userId: pr.userId,
+          name: pr.name,
+          email: pr.email,
+          role: pr.role,
+          date: pr.date || new Date().toISOString().split('T')[0],
+          reason: pr.reason,
+          status: pr.status || 'pending',
+          adminFeedback: pr.adminFeedback || null,
+          temporaryPasscode: pr.temporaryPasscode || null
+        };
+        await tx.insert(passwordResetRequests).values(val).onConflictDoUpdate({
+          target: passwordResetRequests.id,
+          set: val
+        });
+      }
+    }
+
+    // Persist system_state snapshot
+    await tx.insert(systemState)
+      .values({
+        id: 1,
+        data: dbState,
+      })
+      .onConflictDoUpdate({
+        target: systemState.id,
+        set: {
+          data: dbState,
+          updatedAt: new Date().toISOString(),
+        },
+      });
+
+    });
+    syncFailureCount = 0; // Reset on successful write
+  } catch (err: any) {
+    syncFailureCount++;
+    const isConnRefused = err?.code === 'ECONNREFUSED' || err?.message?.includes('ECONNREFUSED');
+    const backoffDelay = Math.min(30000 * Math.pow(2, syncFailureCount - 1), 300000);
+    isSyncPausedUntil = Date.now() + backoffDelay;
+    if (isConnRefused) {
+      console.warn(`[DB TUNER] Database sync paused for ${backoffDelay / 1000}s (offline mode active, serving from local storage).`);
+    } else {
+      console.error(`[DB TUNER] Relational database synchronization failed (${syncFailureCount} consecutive failures). Pausing database writes for ${backoffDelay / 1000} seconds. Error:`, err);
+    }
+  } finally {
+    isSavingFullState = false;
+    if (pendingSaveState) {
+      const timeSinceLastSave = Date.now() - lastSaveTime;
+      const delay = Math.max(0, DEBOUNCE_DELAY - timeSinceLastSave);
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+      }
+      saveTimeout = setTimeout(() => {
+        saveTimeout = null;
+        if (isSavingFullState) {
+          return;
+        }
+        const nextState = pendingSaveState;
+        if (!nextState) {
+          return;
+        }
+        pendingSaveState = null;
+        isSavingFullState = true;
+        performDatabaseSync(nextState).catch(err => {
+          console.warn("[DB TUNER] Queued performDatabaseSync failed:", err?.message || err);
+        });
+      }, delay);
+    }
+  }
+}
+
+export async function saveFullDatabaseState(dbState: any): Promise<void> {
+  if (!isDatabaseConfigured) {
+    return;
+  }
+  if (Date.now() < isSyncPausedUntil) {
+    // Silently bypass sync writes during backoff pause period
+    return;
+  }
+  dbState = sanitizeStateIds(dbState);
+  // Always keep the newest payload. A later call while a sync is in flight must
+  // not start a second writer; it only replaces the queued snapshot.
+  pendingSaveState = dbState;
+
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+    saveTimeout = null;
+  }
+
+  if (isSavingFullState) {
+    return;
+  }
+
+  const scheduleSync = (delayMs: number) => {
+    const launch = () => {
+      saveTimeout = null;
+      if (isSavingFullState) {
+        return;
+      }
+      const nextState = pendingSaveState;
+      if (!nextState) {
+        return;
+      }
+      // Claim the in-process mutex BEFORE the async transaction starts. The old
+      // code set this flag inside performDatabaseSync, so overlapping POST /api/data
+      // calls could open two writers and deadlock on courses indexes.
+      pendingSaveState = null;
+      isSavingFullState = true;
+      performDatabaseSync(nextState).catch((err) => {
+        console.warn("[DB TUNER] Database synchronization skipped or failed:", err?.message || err);
+      });
+    };
+
+    if (delayMs <= 0) {
+      launch();
+    } else {
+      saveTimeout = setTimeout(launch, delayMs);
+    }
+  };
+
+  const timeSinceLastSave = Date.now() - lastSaveTime;
+  if (timeSinceLastSave >= THROTTLE_LIMIT) {
+    scheduleSync(0);
+  } else {
+    scheduleSync(DEBOUNCE_DELAY);
+  }
+}
+
+// Helper to initialize database state directly from PostgreSQL
+async function initPostgresDB() {
+  try {
+    if (!isDatabaseConfigured) {
+      console.log("[DB] No database environment variables configured. Operating in local JSON storage mode.");
+      if (fs.existsSync(DB_FILE)) {
+        const content = fs.readFileSync(DB_FILE, "utf-8");
+        cachedDb = JSON.parse(content);
+      }
+      return;
+    }
+    cachedDb = await loadFullDatabaseState();
+    console.log("Successfully loaded database state from PostgreSQL!");
+  } catch (err: any) {
+    const isConnRefused = err?.code === 'ECONNREFUSED' || err?.message?.includes('ECONNREFUSED');
+    if (isConnRefused) {
+      console.warn("[DB] PostgreSQL connection unreachable. Operating in local JSON storage mode.");
+    } else {
+      console.error("Failed to initialize PostgreSQL DB state:", err);
+    }
+    if (fs.existsSync(DB_FILE)) {
+      try {
+        const content = fs.readFileSync(DB_FILE, "utf-8");
+        cachedDb = JSON.parse(content);
+        console.log("Fallback: Loaded database state from local db_store.json!");
+      } catch (e) {
+        console.error("Error reading db_store.json", e);
+        cachedDb = null;
+      }
+    } else {
+      cachedDb = null;
+    }
+  }
+}
+
+// Helper to retrieve database state
+function getDatabase() {
+  if (cachedDb && typeof cachedDb === 'object' && Object.keys(cachedDb).length > 0) {
+    return cachedDb;
+  }
+  // Fallback if not initialized yet or empty
+  if (fs.existsSync(DB_FILE)) {
+    try {
+      const content = fs.readFileSync(DB_FILE, "utf-8");
+      cachedDb = JSON.parse(content);
+      return cachedDb;
+    } catch (e) {
+      console.error("Error reading db_store.json", e);
+    }
+  }
+  return cachedDb || {};
+}
+
+// Helper to hash plain-text passcodes in memory before writing to DB
+function hashPasscodesInState(dbState: any) {
+  if (!dbState) return;
+  if (Array.isArray(dbState.students)) {
+    for (const s of dbState.students) {
+      if (s.passcode && typeof s.passcode === 'string' && !s.passcode.startsWith('$2b$') && !s.passcode.startsWith('$2a$') && !s.passcode.startsWith('$2y$')) {
+        s.passcode = bcrypt.hashSync(s.passcode, 10);
+      }
+    }
+  }
+  if (Array.isArray(dbState.lecturers)) {
+    for (const l of dbState.lecturers) {
+      if (l.passcode && typeof l.passcode === 'string' && !l.passcode.startsWith('$2b$') && !l.passcode.startsWith('$2a$') && !l.passcode.startsWith('$2y$')) {
+        l.passcode = bcrypt.hashSync(l.passcode, 10);
+      }
+    }
+  }
+}
+
+// Helper to save database state
+function saveDatabase(dbState: any) {
+  hashPasscodesInState(dbState);
+  dbState = sanitizeStateIds(dbState);
+  cachedDb = dbState;
+  
+  // Persist asynchronously via throttled/debounced database sync
+  saveFullDatabaseState(dbState)
+    .catch((err) => {
+      console.error("Failed to persist updated state to PostgreSQL:", err);
+    });
+
+  // Keep db_store.json as a secondary local fallback
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(dbState, null, 2), "utf-8");
+  } catch (e) {
+    console.error("Error writing fallback db_store.json", e);
+  }
+  return true;
+}
+
+
+// Role-Based Access Control (RBAC) Protection Middleware
+function checkRBAC(allowedRoles: string[]) {
+  return (req: any, res: any, next: any) => {
+    // Prefer the verified identity attached by `authenticateJWT`, fall back to header
+    const userRole = req.user?.role || req.headers["x-user-role"];
+    
+    // Explicitly block students from administrative routes and restrict write access
+    if (userRole === "student" && (req.path.startsWith("/api/admin") || req.path.startsWith("/admin"))) {
+      return res.status(403).json({
+        success: false,
+        error: "Access Denied: Students are technically blocked from accessing administrative routes.",
+        code: "RBAC_STUDENT_RESTRICTED",
+        allowedRoles
+      });
+    }
+
+    // Default permission checks
+    if (req.path.startsWith("/api/admin")) {
+      // If we do not have a verified identity here, reply with 401 so clients
+      // can treat this as a session/authentication problem rather than an RBAC denial.
+      if (!req.user && !userRole) {
+        return res.status(401).json({
+          success: false,
+          error: "Authentication required for administrative routes.",
+          code: "RBAC_UNAUTHENTICATED"
+        });
+      }
+
+      if (!allowedRoles.includes(userRole)) {
+        return res.status(403).json({
+          success: false,
+          error: `Access Denied: Users with role '${userRole}' are not permitted to access this administrative route.`,
+          code: "RBAC_FORBIDDEN_ROLE"
+        });
+      }
+    }
+
+    next();
+  };
+}
+
+// JWT Verification Middleware
+async function authenticateJWT(req: any, res: any, next: any) {
+  const authHeader = req.headers.authorization;
+  let token = null;
+  if (authHeader && authHeader.toLowerCase().startsWith('bearer ')) {
+    token = authHeader.substring(7);
+  } else {
+    token = req.headers['x-session-token'] || req.query.token;
+  }
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      error: "Access Denied: Authentication token required. Please sign in."
+    });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    let current: any = null;
+
+    if (decoded.roleId || decoded.userId) {
+      const lookupId = decoded.roleId || decoded.userId;
+      const sessionById = await db.execute(sql`SELECT COALESCE(session_version, 0) AS session_version, is_active FROM users WHERE LOWER(role_id) = LOWER(${lookupId}) OR LOWER(username) = LOWER(${lookupId}) OR LOWER(uid) = LOWER(${lookupId}) LIMIT 1`);
+      current = sessionById.rows[0];
+    }
+
+    if (!current && decoded.email) {
+      const sessionByEmail = await db.execute(sql`SELECT COALESCE(session_version, 0) AS session_version, is_active FROM users WHERE LOWER(email) = LOWER(${decoded.email}) LIMIT 1`);
+      current = sessionByEmail.rows[0];
+    }
+
+    if (!current || current.is_active !== true || Number(decoded.sv || 0) !== Number(current.session_version || 0)) {
+      return res.status(401).json({ success: false, error: "Access Denied: This session is no longer valid. Please sign in again." });
+    }
+    req.user = decoded;
+    
+    // Propagate role and ID to headers for downstream compatibility
+    req.headers['x-user-role'] = decoded.role;
+    req.headers['x-user-id'] = decoded.userId;
+    
+    next();
+  } catch (err: any) {
+    if (err?.name !== 'JsonWebTokenError' && err?.name !== 'TokenExpiredError') {
+      console.error("authenticateJWT execution error:", err);
+    }
+    return res.status(401).json({
+      success: false,
+      error: "Access Denied: Invalid or expired authentication token."
+    });
+  }
+}
+
+// Public API endpoints bypass list
+const publicAPIPaths = [
+  "/api/health",
+  "/api/auth/login",
+  "/api/auth/refresh",
+  "/api/auth/reset-request",
+  "/api/auth/reset-password",
+  "/api/auth/reset-requests",
+  "/api/data",
+  "/api/student/registered-units",
+  "/api/student-enrollments",
+  "/api/system/registration-deadline",
+  "/api/unit-drop-requests",
+  "/api/public/consultations",
+  "/api/public/applications",
+  "/api/public/application-documents"
+];
+
+const PASSWORD_RESET_RESPONSE = "If an eligible account exists, a password-reset link will be sent shortly.";
+const PASSWORD_RESET_WINDOW_MS = 60 * 60 * 1000;
+const PASSWORD_RESET_MAX_REQUESTS = 3;
+const PASSWORD_RESET_TOKEN_TTL_MS = 20 * 60 * 1000;
+
+function passwordResetHash(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function validResetPassword(password: unknown): password is string {
+  return typeof password === 'string'
+    && password.length >= 12
+    && /[a-z]/.test(password)
+    && /[A-Z]/.test(password)
+    && /\d/.test(password)
+    && /[^A-Za-z0-9]/.test(password);
+}
+
+async function sendPasswordResetEmail(email: string, resetUrl: string): Promise<boolean> {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.PASSWORD_RESET_FROM || process.env.RESEND_FROM;
+  if (!apiKey || !from) return false;
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      from,
+      to: [email],
+      subject: 'Reset your Alika administrator password',
+      html: `<p>We received a request to reset your Alika Medical Training College & Medical Center administrator password.</p><p><a href="${resetUrl}">Reset password</a></p><p>This link expires in 20 minutes and can be used once. If you did not request this, you can ignore this email.</p>`,
+    }),
+  });
+  return response.ok;
+}
+
+// Mount JWT Protection Middleware globally across all /api routes except public endpoints
+app.use("/api", (req: any, res: any, next: any) => {
+  if (req.method === "OPTIONS") {
+    return next();
+  }
+  
+  const pathWithoutQuery = req.path.split('?')[0];
+  const fullPath = req.baseUrl + pathWithoutQuery;
+  const relativePath = '/api' + pathWithoutQuery;
+  
+  const isPublic = 
+    publicAPIPaths.includes(fullPath) || 
+    publicAPIPaths.includes(relativePath) ||
+    relativePath.startsWith("/api/public/applications/reference/") ||
+    relativePath.startsWith("/api/lecturer") ||
+    relativePath.startsWith("/api/faculty") ||
+    relativePath.startsWith("/api/lecturers") ||
+    (relativePath === "/api/courses" && req.method === "GET") ||
+    (req.method === "GET" && /^\/api\/courses\/[^/]+\/gallery$/.test(relativePath));
+  if (isPublic) {
+    return next();
+  }
+  
+  authenticateJWT(req, res, next);
+});
+
+const ADMIN_ROLES = ["admin", "super_admin", "admissions_officer"];
+const APPLICATION_DOCUMENT_TYPES = new Set(["passport_photo", "national_id", "kcse_certificate", "academic_certificate", "recommendation_letter"]);
+const APPLICATION_MIME_TYPES = new Set(["application/pdf", "image/jpeg", "image/png", "image/jpg", "image/pjpeg"]);
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+function cleanText(value: unknown, max = 5000): string {
+  return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+
+function requireAdminRole(req: any, res: any): boolean {
+  if (!ADMIN_ROLES.includes(req.user?.role)) {
+    res.status(403).json({ error: "Admissions administrator access is required." });
+    return false;
+  }
+  return true;
+}
+
+async function writeAdminAudit(req: any, action: string, resourceType: string, resourceId: string, details: Record<string, unknown> = {}) {
+  try {
+    await db.execute(sql`INSERT INTO admin_audit_logs (actor_id, actor_role, action, resource_type, resource_id, details)
+      VALUES (${req.user?.userId || null}, ${req.user?.role || null}, ${action}, ${resourceType}, ${resourceId}, ${JSON.stringify(details)}::jsonb)`);
+  } catch (error: any) {
+    console.error("[audit] failed to write audit event", { action, resourceType, resourceId, error: error?.message });
+  }
+}
+
+async function recordRoleMismatchLoginAttempt(req: any, identifier: string, attemptedPortal: string, actualRole: string) {
+  const ipAddress = String(req.headers['x-forwarded-for'] || req.ip || req.connection?.remoteAddress || '').split(',')[0].trim();
+  try {
+    await db.execute(sql`INSERT INTO admin_audit_logs (actor_id, actor_role, action, resource_type, resource_id, details)
+      VALUES (${null}, ${null}, 'login.role_mismatch', 'auth', ${identifier || null}, ${JSON.stringify({
+        attemptedPortal,
+        actualRole,
+        ipAddress,
+        timestamp: new Date().toISOString(),
+      })}::jsonb)`);
+  } catch (error: any) {
+    console.error("[auth] failed to record role mismatch login attempt", { identifier, attemptedPortal, actualRole, error: error?.message });
+  }
+}
+
+async function queueEmail(eventKey: string, recipient: string, subject: string, body: string) {
+  try {
+    await db.execute(sql`INSERT INTO email_outbox (event_key, recipient, subject, body)
+      VALUES (${eventKey}, ${recipient}, ${subject}, ${body}) ON CONFLICT (event_key) DO NOTHING`);
+  } catch (error: any) {
+    // An outbox failure must be visible but must not roll back the user request.
+    console.error("[email-outbox] unable to queue notification", { eventKey, recipient, error: error?.message });
+  }
+}
+
+async function generateAdmissionNumber(): Promise<string> {
+  // The database unique constraint remains the final concurrency safeguard.
+  return `ADM-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+}
+
+class EnrollmentError extends Error {
+  constructor(message: string, readonly statusCode = 400) {
+    super(message);
+  }
+}
+
+async function createStudentFromApplication(application: any) {
+  const fullName = application?.full_name || application?.fullName;
+  const email = application?.email;
+  const phone = application?.phone;
+  const admissionNo = application?.admission_no || application?.admissionNo || await generateAdmissionNumber();
+  const approvedCourseId = application?.approved_course_id || application?.approvedCourseId || application?.first_choice_course_id || application?.firstChoiceCourseId;
+  const preferredIntake = application?.preferred_intake || application?.preferredIntake;
+  const nationality = application?.nationality;
+
+  if (!application || !email || !fullName) return null;
+
+  const cohort = preferredIntake || '';
+
+  // Admissions owns student creation. Reuse the same student row if already admitted —
+  // never insert a duplicate for Academic Allocation or a second approval pass.
+  const enrolled = await enrollAdmittedStudentRecord({
+    name: fullName,
+    email,
+    phone,
+    admissionNo,
+    cohort,
+    courseId: approvedCourseId,
+    department: nationality,
+    accountStatus: 'Active',
+  });
+
+  return enrolled.student
+    ? { ...enrolled.student, defaultPassword: enrolled.defaultPassword, created: enrolled.created }
+    : null;
+}
+
+/**
+ * Admissions-owned student enrollment. Creates one students row + auth user, or
+ * returns the existing row when email/admission number already match. Academic
+ * Allocation must never call this to invent parallel student identities.
+ */
+async function enrollAdmittedStudentRecord(params: {
+  name: string;
+  email: string;
+  phone?: string | null;
+  admissionNo?: string | null;
+  cohort?: string | null;
+  courseId?: string | null;
+  department?: string | null;
+  avatar?: string | null;
+  accountStatus?: string;
+  passcode?: string | null;
+}): Promise<{ student: any; created: boolean; defaultPassword: string | null }> {
+  const email = cleanText(params.email, 255).toLowerCase();
+  const name = cleanText(params.name, 255);
+  const phone = cleanText(params.phone || '', 50);
+  const courseId = cleanText(params.courseId || '', 50);
+  const cohort = cleanText(params.cohort || '', 100);
+  if (!email || !name || !phone || !courseId || !cohort) {
+    throw new EnrollmentError('Name, email, phone, programme, and intake are required for student admission.');
+  }
+
+  const courseResult = await db.execute(sql`SELECT id, code, title FROM courses WHERE id=${courseId} LIMIT 1`);
+  const course = courseResult.rows[0] as { id: string; code: string; title: string } | undefined;
+  if (!course) throw new EnrollmentError('The selected programme does not exist.');
+
+  let admissionNo = cleanText(params.admissionNo || '', 100);
+  if (!admissionNo) {
+    admissionNo = await generateAdmissionNumber();
+  }
+
+  const department = cleanText(params.department || '', 255) || null;
+  const accountStatus = cleanText(params.accountStatus || 'Pending Setup', 50) || 'Pending Setup';
+
+  let student: any;
+  let created = false;
+
+  try {
+    await db.transaction(async (tx: any) => {
+      const existingUsers = await tx
+        .select()
+        .from(students)
+        .where(or(eq(students.email, email), eq(students.admissionNo, admissionNo)))
+        .limit(1);
+
+      if (existingUsers.length > 0) {
+        const matchingEmail = existingUsers.find((candidate: any) => String(candidate.email || '').toLowerCase() === email);
+        if (matchingEmail) {
+          student = matchingEmail;
+          created = false;
+          return;
+        }
+        throw new EnrollmentError('The admission number is already assigned to another student.', 409);
+      }
+
+      const [insertedStudent] = await tx.insert(students).values({
+        name,
+        email,
+        phone,
+        admissionNo,
+        cohort,
+        courseId: course.id,
+        programme: course.title,
+        department,
+        avatar: params.avatar ?? null,
+        accountStatus,
+        createdAt: new Date().toISOString(),
+      }).returning();
+
+      if (!insertedStudent) {
+        throw new Error('Failed to create admitted student record.');
+      }
+
+      student = insertedStudent;
+      created = true;
+
+      const canonicalCreated = await ensureStudentCanonicalEnrollment(tx, student.id, course.code);
+      if (canonicalCreated && !student.enrolledUnits) {
+        student.enrolledUnits = [course.code];
+      }
+    });
+  } catch (error: any) {
+    if (error instanceof EnrollmentError) throw error;
+    if (error?.code !== '23505' && error?.cause?.code !== '23505') throw error;
+
+    const concurrent = await db.execute(sql`SELECT * FROM students WHERE LOWER(email) = LOWER(${email}) OR admission_no = ${admissionNo} LIMIT 1`);
+    const existingStudent: any = concurrent.rows[0];
+    if (existingStudent && String(existingStudent.email || '').toLowerCase() === email) {
+      return { student: existingStudent, created: false, defaultPassword: null };
+    }
+    throw new EnrollmentError('The admission number is already assigned to another student.', 409);
+  }
+
+  if (!student) {
+    throw new Error('Failed to create admitted student record.');
+  }
+
+  const { plain: defaultPassword } = resolvePassword(params.passcode || undefined, 'student');
+  try {
+    await upsertUserAuthRecord({
+      username: admissionNo,
+      email,
+      passwordHash: hashPassword(defaultPassword),
+      role: 'student',
+      roleId: String(student.id),
+      isActive: true,
+      mustChangePassword: true,
+    });
+  } catch (err: any) {
+    console.warn('Failed to create associated auth record for admitted student:', err?.message || err);
+  }
+
+  return { student, created, defaultPassword };
+}
+
+async function queueAdmissionLetter(application: any, student?: any) {
+  const fullName = application?.full_name || application?.fullName || 'Applicant';
+  const email = application?.email;
+  const applicationNo = application?.application_no || application?.applicationNo || '';
+  const admissionNo = application?.admission_no || application?.admissionNo || student?.admission_no || student?.admissionNo || '';
+  if (!application || !email) return;
+  const loginUrl = `${process.env.APP_BASE_URL || process.env.APP_URL || 'https://alikamedical.co.ke'}/login?portal=student`;
+  const body = `Dear ${fullName},\n\n` +
+    `Congratulations! Your application ${applicationNo} has been approved.\n` +
+    `Your admission number is ${admissionNo}.\n` +
+    `Please visit ${loginUrl} to log in and complete your student onboarding.\n\n` +
+    `If you are logging in for the first time, use your admission number as the username. You will be prompted to change your password on first sign in.\n\n` +
+    `Best regards,\nAlika Admissions Team`;
+  await queueEmail(`application:${application.id}:admission_letter`, email, `Admission Offer: ${applicationNo}`, body);
+}
+
+// ==========================================
+// CORE API ROUTE HANDLERS
+// ==========================================
+
+// 1. Healthcheck Endpoint
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// GET native PostgreSQL / Cloud SQL connection status
+app.get("/api/postgres/status", async (req, res) => {
+  try {
+    const isConfigured = !!process.env.SQL_HOST;
+    if (!isConfigured) {
+      return res.json({
+        success: false,
+        status: "unconfigured",
+        message: "Native PostgreSQL host (SQL_HOST) is not configured in the environment."
+      });
+    }
+
+    // Try a simple select to test connection
+    const result = await db.select().from(systemState).limit(1);
+    res.json({
+      success: true,
+      status: "connected",
+      message: "Successfully connected to managed Cloud SQL PostgreSQL instance using Drizzle ORM.",
+      host: process.env.SQL_HOST,
+      database: process.env.SQL_DB_NAME,
+      user: process.env.SQL_USER,
+      records: result.length
+    });
+  } catch (err: any) {
+    console.error("Native PostgreSQL status check failed:", err);
+    res.json({
+      success: false,
+      status: "error",
+      error: clientSafeDbError("PostgreSQL connection attempt failed."),
+      message: "PostgreSQL connection attempt failed. Ensure database proxy is running and credentials are valid."
+    });
+  }
+});
+
+// =========================================================================
+// SUPABASE REAL DATABASE ROUTE INTEGRATIONS
+// =========================================================================
+
+// GET all students from Supabase (joins grades table relational structure)
+app.get("/api/supabase/students", async (req, res) => {
+  try {
+    const isPlaceholder = !process.env.SUPABASE_URL || !process.env.SUPABASE_KEY || process.env.SUPABASE_URL.includes("placeholder");
+    
+    if (isPlaceholder) {
+      return res.json({
+        success: false,
+        status: "unconfigured",
+        message: "Supabase connection is running in simulation mode. Please configure SUPABASE_URL and SUPABASE_KEY in settings to fetch from your real database.",
+        students: getDatabase().students || []
+      });
+    }
+
+    // Query real Supabase tables
+    const { data, error } = await supabase
+      .from('students')
+      .select('*, grades(*)');
+
+    if (error) {
+      console.error("Supabase students query error:", error);
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+        details: error.details || "",
+        message: "Error fetching data from Supabase. Ensure 'students' and 'grades' tables exist with correct relations."
+      });
+    }
+
+    res.json({
+      success: true,
+      status: "connected",
+      students: data
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET all courses from Supabase
+app.get("/api/supabase/courses", async (req, res) => {
+  try {
+    const isPlaceholder = !process.env.SUPABASE_URL || !process.env.SUPABASE_KEY || process.env.SUPABASE_URL.includes("placeholder");
+    
+    if (isPlaceholder) {
+      return res.json({
+        success: false,
+        status: "unconfigured",
+        message: "Supabase connection is not configured.",
+        courses: getDatabase().courses || []
+      });
+    }
+
+    const { data, error } = await supabase.from('courses').select('*');
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      status: "connected",
+      courses: data
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET all lecturers from Supabase
+app.get("/api/supabase/lecturers", async (req, res) => {
+  try {
+    const isPlaceholder = !process.env.SUPABASE_URL || !process.env.SUPABASE_KEY || process.env.SUPABASE_URL.includes("placeholder");
+    
+    if (isPlaceholder) {
+      const lecturersList = (getDatabase().lecturers || []).map((l: any) => {
+        const { passcode, ...rest } = l;
+        return rest;
+      });
+      return res.json({
+        success: false,
+        status: "unconfigured",
+        message: "Supabase connection is not configured.",
+        lecturers: lecturersList
+      });
+    }
+
+    const { data, error } = await supabase
+      .from('lecturers')
+      .select('id, name, email, phone, hourly_rate, logged_hours, bank_details, contract_length, designator_code, bio, avatar, is_active, is_accountant, is_librarian');
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      status: "connected",
+      lecturers: data
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Seed/Sync current portal state to Supabase tables for fast bootstrapping
+app.post("/api/supabase/sync", async (req, res) => {
+  try {
+    const isPlaceholder = !process.env.SUPABASE_URL || !process.env.SUPABASE_KEY || process.env.SUPABASE_URL.includes("placeholder");
+    
+    if (isPlaceholder) {
+      return res.status(400).json({
+        success: false,
+        message: "Sync failed: Supabase credentials are not configured yet."
+      });
+    }
+
+    const dbState = getDatabase();
+
+    // 1. Sync courses catalog
+    if (dbState.courses && dbState.courses.length > 0) {
+      const coursesToSync = dbState.courses.map((c: any) => ({
+        code: c.code,
+        title: c.title,
+        description: c.description || "",
+        duration: c.duration || "1 Semester",
+        fees: Number(c.fees) || 0,
+        thumbnail: c.thumbnail || "",
+        faculty: c.faculty || "School of Computing",
+        active: c.active !== false
+      }));
+      const { error: err } = await supabase.from('courses').upsert(coursesToSync, { onConflict: 'code' });
+      if (err) throw new Error(`Courses sync error: ${err.message}`);
+    }
+
+    // 2. Sync lecturers
+    if (dbState.lecturers && dbState.lecturers.length > 0) {
+      const lecturersToSync = dbState.lecturers.map((l: any) => ({
+        name: l.name,
+        email: l.email,
+        phone: l.phone || "+254711222333",
+        hourly_rate: Number(l.hourlyRate || l.hourly_rate) || 3000,
+        logged_hours: Number(l.loggedHours || l.logged_hours) || 0,
+        bank_details: l.bankDetails || l.bank_details || "",
+        contract_length: l.contractLength || l.contract_length || "Permanent",
+        designator_code: l.designatorCode || l.designator_code || `LEC-${Math.floor(100 + Math.random() * 900)}`,
+        bio: l.bio || "",
+        avatar: l.avatar || "",
+        is_active: l.isActive !== false,
+        passcode: l.passcode || "lecturer123"
+      }));
+      const { error: err } = await supabase.from('lecturers').upsert(lecturersToSync, { onConflict: 'email' });
+      if (err) throw new Error(`Lecturers sync error: ${err.message}`);
+    }
+
+    // 3. Sync students
+    if (dbState.students && dbState.students.length > 0) {
+      const studentsToSync = dbState.students.map((s: any) => ({
+        name: s.name,
+        email: s.email,
+        phone: s.phone || "+254799000111",
+        admission_no: s.admissionNo || s.admission_no || `ED-CS-2026-${Math.floor(100 + Math.random() * 900)}`,
+        cohort: s.cohort || "2026 Cohort",
+        avatar: s.avatar || "",
+        passcode: s.passcode || "student123"
+      }));
+      const { error: err } = await supabase.from('students').upsert(studentsToSync, { onConflict: 'email' });
+      if (err) throw new Error(`Students sync error: ${err.message}`);
+    }
+
+    res.json({
+      success: true,
+      message: "Successfully synchronized Courses, Lecturers, and Students catalog into Supabase! Relational state matches perfectly."
+    });
+  } catch (err: any) {
+    console.error("Supabase sync failed:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Profile loader helper function
+async function getProfileForUser(role: string, roleId: string | null, email: string) {
+  const fullDb = getDatabase();
+  if (role === "student") {
+    const student = (fullDb.students || []).find((s: any) =>
+      s.id === roleId || s.admissionNo?.toLowerCase() === roleId?.toLowerCase() || s.email?.toLowerCase() === email.toLowerCase()
+    );
+    return sanitizeProfile(student);
+  }
+  if (["lecturer", "accountant", "librarian"].includes(role)) {
+    const lecturer = (fullDb.lecturers || []).find((l: any) =>
+      l.id === roleId || l.designatorCode?.toLowerCase() === roleId?.toLowerCase() || l.email?.toLowerCase() === email.toLowerCase()
+    );
+    return sanitizeProfile(lecturer);
+  }
+  if (role === "admin") {
+    return { name: "System Administrator", email: email || "admin@alikamedical.co.ke" };
+  }
+  return null;
+}
+
+// Admin User Creation Endpoint - Creates profile & corresponding record in users table with hashed password
+app.post("/api/admin/create-user", checkRBAC(["admin"]), async (req: any, res: any) => {
+  try {
+    const {
+      email,
+      role,
+      name,
+      password,
+      passcode,
+      admissionNo,
+      designatorCode,
+      cohort,
+      phone,
+      hourlyRate,
+      contractLength,
+      isAccountant,
+      isLibrarian
+    } = req.body;
+
+    if (!email || !role || !name) {
+      res.status(400).json({ success: false, error: "Missing required parameters: email, role, and name are required." });
+      return;
+    }
+
+    const validRoles = ["student", "lecturer", "accountant", "librarian", "admin"];
+    if (!validRoles.includes(role)) {
+      res.status(400).json({ success: false, error: `Invalid role '${role}'. Allowed roles: ${validRoles.join(", ")}` });
+      return;
+    }
+
+    const rawInputPass = (password || passcode || "").trim();
+    const { plain: plainPassword } = resolvePassword(rawInputPass, role);
+    const passwordHash = hashPassword(plainPassword);
+    const mustChangePassword = true;
+
+    let uid = "";
+    let createdRecord: any = null;
+    const fullDb = getDatabase();
+
+    if (role === "student") {
+      uid = admissionNo ? admissionNo.trim() : `STU-${Date.now()}`;
+      try {
+        const [student] = await db
+          .insert(students)
+          .values({
+            name: name.trim(),
+            email: email.trim().toLowerCase(),
+            phone: phone ? phone.trim() : null,
+            admissionNo: uid,
+            cohort: cohort ? cohort.trim() : "2026 Intake",
+            accountStatus: "Pending Setup",
+          })
+          .returning();
+        createdRecord = student;
+      } catch (dbErr) {
+        const newStudent = {
+          id: `stu-${Date.now()}`,
+          name: name.trim(),
+          email: email.trim().toLowerCase(),
+          phone: phone || "+254 700 000000",
+          admissionNo: uid,
+          cohort: cohort || "2026 Intake",
+          accountStatus: "Pending Setup",
+          enrolledUnits: [],
+          grades: {},
+          ledger: [],
+          payments: [],
+          attendance: {},
+        };
+        fullDb.students = fullDb.students || [];
+        fullDb.students.push(newStudent);
+        createdRecord = newStudent;
+      }
+    } else if (["lecturer", "accountant", "librarian"].includes(role)) {
+      uid = designatorCode ? designatorCode.trim() : `LEC-${Date.now()}`;
+      try {
+        const [lecturer] = await db
+          .insert(lecturers)
+          .values({
+            name: name.trim(),
+            email: email.trim().toLowerCase(),
+            phone: phone ? phone.trim() : "+254 700 000000",
+            hourlyRate: hourlyRate ? String(hourlyRate) : "0.00",
+            contractLength: contractLength ? String(contractLength) : "1 Year",
+            designatorCode: uid,
+            isActive: true,
+            isAccountant: role === "accountant" || isAccountant === true,
+            isLibrarian: role === "librarian" || isLibrarian === true,
+          })
+          .returning();
+        createdRecord = lecturer;
+      } catch (dbErr) {
+        const newLecturer = {
+          id: `lec-${Date.now()}`,
+          name: name.trim(),
+          email: email.trim().toLowerCase(),
+          phone: phone || "+254 700 000000",
+          hourlyRate: parseFloat(hourlyRate || "0"),
+          bankDetails: "NCBA Bank",
+          contractLength: contractLength || "1 Year",
+          designatorCode: uid,
+          subjects: [],
+          isActive: true,
+          isAccountant: role === "accountant" || isAccountant === true,
+          isLibrarian: role === "librarian" || isLibrarian === true,
+        };
+        fullDb.lecturers = fullDb.lecturers || [];
+        fullDb.lecturers.push(newLecturer);
+        createdRecord = newLecturer;
+      }
+    } else {
+      uid = `ADM-${Date.now()}`;
+      createdRecord = { id: uid, name, email, role };
+    }
+
+    // Automatically create/sync corresponding user record in users table
+    try {
+      await upsertUserAuthRecord({
+        username: uid,
+        email: email.trim().toLowerCase(),
+        passwordHash,
+        role,
+        roleId: createdRecord?.id || uid,
+        isActive: true,
+        mustChangePassword,
+      });
+    } catch (authErr) {
+      console.warn("Could not sync with users table:", authErr);
+    }
+
+    saveDatabase(fullDb);
+
+    res.status(201).json({
+      success: true,
+      message: "User account created successfully with default password.",
+      user: {
+        id: createdRecord?.id || uid,
+        uid: uid,
+        email: email.trim().toLowerCase(),
+        name: name,
+        role: role,
+        mustChangePassword: true,
+      },
+      defaultPassword: plainPassword,
+    });
+  } catch (err: any) {
+    console.error("Failed to create user account:", err);
+    res.status(500).json({ success: false, error: err.message || "Failed to create user account." });
+  }
+});
+
+// Unified Login Endpoint - Authenticates exclusively through the users table
+app.post("/api/auth/login", async (req: any, res: any) => {
+  try {
+    const { role, userId, passcode, password } = req.body;
+    const inputIdentifier = userId;
+    const inputPasscode = passcode || password;
+
+    if (!inputIdentifier || !inputPasscode) {
+      res.status(400).json({ success: false, error: "Missing required role, identity, or passcode parameter." });
+      return;
+    }
+
+    const result = await authenticateUser({
+      identifier: inputIdentifier,
+      passcode: inputPasscode,
+      roleHint: role,
+      expectedRole: role,
+      jwtSecret: JWT_SECRET,
+      getProfileFn: getProfileForUser
+    });
+
+    if (!result.success) {
+      if (result.roleMismatch) {
+        await recordRoleMismatchLoginAttempt(req, inputIdentifier, role, result.actualRole || 'unknown');
+        res.status(403).json({ success: false, error: "Invalid credentials for this portal." });
+        return;
+      }
+      res.status(401).json({ success: false, error: result.error || "Authentication failed." });
+      return;
+    }
+
+    if (result.status === "REQUIRES_PASSWORD_CHANGE") {
+      res.json({
+        success: true,
+        status: "REQUIRES_PASSWORD_CHANGE",
+        userId: result.userId,
+        username: result.username,
+        role: result.role,
+        email: result.email,
+        token: result.token,
+        refreshToken: result.refreshToken,
+        message: result.message
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      role: result.role,
+      userId: result.userId,
+      token: result.token,
+      refreshToken: result.refreshToken,
+      profile: result.profile
+    });
+  } catch (err: any) {
+    console.error("Login endpoint error:", err);
+    res.status(500).json({ success: false, error: clientSafeDbError("Authentication failed.", err) });
+  }
+});
+
+// Silent Token Refresh Endpoint
+app.post("/api/auth/refresh", async (req: any, res: any) => {
+  try {
+    const refreshToken = req.body?.refreshToken || req.headers['x-refresh-token'];
+    if (!refreshToken) {
+      return res.status(401).json({ success: false, error: "Refresh token required." });
+    }
+
+    const decoded = jwt.verify(refreshToken, JWT_SECRET) as any;
+    if (decoded.tokenType !== 'refresh') {
+      return res.status(401).json({ success: false, error: "Invalid token type." });
+    }
+
+    let current: any = null;
+    if (decoded.roleId || decoded.userId) {
+      const lookupId = decoded.roleId || decoded.userId;
+      const sessionById = await db.execute(sql`SELECT * FROM users WHERE LOWER(role_id) = LOWER(${lookupId}) OR LOWER(username) = LOWER(${lookupId}) OR LOWER(uid) = LOWER(${lookupId}) LIMIT 1`);
+      current = sessionById.rows[0];
+    }
+    if (!current && decoded.email) {
+      const sessionByEmail = await db.execute(sql`SELECT * FROM users WHERE LOWER(email) = LOWER(${decoded.email}) LIMIT 1`);
+      current = sessionByEmail.rows[0];
+    }
+
+    if (!current || current.is_active !== true || Number(decoded.sv || 0) !== Number(current.session_version || 0)) {
+      return res.status(401).json({ success: false, error: "Session invalid or expired." });
+    }
+
+    const profileId = current.role_id || current.username || String(current.id);
+    const newAccessToken = issueAccessToken(profileId, current.role, current.email, JWT_SECRET, current.role_id, current.session_version || 0);
+    const newRefreshToken = issueRefreshToken(profileId, current.role, current.email, JWT_SECRET, current.role_id, current.session_version || 0);
+
+    return res.json({
+      success: true,
+      token: newAccessToken,
+      refreshToken: newRefreshToken
+    });
+  } catch (err) {
+    return res.status(401).json({ success: false, error: "Invalid or expired refresh token." });
+  }
+});
+
+// Password Change Endpoint (/api/auth/change-password and /api/auth/change-passcode)
+// Requires the authenticated JWT session established at login (including forced-change login).
+app.post(["/api/auth/change-password", "/api/auth/change-passcode"], async (req: any, res: any) => {
+  try {
+    if (!req.user?.userId && !req.user?.email) {
+      res.status(401).json({ success: false, error: "Your session has expired. Please sign in again." });
+      return;
+    }
+
+    const { role, userId, currentPasscode, currentPassword, newPasscode, newPassword } = req.body;
+    const inputCurrent = currentPassword || currentPasscode;
+    const inputNew = newPassword || newPasscode;
+    const identifier = (typeof userId === 'string' && userId.trim()) ? userId.trim() : (req.user.userId || req.user.email);
+
+    if (!identifier || !inputCurrent || !inputNew) {
+      res.status(400).json({ success: false, error: "Missing required parameters for password update." });
+      return;
+    }
+
+    // Bind the change to the authenticated session — do not allow changing another account.
+    const sessionUser = await findUserByIdentifier(req.user.userId || req.user.email, req.user.role);
+    const targetUser = await findUserByIdentifier(identifier, role || req.user.role);
+    if (!sessionUser || !targetUser || Number(sessionUser.id) !== Number(targetUser.id)) {
+      res.status(403).json({ success: false, error: "You can only change the password for your own account." });
+      return;
+    }
+
+    const result = await changeUserPassword({
+      identifier,
+      roleHint: role || req.user.role,
+      currentPasscode: inputCurrent,
+      newPasscode: inputNew,
+      jwtSecret: JWT_SECRET,
+      getProfileFn: getProfileForUser
+    });
+
+    if (!result.success) {
+      res.status(401).json({ success: false, error: result.error });
+      return;
+    }
+
+    res.json(result);
+  } catch (err: any) {
+    console.error("Password change endpoint error:", err);
+    res.status(500).json({ success: false, error: clientSafeDbError("Failed to update password.", err) });
+  }
+});
+
+// Protected Administrative System Statistics Route
+app.get("/api/admin/system-stats", checkRBAC(["admin", "accountant", "librarian"]), async (req, res) => {
+  try {
+    const [cCount, sCount, lCount, bCount] = await Promise.all([
+      db.select({ value: count() }).from(courses),
+      db.select({ value: count() }).from(students),
+      db.select({ value: count() }).from(lecturers),
+      db.select({ value: count() }).from(books),
+    ]);
+    res.json({
+      systemOnline: true,
+      metrics: {
+        totalCourses: Number(cCount[0]?.value || 0),
+        totalStudents: Number(sCount[0]?.value || 0),
+        totalLecturers: Number(lCount[0]?.value || 0),
+        totalBooks: Number(bCount[0]?.value || 0),
+      },
+      environment: process.env.NODE_ENV || "development",
+      lastBackup: new Date().toISOString()
+    });
+  } catch (error: any) {
+    console.error("System stats query failed:", error);
+    res.status(500).json({ error: clientSafeDbError("Failed to query system stats.", error) });
+  }
+});
+
+// Password reset requests deliberately return the same response for every email.
+// This replaces the legacy approval queue for self-service administrator recovery.
+app.post("/api/auth/reset-request", async (req: any, res: any) => {
+  try {
+    const suppliedEmail = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    if (!/^\S+@\S+\.\S+$/.test(suppliedEmail)) {
+      res.status(200).json({ success: true, message: PASSWORD_RESET_RESPONSE });
+      return;
+    }
+
+    const emailHash = passwordResetHash(suppliedEmail);
+    const recent = await db.execute(sql`
+      SELECT COUNT(*)::int AS count FROM password_reset_rate_limits
+      WHERE email_hash = ${emailHash}
+        AND requested_at > NOW() - INTERVAL '1 hour'
+    `);
+    if (Number((recent.rows[0] as any)?.count || 0) >= PASSWORD_RESET_MAX_REQUESTS) {
+      res.status(200).json({ success: true, message: PASSWORD_RESET_RESPONSE });
+      return;
+    }
+    await db.execute(sql`INSERT INTO password_reset_rate_limits (email_hash) VALUES (${emailHash})`);
+    await db.execute(sql`DELETE FROM password_reset_rate_limits WHERE requested_at < NOW() - INTERVAL '24 hours'`);
+
+    const accountResult = await db.execute(sql`
+      SELECT id, email FROM users
+      WHERE LOWER(email) = ${suppliedEmail}
+        AND is_active = TRUE
+        AND LOWER(role) IN ('admin', 'superadmin', 'super_admin')
+      LIMIT 1
+    `);
+    const account = accountResult.rows[0] as { id: number; email: string } | undefined;
+    if (account) {
+      const rawToken = crypto.randomBytes(32).toString('base64url');
+      const tokenHash = passwordResetHash(rawToken);
+      const expiresAt = new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MS).toISOString();
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`UPDATE password_reset_tokens SET used_at = NOW() WHERE user_id = ${account.id} AND used_at IS NULL`);
+        await tx.execute(sql`
+          INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, requested_ip)
+          VALUES (${account.id}, ${tokenHash}, ${expiresAt}, ${String(req.ip || '').slice(0, 64) || null})
+        `);
+      });
+
+      const appUrl = (process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+      const delivered = await sendPasswordResetEmail(account.email, `${appUrl}/reset-password?token=${encodeURIComponent(rawToken)}`);
+      if (!delivered) {
+        await db.execute(sql`DELETE FROM password_reset_tokens WHERE token_hash = ${tokenHash}`);
+      }
+    }
+    res.status(200).json({ success: true, message: PASSWORD_RESET_RESPONSE });
+  } catch (err: any) {
+    console.error("Password reset request failed:", err?.message || 'unknown error');
+    res.status(200).json({ success: true, message: PASSWORD_RESET_RESPONSE });
+  }
+});
+
+app.post("/api/auth/reset-password", async (req: any, res: any) => {
+  try {
+    const token = typeof req.body?.token === 'string' ? req.body.token : '';
+    const newPassword = req.body?.newPassword;
+    if (!token || !validResetPassword(newPassword)) {
+      res.status(400).json({ success: false, error: "Use a password with at least 12 characters, uppercase, lowercase, number, and symbol." });
+      return;
+    }
+    const tokenHash = passwordResetHash(token);
+    const newHash = hashPassword(newPassword);
+    const updated = await db.transaction(async (tx) => {
+      const claimed = await tx.execute(sql`
+        UPDATE password_reset_tokens
+        SET used_at = NOW()
+        WHERE token_hash = ${tokenHash}
+          AND used_at IS NULL
+          AND expires_at > NOW()
+        RETURNING user_id
+      `);
+      const userId = (claimed.rows[0] as any)?.user_id;
+      if (!userId) return false;
+      const changed = await tx.execute(sql`
+        UPDATE users SET password_hash = ${newHash}, must_change_password = FALSE,
+          session_version = COALESCE(session_version, 0) + 1, updated_at = NOW()
+        WHERE id = ${userId} AND LOWER(role) IN ('admin', 'superadmin', 'super_admin')
+        RETURNING id
+      `);
+      if (!changed.rows[0]) return false;
+      await tx.execute(sql`UPDATE password_reset_tokens SET used_at = NOW() WHERE user_id = ${userId} AND used_at IS NULL`);
+      return true;
+    });
+    if (!updated) {
+      res.status(400).json({ success: false, error: "This password-reset link is invalid or has expired." });
+      return;
+    }
+    res.json({ success: true, message: "Password reset successfully. Please sign in with your new password." });
+  } catch (err: any) {
+    console.error("Password reset completion failed:", err?.message || 'unknown error');
+    res.status(500).json({ success: false, error: "Unable to reset password. Please request a new link." });
+  }
+});
+
+// Check status of password reset requests for a given email
+app.get("/api/auth/reset-requests", (req, res) => {
+  const { email } = req.query;
+  if (!email) {
+    res.status(400).json({ success: false, error: "Missing email parameter" });
+    return;
+  }
+  const dbStore = getDatabase();
+  const list = (dbStore.passwordResetRequests || []).filter(
+    (r: any) => r.email.toLowerCase() === (email as string).trim().toLowerCase()
+  );
+  res.json({ success: true, requests: list });
+});
+
+// Admin Route: Get all password reset requests
+app.get("/api/admin/reset-requests", checkRBAC(["admin"]), (req, res) => {
+  const dbStore = getDatabase();
+  res.json({ success: true, requests: dbStore.passwordResetRequests || [] });
+});
+
+// Admin Route: Take action on a password reset request
+app.post("/api/admin/reset-requests/:id/action", checkRBAC(["admin"]), async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    const { action, feedback, passcode } = req.body;
+    if (!action || !["approve", "reject"].includes(action)) {
+      res.status(400).json({ success: false, error: "Invalid action. Must be 'approve' or 'reject'." });
+      return;
+    }
+
+    const dbStore = getDatabase();
+    const reqIdx = (dbStore.passwordResetRequests || []).findIndex((r: any) => r.id === id);
+    if (reqIdx === -1) {
+      res.status(404).json({ success: false, error: "Password reset request not found." });
+      return;
+    }
+
+    const resetReq = dbStore.passwordResetRequests[reqIdx];
+    if (resetReq.status !== 'pending') {
+      res.status(400).json({ success: false, error: "Request has already been processed." });
+      return;
+    }
+
+    if (action === "approve") {
+      const resetRes = await adminResetUserPassword(resetReq.userId || resetReq.email, passcode);
+      if (!resetRes.success) {
+        res.status(404).json({ success: false, error: resetRes.error || "Corresponding user account not found in database." });
+        return;
+      }
+
+      dbStore.passwordResetRequests[reqIdx].status = 'resolved';
+      dbStore.passwordResetRequests[reqIdx].temporaryPasscode = resetRes.temporaryPasscode;
+      dbStore.passwordResetRequests[reqIdx].adminFeedback = feedback || "Approved and passcode updated.";
+    } else {
+      dbStore.passwordResetRequests[reqIdx].status = 'rejected';
+      dbStore.passwordResetRequests[reqIdx].adminFeedback = feedback || "Request declined by Administrator.";
+    }
+
+    saveDatabase(dbStore);
+    res.json({ success: true, request: dbStore.passwordResetRequests[reqIdx] });
+  } catch (err: any) {
+    console.error("Action on reset request error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 2. Fetch Full Database State
+// Helper to sanitize state for client consumption by removing passcodes
+function sanitizeStateForClient(dbState: any) {
+  if (!dbState) return dbState;
+  const cloned = { ...dbState };
+  if (Array.isArray(cloned.students)) {
+    cloned.students = cloned.students.map((s: any) => {
+      const { passcode, ...rest } = s;
+      return rest;
+    });
+  }
+  if (Array.isArray(cloned.lecturers)) {
+    cloned.lecturers = cloned.lecturers.map((l: any) => {
+      const { passcode, ...rest } = l;
+      return rest;
+    });
+  }
+  return cloned;
+}
+
+app.get("/api/data", async (req, res) => {
+  try {
+    const dbState = await loadFullDatabaseState();
+    res.json(sanitizeStateForClient(dbState));
+  } catch (error) {
+    console.warn("Notice: Database query timed out, returning cached database state.");
+    res.json(sanitizeStateForClient(getDatabase()));
+  }
+});
+
+// 3. Sync/Save Entire Database State (Used by Frontend State-Sync Engine)
+app.post("/api/data", async (req, res) => {
+  const incomingData = req.body;
+  if (!incomingData || typeof incomingData !== "object") {
+    res.status(400).json({ error: "Invalid data payload" });
+    return;
+  }
+
+  const dbVal = getDatabase();
+  // Merge keys dynamically to ensure schema resilience
+  const updatedDb = { ...dbVal, ...incomingData };
+
+  // Never persist out-of-range grades from client sync payloads
+  if (Array.isArray(updatedDb.students)) {
+    const previousById = new Map(
+      (Array.isArray(dbVal.students) ? dbVal.students : []).map((s: any) => [s.id, s])
+    );
+    updatedDb.students = updatedDb.students.map((student: any) => {
+      if (!student || typeof student !== "object") return student;
+      const previous = previousById.get(student.id) as { grades?: Record<string, { cat?: unknown; exam?: unknown }> } | undefined;
+      const previousGrades = previous?.grades;
+      const incomingGrades = student.grades as Record<string, { cat?: unknown; exam?: unknown }> | undefined;
+      return {
+        ...student,
+        grades: sanitizeStudentGradesRecord(incomingGrades, previousGrades),
+      };
+    });
+  }
+
+  const success = saveDatabase(updatedDb);
+
+  if (success) {
+    res.json({ success: true, message: "Database synchronized successfully" });
+  } else {
+    res.status(500).json({ error: "Failed to persist database synchronization" });
+  }
+});
+
+// 4. REST Resource: Courses
+app.get("/api/courses", async (req, res) => {
+  try {
+    const courseRows = await db.select().from(courses);
+    const result = courseRows.map(c => ({
+      id: c.id,
+      code: c.code,
+      title: c.title,
+      description: c.description ?? "",
+      duration: c.duration,
+      fees: Number(c.fees),
+      thumbnail: c.thumbnail ?? "",
+      active: c.active,
+      faculty: c.faculty,
+      courseContent: "",
+      courseHighlights: []
+    }));
+    res.json(result);
+  } catch (err: any) {
+    console.error("Failed to fetch courses:", err);
+    res.json(getDatabase().courses || []);
+  }
+});
+
+app.post("/api/courses", async (req, res) => {
+  if (!requireAdminRole(req, res)) return;
+  try {
+    const courseData = req.body;
+
+    if (!courseData?.code || !courseData?.title) {
+      return res.status(400).json({
+        error: "Course code and title are required",
+      });
+    }
+
+    const [course] = await db
+      .insert(courses)
+      .values({
+        code: courseData.code,
+        title: courseData.title,
+        description: courseData.description ?? null,
+        duration: courseData.duration,
+        fees: courseData.fees,
+        thumbnail: cleanText(courseData.thumbnail, 2000) || null,
+        active: courseData.active ?? true,
+        faculty: courseData.faculty,
+      })
+      .returning();
+
+    // Sync database cache
+    const fullDb = await loadFullDatabaseState();
+    saveDatabase(fullDb);
+
+    res.status(201).json(course);
+  } catch (error: any) {
+    console.error("Failed to create course:", error);
+
+    res.status(500).json({
+      error: error.message,
+    });
+  }
+});
+
+app.post('/api/admin/courses/upload-thumbnail', async (req: any, res: any, next: any) => {
+  if (!requireAdminRole(req, res)) return;
+  upload.single('image')(req, res, (err: any) => {
+    if (err) {
+      if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'Image size must be 10 MB or less.' });
+      }
+      return res.status(400).json({ error: err.message || 'Image upload validation failed.' });
+    }
+    next();
+  });
+}, async (req: any, res: any) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file uploaded.' });
+    }
+
+    // Ensure uploaded file is an image for course thumbnails
+    if (!req.file.mimetype || !req.file.mimetype.startsWith('image/')) {
+      // remove the stored file if present
+      try { fs.unlinkSync(req.file.path); } catch (e) { /* ignore */ }
+      return res.status(400).json({ error: 'Uploaded file must be an image (PNG or JPEG).' });
+    }
+
+    // Build a stable, public-facing file URL
+    // Note: req.file.path is inside the uploads directory
+    const relPath = path.relative(uploadBaseDirectory, req.file.path).split(path.sep).join('/');
+    const fileUrl = `/uploads/${relPath}`;
+    const uploadedAt = new Date().toISOString();
+    res.status(201).json({
+      fileUrl,
+      fileName: req.file.originalname,
+      mimeType: req.file.mimetype,
+      sizeBytes: req.file.size,
+      uploadedAt,
+    });
+  } catch (error: any) {
+    console.error('Failed to upload course thumbnail:', error);
+    res.status(500).json({ error: 'Course thumbnail upload failed.' });
+  }
+});
+
+// Production course lifecycle APIs. Existing course creation remains available
+// for backwards compatibility; these endpoints enforce admissions-admin access.
+app.patch("/api/admin/courses/:id", async (req: any, res: any) => {
+  if (!requireAdminRole(req, res)) return;
+  const id = req.params.id;
+  const body = req.body || {};
+  const title = cleanText(body.title, 255);
+  const code = cleanText(body.code, 30).toUpperCase();
+  const duration = cleanText(body.duration, 50);
+  const faculty = cleanText(body.faculty, 100);
+  if (!title || !code || !duration || !faculty || !Number.isFinite(Number(body.fees)) || Number(body.fees) < 0) {
+    return res.status(400).json({ error: "Title, code, faculty, duration, and a non-negative tuition fee are required." });
+  }
+  try {
+    // Load existing thumbnail so we can clean up replaced/removed files
+    const existing = await db.execute(sql`SELECT thumbnail FROM courses WHERE id=${id}`);
+    const oldThumb = existing.rows[0]?.thumbnail;
+
+    const newThumb = cleanText(body.thumbnail, 2000) || null;
+
+    const result = await db.execute(sql`UPDATE courses SET title=${title}, code=${code}, faculty=${faculty}, duration=${duration},
+      fees=${Number(body.fees)}, department=${cleanText(body.department, 255) || null}, intake=${cleanText(body.intake, 100) || null},
+      study_mode=${cleanText(body.studyMode, 50) || null}, application_fee=${Math.max(0, Number(body.applicationFee) || 0)},
+      thumbnail=${newThumb},
+      entry_requirements=${cleanText(body.entryRequirements) || null}, description=${cleanText(body.description) || null},
+      course_content=${cleanText(body.courseContent) || null}, course_highlights=${cleanText(body.courseHighlights) || null}, updated_at=NOW()
+      WHERE id=${id} AND archived_at IS NULL RETURNING *`);
+    const course = result.rows[0];
+    if (!course) return res.status(404).json({ error: "Active course not found." });
+
+    // If the thumbnail was changed or removed, attempt to delete the old file safely
+    try {
+      if (oldThumb && oldThumb !== newThumb && typeof oldThumb === 'string' && oldThumb.startsWith('/uploads/')) {
+        // Ensure we only delete files inside the uploads directory and within the current admin's tenant folder
+        const rawSchool = (req.user?.roleId || req.user?.userId || 'public').toString();
+        const safeSchool = rawSchool.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 100) || 'public';
+        const expectedSegment = `/schools/${safeSchool}/courses/`;
+        // normalizedOld is like '/uploads/schools/{safeSchool}/courses/filename'
+        const normalizedOld = oldThumb.split('/').join('/');
+        if (normalizedOld.includes(expectedSegment)) {
+          // Strip the leading '/uploads/' so we join correctly with uploadBaseDirectory
+          const rel = normalizedOld.replace(/^\/uploads\//, '').replace(/^\//, '');
+          const absoluteOld = path.join(uploadBaseDirectory, rel);
+          if (absoluteOld.startsWith(path.resolve(uploadBaseDirectory))) {
+            try { fs.unlinkSync(absoluteOld); } catch (e) { /* ignore unlink errors */ }
+          }
+        }
+      }
+    } catch (e) { /* non-fatal cleanup error */ }
+
+    await writeAdminAudit(req, "course.updated", "course", id, { code });
+    res.json(course);
+  } catch (error: any) { console.error("Course update failed:", error); res.status(409).json({ error: clientSafeDbError("Unable to update course.", error) }); }
+});
+
+app.post("/api/admin/courses/:id/:action", async (req: any, res: any) => {
+  if (!requireAdminRole(req, res)) return;
+  const { id, action } = req.params;
+  if (!["archive", "restore", "activate", "deactivate", "duplicate"].includes(action)) return res.status(400).json({ error: "Unsupported course action." });
+  try {
+    if (action === "duplicate") {
+      const source = await db.execute(sql`SELECT * FROM courses WHERE id=${id}`);
+      const row: any = source.rows[0];
+      if (!row) return res.status(404).json({ error: "Course not found." });
+      const copyCode = `${row.code}-COPY-${Date.now().toString().slice(-5)}`;
+      const result = await db.execute(sql`INSERT INTO courses (code,title,description,duration,fees,thumbnail,faculty,active,department,intake,study_mode,application_fee,entry_requirements,course_content,course_highlights)
+        VALUES (${copyCode}, ${`${row.title} (Copy)`}, ${row.description}, ${row.duration}, ${row.fees}, ${row.thumbnail}, ${row.faculty}, false,
+        ${row.department}, ${row.intake}, ${row.study_mode}, ${row.application_fee}, ${row.entry_requirements}, ${row.course_content}, ${row.course_highlights}) RETURNING *`);
+      await writeAdminAudit(req, "course.duplicated", "course", id, { duplicateId: result.rows[0]?.id });
+      return res.status(201).json(result.rows[0]);
+    }
+    const result = action === "archive"
+      ? await db.execute(sql`UPDATE courses SET archived_at=NOW(), archived_by=${req.user.userId}, active=false, updated_at=NOW() WHERE id=${id} RETURNING *`)
+      : action === "restore"
+        ? await db.execute(sql`UPDATE courses SET archived_at=NULL, archived_by=NULL, updated_at=NOW() WHERE id=${id} RETURNING *`)
+        : await db.execute(sql`UPDATE courses SET active=${action === "activate"}, updated_at=NOW() WHERE id=${id} AND archived_at IS NULL RETURNING *`);
+    if (!result.rows[0]) return res.status(404).json({ error: "Course not found." });
+    await writeAdminAudit(req, `course.${action}d`, "course", id);
+    res.json(result.rows[0]);
+  } catch (error: any) { console.error("Course action failed:", error); res.status(500).json({ error: clientSafeDbError("Course action failed.", error) }); }
+});
+
+app.delete("/api/admin/courses/:id", async (req: any, res: any) => {
+  if (!requireAdminRole(req, res)) return;
+  try {
+    const usage = await db.execute(sql`SELECT COUNT(*)::int AS count FROM student_enrollments WHERE course_code=(SELECT code FROM courses WHERE id=${req.params.id})`);
+    if (Number(usage.rows[0]?.count || 0) > 0) return res.status(409).json({ error: "Course has enrolment history; archive it instead of deleting it." });
+    const result = await db.execute(sql`DELETE FROM courses WHERE id=${req.params.id} RETURNING id`);
+    if (!result.rows[0]) return res.status(404).json({ error: "Course not found." });
+    await writeAdminAudit(req, "course.deleted", "course", req.params.id);
+    res.status(204).end();
+  } catch (error: any) { console.error("Course delete failed:", error); res.status(500).json({ error: clientSafeDbError("Unable to delete course.", error) }); }
+});
+
+app.get("/api/courses/:id/gallery", async (req, res) => {
+  try { const result = await db.execute(sql`SELECT * FROM course_gallery_images WHERE course_id=${req.params.id} AND is_public=true ORDER BY is_featured DESC, display_order ASC`); res.json(result.rows); }
+  catch { res.status(500).json({ error: "Unable to load course gallery." }); }
+});
+
+app.put("/api/admin/courses/:id/gallery", async (req: any, res: any) => {
+  if (!requireAdminRole(req, res)) return;
+  const images = Array.isArray(req.body?.images) ? req.body.images : [];
+  if (images.length > 30 || !images.every((image: any) => cleanText(image?.imageUrl, 2000) && cleanText(image?.caption, 500).length <= 500)) return res.status(400).json({ error: "Provide up to 30 valid gallery images and captions." });
+  try {
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`DELETE FROM course_gallery_images WHERE course_id=${req.params.id}`);
+      for (let index = 0; index < images.length; index++) {
+        const image = images[index];
+        await tx.execute(sql`INSERT INTO course_gallery_images (course_id,image_url,caption,display_order,is_featured,is_public) VALUES (${req.params.id},${cleanText(image.imageUrl,2000)},${cleanText(image.caption,500) || null},${index},${Boolean(image.isFeatured)},${image.isPublic !== false})`);
+      }
+    });
+    await writeAdminAudit(req, "course.gallery.updated", "course", req.params.id, { imageCount: images.length });
+    res.status(204).end();
+  } catch (error: any) { console.error("Gallery save failed:", error); res.status(500).json({ error: clientSafeDbError("Unable to save gallery.", error) }); }
+});
+
+app.post("/api/courses/:id/reviews", async (req: any, res: any) => {
+  if (req.user?.role !== "student") return res.status(403).json({ error: "Only enrolled students may submit a review." });
+  const rating = Number(req.body?.rating), comment = cleanText(req.body?.comment, 400);
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5 || comment.length < 10) return res.status(400).json({ error: "Provide a 1–5 star rating and a review of at least 10 characters." });
+  try {
+    const enrolled = await db.execute(sql`SELECT 1 FROM student_enrollments e JOIN courses c ON c.code=e.course_code WHERE e.student_id=${req.user.userId} AND c.id=${req.params.id}`);
+    if (!enrolled.rows[0]) return res.status(403).json({ error: "You must be enrolled in this course to review it." });
+    const identity = await db.execute(sql`SELECT name FROM students WHERE id=${req.user.userId}`);
+    const result = await db.execute(sql`INSERT INTO course_reviews (course_id,student_id,student_name,rating,comment,status) VALUES (${req.params.id},${req.user.userId},${identity.rows[0]?.name || "Student"},${rating},${comment},'pending') RETURNING *`);
+    res.status(201).json(result.rows[0]);
+  } catch (error: any) { console.error("Course review failed:", error); res.status(409).json({ error: clientSafeDbError("Unable to submit course review.", error) }); }
+});
+
+app.patch("/api/admin/reviews/:id", async (req: any, res: any) => {
+  if (!requireAdminRole(req, res)) return;
+  const status = cleanText(req.body?.status, 20).toLowerCase();
+  if (!['approved', 'rejected', 'pending'].includes(status)) return res.status(400).json({ error: "Invalid review status." });
+  try {
+    const result = await db.execute(sql`UPDATE course_reviews SET status=${status}, featured=${Boolean(req.body?.featured)}, reviewed_by=${req.user.userId}, reviewed_at=NOW(), updated_at=NOW() WHERE id=${req.params.id} RETURNING *`);
+    if (!result.rows[0]) return res.status(404).json({ error: "Review not found." });
+    await writeAdminAudit(req, `course_review.${status}`, "course_review", req.params.id);
+    res.json(result.rows[0]);
+  } catch { res.status(500).json({ error: "Unable to moderate review." }); }
+});
+
+app.post("/api/public/consultations", async (req, res) => {
+  const body = req.body || {};
+  const fullName = cleanText(body.fullName, 255);
+  const email = cleanText(body.email, 255).toLowerCase();
+  const phone = cleanText(body.phone, 50);
+  const contactMethod = cleanText(body.preferredContactMethod || body.consultationType, 50) || 'phone';
+  const preferredDate = cleanText(body.preferredDate, 20) || null;
+  const preferredTime = cleanText(body.preferredTime, 50) || '10:00 AM';
+  const subject = cleanText(body.subject, 255) || 'General Admissions Inquiry';
+  const message = cleanText(body.message);
+
+  if (!fullName || !/^\S+@\S+\.\S+$/.test(email) || !phone || !message) {
+    return res.status(400).json({ error: "Please provide valid full name, email, phone number, and message." });
+  }
+
+  if (preferredDate && !/^\d{4}-\d{2}-\d{2}$/.test(preferredDate)) {
+    return res.status(400).json({ error: "Preferred date must be in YYYY-MM-DD format." });
+  }
+
+  try {
+    const requestNo = `CON-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    const result = await db.execute(sql`INSERT INTO consultations (
+      request_no, full_name, email, phone, course_id, course_name, consultation_type, preferred_contact_method, preferred_date, preferred_time, subject, message, status, created_at, updated_at
+    ) VALUES (
+      ${requestNo}, ${fullName}, ${email}, ${phone}, ${cleanText(body.courseId, 50) || null}, ${cleanText(body.courseName, 255) || null}, ${contactMethod}, ${contactMethod}, ${preferredDate ? preferredDate : null}, ${preferredTime}, ${subject}, ${message}, 'pending', NOW(), NOW()
+    ) RETURNING *`);
+    const consultation: any = result.rows[0];
+
+    await db.execute(sql`INSERT INTO consultation_messages (consultation_id, direction, sender_name, sender_email, body, created_at)
+      VALUES (${consultation.id}, 'student', ${fullName}, ${email}, ${message}, NOW())`);
+
+    await queueEmail(`consultation:${consultation.id}:confirmation`, email, `Consultation request ${requestNo} received`, "We received your consultation request and will contact you shortly.");
+    res.status(201).json({ requestNo, status: "pending", message: "Your consultation request was received.", consultation });
+  } catch (error: any) {
+    console.error("Consultation submit error:", error);
+    res.status(500).json({ error: "Unable to submit consultation request." });
+  }
+});
+
+app.get("/api/admin/consultations", async (req: any, res: any) => {
+  if (!requireAdminRole(req, res)) return;
+  try {
+    const result = await db.execute(sql`SELECT * FROM consultations WHERE deleted_at IS NULL ORDER BY created_at DESC`);
+    res.json(result.rows);
+  } catch (error: any) {
+    res.status(500).json({ error: "Unable to load consultations." });
+  }
+});
+
+app.patch("/api/admin/consultations/:id", async (req: any, res: any) => {
+  if (!requireAdminRole(req, res)) return;
+  let status = cleanText(req.body?.status, 30).toLowerCase();
+  const reply = cleanText(req.body?.reply);
+
+  if (reply && (!status || status === 'pending')) {
+    status = 'contacted';
+  }
+
+  if (status && !["pending", "contacted", "scheduled", "completed", "cancelled"].includes(status)) {
+    return res.status(400).json({ error: "Invalid consultation status." });
+  }
+
+  try {
+    const found = await db.execute(sql`UPDATE consultations SET status=COALESCE(${status || null},status), scheduled_at=CASE WHEN ${status}='scheduled' THEN NOW() ELSE scheduled_at END, updated_at=NOW() WHERE id=${req.params.id} AND deleted_at IS NULL RETURNING *`);
+    const consultation: any = found.rows[0];
+    if (!consultation) return res.status(404).json({ error: "Consultation not found." });
+
+    if (reply) {
+      const messageId = `<consultation-${consultation.id}-${crypto.randomUUID()}@alikamedical.co.ke>`;
+      await db.execute(sql`INSERT INTO consultation_messages (consultation_id, direction, sender_name, sender_email, body, message_id, created_at) VALUES (${consultation.id}, 'admin', 'Admissions Officer', NULL, ${reply}, ${messageId}, NOW())`);
+      await queueEmail(`consultation:${consultation.id}:reply:${messageId}`, consultation.email, `Re: Consultation ${consultation.request_no}`, reply);
+    }
+    await writeAdminAudit(req, "consultation.updated", "consultation", consultation.id, { status, replied: Boolean(reply) });
+    res.json(consultation);
+  } catch (error: any) {
+    res.status(500).json({ error: "Unable to update consultation." });
+  }
+});
+
+app.get("/api/admin/consultations/:id/messages", async (req: any, res: any) => {
+  if (!requireAdminRole(req, res)) return;
+  try {
+    const result = await db.execute(sql`SELECT * FROM consultation_messages WHERE consultation_id=${req.params.id} ORDER BY created_at ASC`);
+    res.json(result.rows);
+  } catch {
+    res.status(500).json({ error: "Unable to load consultation conversation." });
+  }
+});
+
+app.post('/api/public/application-documents', (req: any, res: any, next: any) => {
+  upload.single('file')(req, res, (err: any) => {
+    if (err) {
+      if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'File size must be 10 MB or less.' });
+      }
+      return res.status(400).json({ error: err.message || 'File upload validation failed.' });
+    }
+    next();
+  });
+}, async (req: any, res: any) => {
+  try {
+    if (!req.file || !req.body.documentType) {
+      return res.status(400).json({ error: 'Upload must include documentType and a file.' });
+    }
+
+    const documentType = cleanText(req.body.documentType, 60);
+    if (!APPLICATION_DOCUMENT_TYPES.has(documentType)) {
+      return res.status(400).json({ error: 'Unsupported document type.' });
+    }
+
+    const filePath = req.file.path;
+    if (!fs.existsSync(filePath)) {
+      return res.status(500).json({ error: 'Failed to confirm stored file.' });
+    }
+
+    const relPath = path.relative(uploadBaseDirectory, req.file.path).split(path.sep).join('/');
+    const fileUrl = `/uploads/${relPath}`;
+    const uploadedAt = new Date().toISOString();
+    res.status(201).json({
+      documentType,
+      fileUrl,
+      fileName: req.file.originalname,
+      mimeType: req.file.mimetype,
+      sizeBytes: req.file.size,
+      uploadedAt,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: 'File upload failed.' });
+  }
+});
+
+app.post("/api/public/applications", async (req, res) => {
+  const body = req.body || {};
+  if (!cleanText(body.fullName, 255) || !cleanText(body.nationalId, 100) || !cleanText(body.dateOfBirth, 20) || !cleanText(body.gender, 30) || !cleanText(body.nationality, 100) || !cleanText(body.phone, 50) || !cleanText(body.email, 255) || !cleanText(body.postalAddress) || !cleanText(body.previousSchool, 255) || !cleanText(body.highestQualification, 255) || !cleanText(body.kcseGrade, 50) || !cleanText(body.firstChoiceCourseId, 50) || !cleanText(body.preferredIntake, 100)) {
+    return res.status(400).json({ error: "Complete all required application fields with valid values." });
+  }
+  const documents = Array.isArray(body.documents) ? body.documents.map((doc: any) => ({
+    ...doc,
+    fileName: cleanText(doc?.fileName || "", 255).replace(/[^a-zA-Z0-9._ -]/g, "_") || "document",
+  })) : [];
+  const requiredDocuments = new Set(["passport_photo", "national_id", "kcse_certificate"]);
+  if (!documents.every((doc: any) => APPLICATION_DOCUMENT_TYPES.has(doc?.documentType) && APPLICATION_MIME_TYPES.has(doc?.mimeType) && Number(doc?.sizeBytes) > 0 && Number(doc?.sizeBytes) <= MAX_UPLOAD_BYTES && /^[a-zA-Z0-9._ -]{1,255}$/.test(doc?.fileName || "") && cleanText(doc?.fileUrl, 2000))) {
+    return res.status(400).json({ error: "Documents must be PDF, JPG, or PNG, below 10 MB, with safe filenames." });
+  }
+  if (![...requiredDocuments].every((type) => documents.some((doc: any) => doc.documentType === type))) return res.status(400).json({ error: "Passport photo, national ID, and KCSE certificate are required." });
+  for (const doc of documents) {
+    const rawUrl = cleanText(doc.fileUrl, 2000);
+    const relPath = rawUrl.replace(/^\/?uploads\//, '').replace(/^[\\/]+/, '');
+    const safeFilePath = path.resolve(uploadBaseDirectory, relPath);
+    if (!safeFilePath.startsWith(uploadBaseDirectory) || !fs.existsSync(safeFilePath)) {
+      return res.status(400).json({ error: `Storage file for document (${doc.documentType}) does not exist. Please re-upload your document.` });
+    }
+  }
+  try {
+    const applicationNo = `APP-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    const submissionYear = new Date().getFullYear();
+    let applicationId: string = "";
+    const savedDocuments: any[] = [];
+    let applicationRecord: any = null;
+
+    await db.transaction(async (tx) => {
+      const result = await tx.execute(sql`INSERT INTO applications (application_no,full_name,national_id,date_of_birth,gender,nationality,phone,email,postal_address,previous_school,highest_qualification,mean_grade,graduation_year,first_choice_course_id,second_choice_course_id,preferred_intake,status)
+        VALUES (${applicationNo},${cleanText(body.fullName,255)},${cleanText(body.nationalId,100)},${cleanText(body.dateOfBirth,20)},${cleanText(body.gender,30)},${cleanText(body.nationality,100)},${cleanText(body.phone,50)},${cleanText(body.email,255).toLowerCase()},${cleanText(body.postalAddress)},${cleanText(body.previousSchool,255)},${cleanText(body.highestQualification,255)},${cleanText(body.kcseGrade,50)},${submissionYear},${cleanText(body.firstChoiceCourseId,50)},${cleanText(body.secondChoiceCourseId,50) || null},${cleanText(body.preferredIntake,100)},'submitted') RETURNING id, application_no, created_at, status, full_name, email, phone, national_id, preferred_intake, first_choice_course_id, second_choice_course_id`);
+      
+      applicationRecord = result.rows[0];
+      applicationId = applicationRecord?.id;
+
+      for (const doc of documents) {
+        const docRes = await tx.execute(sql`INSERT INTO application_documents (application_id,document_type,file_name,mime_type,file_url,size_bytes) VALUES (${applicationId},${doc.documentType},${doc.fileName},${doc.mimeType},${doc.fileUrl},${Number(doc.sizeBytes)}) RETURNING id, application_id, document_type, file_name, mime_type, file_url, size_bytes, created_at`);
+        if (docRes.rows[0]) {
+          savedDocuments.push(docRes.rows[0]);
+        }
+      }
+    });
+
+    await queueEmail(`application:${applicationId}:received`, cleanText(body.email,255).toLowerCase(), `Application ${applicationNo} received`, "Your application has been received and is under review.");
+    const submittedAt = applicationRecord?.created_at || new Date().toISOString();
+    res.status(201).json({
+      success: true,
+      applicationNo,
+      status: "submitted",
+      documents: savedDocuments,
+      submittedAt,
+      application: applicationRecord
+    });
+  } catch (error: any) { console.error("Application submit failed:", error); res.status(409).json({ error: clientSafeDbError("Unable to submit application.", error) }); }
+});
+
+app.get("/api/public/applications/reference/:reference", async (req: any, res: any) => {
+  const ref = cleanText(req.params.reference, 50).toUpperCase();
+  if (!ref) return res.status(400).json({ error: "Application reference required." });
+  try {
+    const appRes = await db.execute(sql`SELECT * FROM applications WHERE application_no=${ref}`);
+    const application: any = appRes.rows[0];
+    if (!application) return res.status(404).json({ error: "Application not found." });
+
+    const docsRes = await db.execute(sql`SELECT * FROM application_documents WHERE application_id=${application.id}`);
+    const courseRes = await db.execute(sql`SELECT id, title, code FROM courses WHERE id=${application.first_choice_course_id}`);
+    let secondCourseTitle = null;
+    if (application.second_choice_course_id) {
+      const secondRes = await db.execute(sql`SELECT id, title, code FROM courses WHERE id=${application.second_choice_course_id}`);
+      secondCourseTitle = secondRes.rows[0]?.title;
+    }
+
+    res.json({
+      applicationNo: application.application_no,
+      status: application.status || "submitted",
+      submittedAt: application.created_at,
+      fullName: application.full_name,
+      gender: application.gender || "Not specified",
+      dateOfBirth: application.date_of_birth || "",
+      nationalId: application.national_id || "",
+      email: application.email,
+      phone: application.phone,
+      nationality: application.nationality || "Kenyan",
+      county: application.nationality || "Nairobi",
+      postalAddress: application.postal_address || "",
+      kcseGrade: application.mean_grade || "",
+      kcseYear: application.graduation_year || new Date().getFullYear(),
+      formerSchool: application.previous_school || "",
+      highestQualification: application.highest_qualification || "",
+      preferredIntake: application.preferred_intake,
+      firstChoiceCourseTitle: courseRes.rows[0]?.title || 'N/A',
+      secondChoiceCourseTitle: secondCourseTitle,
+      campus: "Main Campus",
+      studyMode: "Full-Time (Regular)",
+      admissionNo: application.admission_no || null,
+      documents: docsRes.rows.map((d: any) => ({
+        id: d.id,
+        applicationId: d.application_id,
+        documentType: d.document_type,
+        fileName: d.file_name,
+        mimeType: d.mime_type,
+        fileUrl: d.file_url,
+        sizeBytes: Number(d.size_bytes),
+        createdAt: d.created_at,
+      })),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "Unable to retrieve application details." });
+  }
+});
+
+app.get("/api/admin/applications", async (req: any, res: any) => {
+  if (!requireAdminRole(req, res)) return;
+  try {
+    const result = await db.execute(sql`
+      SELECT 
+        a.*,
+        c1.title as first_choice_course_title,
+        c1.code as first_choice_course_code,
+        c2.title as second_choice_course_title,
+        c2.code as second_choice_course_code,
+        ca.title as approved_course_title,
+        ca.code as approved_course_code,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', d.id,
+              'document_type', d.document_type,
+              'file_name', d.file_name,
+              'mime_type', d.mime_type,
+              'file_url', d.file_url,
+              'size_bytes', d.size_bytes,
+              'created_at', d.created_at
+            )
+          ) FILTER (WHERE d.id IS NOT NULL),
+          '[]'::json
+        ) as documents
+      FROM applications a
+      LEFT JOIN courses c1 ON a.first_choice_course_id = c1.id
+      LEFT JOIN courses c2 ON a.second_choice_course_id = c2.id
+      LEFT JOIN courses ca ON a.approved_course_id = ca.id
+      LEFT JOIN application_documents d ON a.id = d.application_id
+      GROUP BY a.id, c1.id, c2.id, ca.id
+      ORDER BY a.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (error: any) {
+    console.error("Failed to load applications for admin:", error);
+    res.status(500).json({ error: "Unable to load applications." });
+  }
+});
+
+app.patch("/api/admin/applications/:id", async (req: any, res: any) => {
+  if (!requireAdminRole(req, res)) return;
+  const status = cleanText(req.body?.status, 40).toLowerCase();
+  if (!["under_review", "additional_documents_requested", "approved", "rejected", "waitlisted"].includes(status)) return res.status(400).json({ error: "Invalid application action." });
+  try {
+    const result = await db.execute(sql`UPDATE applications SET status=${status}, internal_notes=COALESCE(${cleanText(req.body?.internalNote) || null},internal_notes), decided_at=CASE WHEN ${status} IN ('approved','rejected','waitlisted') THEN NOW() ELSE decided_at END, decided_by=${req.user.userId}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`);
+    const application: any = result.rows[0];
+    if (!application) return res.status(404).json({ error: "Application not found." });
+
+    if (status === 'approved') {
+      if (!application.admission_no) {
+        application.admission_no = await generateAdmissionNumber();
+        await db.execute(sql`UPDATE applications SET admission_no=${application.admission_no}, approved_course_id=${application.approved_course_id ?? application.first_choice_course_id}, updated_at=NOW() WHERE id=${application.id}`);
+      }
+    } else {
+      await queueEmail(`application:${application.id}:${status}`, application.email, `Application ${application.application_no}: ${status.replaceAll('_', ' ')}`, `Your application status has been updated to ${status.replaceAll('_', ' ')}. Please sign in or contact Admissions for details.`);
+    }
+
+    await writeAdminAudit(req, `application.${status}`, "application", application.id, { status, applicationNo: application.application_no, admissionNo: application.admission_no });
+    res.json(application);
+  } catch (error: any) {
+    console.error("Application status update failed:", error);
+    res.status(500).json({ error: clientSafeDbError("Unable to update application.", error) });
+  }
+});
+
+app.post("/api/admin/admissions/enroll", async (req: any, res: any) => {
+  if (!requireAdminRole(req, res)) return;
+  try {
+    const studentData = req.body || {};
+    let enrollmentData = {
+      name: cleanText(studentData.name, 255),
+      email: cleanText(studentData.email, 255),
+      phone: cleanText(studentData.phone, 50),
+      cohort: cleanText(studentData.cohort, 100),
+      courseId: cleanText(studentData.courseId, 50),
+      admissionNo: cleanText(studentData.admissionNo, 100),
+      department: cleanText(studentData.department, 255) || null,
+      applicationNo: '',
+    };
+
+    const applicationId = cleanText(studentData.applicationId, 50);
+    if (applicationId) {
+      const applicationResult = await db.execute(sql`
+        SELECT id, application_no, full_name, email, phone, nationality, preferred_intake,
+               admission_no, first_choice_course_id, approved_course_id, status
+        FROM applications WHERE id=${applicationId} LIMIT 1
+      `);
+      const application: any = applicationResult.rows[0];
+      if (!application) return res.status(404).json({ error: "Application not found." });
+      if (application.status !== 'approved') return res.status(400).json({ error: "Only approved applications can be enrolled." });
+
+      const approvedCourseId = application.approved_course_id || application.first_choice_course_id;
+      const requestedCourseId = cleanText(studentData.courseId, 50) || approvedCourseId;
+      if (requestedCourseId !== approvedCourseId && studentData.confirmProgrammeChange !== true) {
+        return res.status(400).json({ error: "Confirm the programme change before enrolling this approved application." });
+      }
+      const admissionNo = application.admission_no || await generateAdmissionNumber();
+      if (!application.admission_no) {
+        await db.execute(sql`UPDATE applications SET admission_no=${admissionNo}, updated_at=NOW() WHERE id=${application.id}`);
+      }
+      enrollmentData = {
+        name: application.full_name,
+        email: application.email,
+        phone: application.phone,
+        cohort: application.preferred_intake,
+        courseId: requestedCourseId,
+        admissionNo,
+        department: application.nationality || null,
+        applicationNo: application.application_no,
+      };
+    }
+
+    const enrolled = await enrollAdmittedStudentRecord({
+      ...enrollmentData,
+      avatar: studentData.avatar ?? null,
+      accountStatus: studentData.accountStatus || "Pending Setup",
+      passcode: studentData.passcode,
+    });
+
+    try {
+      const fullDb = await loadFullDatabaseState();
+      saveDatabase(fullDb);
+    } catch {}
+
+    await writeAdminAudit(
+      req,
+      enrolled.created ? "admissions.enroll" : "admissions.enroll_existing",
+      "student",
+      String(enrolled.student.id),
+      {
+        admissionNo: enrolled.student.admission_no || enrolled.student.admissionNo,
+        email: enrolled.student.email,
+        applicationNo: enrollmentData.applicationNo || null,
+        courseId: enrolled.student.course_id || enrolled.student.courseId,
+        created: enrolled.created,
+      }
+    );
+
+    res.status(enrolled.created ? 201 : 200).json({
+      ...enrolled.student,
+      id: enrolled.student.id,
+      admissionNo: enrolled.student.admission_no || enrolled.student.admissionNo,
+      accountStatus: enrolled.student.account_status || enrolled.student.accountStatus,
+      created: enrolled.created,
+      defaultPassword: enrolled.defaultPassword,
+      message: enrolled.created
+        ? "Student admitted and portal account created."
+        : "Existing admitted student reused — no duplicate record created.",
+    });
+  } catch (error: any) {
+    console.error("Admissions enrollment failed:", error);
+    if (error instanceof EnrollmentError) return res.status(error.statusCode).json({ error: error.message });
+    res.status(500).json({ error: clientSafeDbError("Failed to enroll student.", error) });
+  }
+});
+
+  // REST Resource: Invoices
+app.get("/api/invoices", async (req, res) => {
+  try {
+    const result = await db.select().from(invoices);
+    res.json(result);
+  } catch (error: any) {
+    console.error("Failed to fetch invoices:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+app.post("/api/invoices", async (req, res) => {
+  try {
+    const invoiceData = req.body ?? {};
+
+    if (!invoiceData?.studentId || invoiceData?.amount === undefined || invoiceData?.amount === null || invoiceData?.amount === "") {
+      return res.status(400).json({
+        error: "Student ID and amount are required",
+      });
+    }
+
+    const normalizedAmount = Number(invoiceData.amount);
+    if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+      return res.status(400).json({
+        error: "Amount must be a positive number",
+      });
+    }
+
+    const invoiceDefaults = resolveInvoiceDefaults({
+      studentId: invoiceData.studentId,
+      amount: normalizedAmount,
+      description: invoiceData.description,
+      status: invoiceData.status,
+      date: invoiceData.date,
+      dueDate: invoiceData.dueDate,
+      outstandingBalance: invoiceData.outstandingBalance,
+    });
+
+    const invoiceNo = invoiceData.invoiceNo && String(invoiceData.invoiceNo).trim()
+      ? String(invoiceData.invoiceNo).trim()
+      : await generateInvoiceNumber();
+
+    // Ensure numeric types for DB insert (columns are NUMERIC)
+    const numericAmount = Number(invoiceDefaults.amount);
+    const numericOutstanding = Number(invoiceDefaults.outstandingBalance ?? numericAmount);
+
+    // Insert with dedicated error handling so we can return a clean 400
+    // on user-level errors (e.g. unique constraint) and optionally retry
+    // with an alternate invoice number suffix to avoid collisions.
+    let insertedInvoice: any = null;
+    try {
+      const [invoice] = await db
+        .insert(invoices)
+        .values({
+          studentId: invoiceDefaults.studentId,
+          invoiceNo,
+          description: invoiceDefaults.description,
+          amount: String(numericAmount),
+          date: invoiceDefaults.date,
+          dueDate: invoiceDefaults.dueDate,
+          outstandingBalance: String(numericOutstanding),
+          status: invoiceDefaults.status,
+        } as any)
+        .returning();
+      insertedInvoice = invoice;
+    } catch (err: any) {
+      console.error('Invoice insert failed, attempting fallback if possible:', err?.message || err);
+      const isUniqueViolation = err && (String(err.code) === '23505' || /unique/i.test(String(err.message || '')));
+      if (isUniqueViolation) {
+        // Try up to 3 additional generated invoice numbers before bailing out
+        let success = false;
+        let lastErr: any = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const altInvoiceNo = await generateInvoiceNumber();
+            const [invoice] = await db
+              .insert(invoices)
+              .values({
+                studentId: invoiceDefaults.studentId,
+                invoiceNo: altInvoiceNo,
+                description: invoiceDefaults.description,
+                amount: String(numericAmount),
+                date: invoiceDefaults.date,
+                dueDate: invoiceDefaults.dueDate,
+                outstandingBalance: String(numericOutstanding),
+                status: invoiceDefaults.status,
+              } as any)
+              .returning();
+            insertedInvoice = invoice;
+            success = true;
+            break;
+          } catch (err2: any) {
+            lastErr = err2;
+            console.error('Retry invoice insert attempt failed:', err2?.message || err2);
+            // continue and try another generated number
+          }
+        }
+        if (!success) {
+          return res.status(400).json({ error: clientSafeDbError('Failed to create invoice due to unique constraint', lastErr || err) });
+        }
+      } else {
+        return res.status(400).json({ error: clientSafeDbError('Failed to create invoice', err) });
+      }
+    }
+
+    return res.status(201).json({ invoice: insertedInvoice, invoiceNo: insertedInvoice?.invoiceNo });
+  } catch (error: any) {
+    console.error("Failed to create invoice:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/student-attendance", async (req, res) => {
+  try {
+    const attendanceData = req.body;
+
+    if (
+      !attendanceData?.studentId ||
+      !attendanceData?.subjectCode ||
+      attendanceData?.attendanceRate === undefined
+    ) {
+      return res.status(400).json({
+        error: "Student ID, subject code and attendance rate are required",
+      });
+    }
+
+    const [attendance] = await db
+      .insert(studentAttendance)
+      .values({
+        studentId: attendanceData.studentId,
+        subjectCode: attendanceData.subjectCode,
+        attendanceRate: attendanceData.attendanceRate,
+      })
+      .onConflictDoUpdate({
+        target: [
+          studentAttendance.studentId,
+          studentAttendance.subjectCode,
+        ],
+        set: {
+          attendanceRate: attendanceData.attendanceRate,
+        },
+      })
+      .returning();
+
+    res.status(201).json(attendance);
+  } catch (error: any) {
+    console.error("Failed to save attendance:", error);
+    res.status(500).json({
+      error: error.message,
+    });
+  }
+});
+// 5. REST Resource: Lecturers
+app.get("/api/lecturers", async (req, res) => {
+  try {
+    const lecturerRows = await db
+      .select({
+        id: lecturers.id,
+        name: lecturers.name,
+        email: lecturers.email,
+        phone: lecturers.phone,
+        hourlyRate: lecturers.hourlyRate,
+        loggedHours: lecturers.loggedHours,
+        bankDetails: lecturers.bankDetails,
+        contractLength: lecturers.contractLength,
+        designatorCode: lecturers.designatorCode,
+        bio: lecturers.bio,
+        avatar: lecturers.avatar,
+        isActive: lecturers.isActive,
+        isAccountant: lecturers.isAccountant,
+        isLibrarian: lecturers.isLibrarian,
+      })
+      .from(lecturers);
+
+    const subjectRows = await db.select().from(lecturerSubjects);
+    const publicationRows = await db.select().from(lecturerPublications);
+    const researchRows = await db.select().from(lecturerResearchInterests);
+    const officeRows = await db.select().from(officeHourSlots);
+
+    const result = lecturerRows.map((lecturer) => {
+      return {
+        ...lecturer,
+        subjects: subjectRows
+          .filter((s) => s.lecturerId === lecturer.id)
+          .map((s) => s.subjectCode),
+
+        publications: publicationRows
+          .filter((p) => p.lecturerId === lecturer.id)
+          .map((p) => p.publicationText),
+
+        researchInterests: researchRows
+          .filter((r) => r.lecturerId === lecturer.id)
+          .map((r) => r.interestText),
+
+        officeHours: officeRows.filter(
+          (o) => o.lecturerId === lecturer.id
+        ),
+      };
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error("Failed to fetch lecturers:", error);
+    res.status(500).json({ error: "Failed to fetch lecturers" });
+  }
+});
+
+app.post("/api/lecturers", async (req, res) => {
+  try {
+    const lecturerData = req.body;
+
+    if (!lecturerData?.name || !lecturerData?.email) {
+      return res.status(400).json({
+        error: "Lecturer name and email are required",
+      });
+    }
+
+    const isGenerated = !lecturerData.passcode;
+    const rawPasscode = lecturerData.passcode || crypto.randomBytes(6).toString('hex');
+    const hashedPasscode = (rawPasscode.startsWith('$2b$') || rawPasscode.startsWith('$2a$') || rawPasscode.startsWith('$2y$'))
+      ? rawPasscode
+      : hashPassword(rawPasscode);
+
+    const [lecturer] = await db
+      .insert(lecturers)
+      .values({
+        name: lecturerData.name,
+        email: lecturerData.email,
+        phone: lecturerData.phone,
+        hourlyRate: lecturerData.hourlyRate,
+        loggedHours: lecturerData.loggedHours ?? "0.00",
+        bankDetails: lecturerData.bankDetails ?? null,
+        contractLength: lecturerData.contractLength,
+        designatorCode: lecturerData.designatorCode,
+        bio: lecturerData.bio ?? null,
+        avatar: lecturerData.avatar ?? null,
+        isActive: lecturerData.isActive ?? true,
+        isAccountant: lecturerData.isAccountant ?? false,
+        isLibrarian: lecturerData.isLibrarian ?? false,
+      })
+      .returning();
+
+    const role = lecturerData.isAccountant ? "accountant" : lecturerData.isLibrarian ? "librarian" : "lecturer";
+    const uid = lecturerData.designatorCode || lecturer.id;
+    try {
+      await upsertUserAuthRecord({
+        username: uid,
+        email: lecturerData.email,
+        passwordHash: hashedPasscode,
+        role,
+        roleId: lecturer.id,
+        isActive: true,
+        mustChangePassword: true,
+      });
+    } catch (e) {}
+
+    // Sync database cache
+    const fullDb = await loadFullDatabaseState();
+    saveDatabase(fullDb);
+
+    res.status(201).json({
+      ...lecturer,
+      ...(isGenerated ? { temporaryPasscode: rawPasscode } : {})
+    });
+  } catch (error: any) {
+    console.error("Failed to create lecturer:", error);
+
+    res.status(500).json({
+      error: error.message,
+    });
+  }
+});
+
+// Admin Route: Update Personnel Permissions (Accountant / Librarian / Active status)
+app.patch("/api/admin/personnel/:id/permissions", checkRBAC(["admin", "super_admin"]), async (req: any, res: any) => {
+  try {
+    const targetId = req.params.id;
+    if (!targetId || typeof targetId !== "string") {
+      return res.status(400).json({ success: false, error: "Valid personnel ID parameter is required." });
+    }
+
+    const { isAccountant, isLibrarian, isActive } = req.body || {};
+    const cleanId = targetId.trim();
+
+    // 1. Fetch lecturer from PostgreSQL
+    const existing = await db
+      .select()
+      .from(lecturers)
+      .where(or(eq(lecturers.id, cleanId), eq(lecturers.designatorCode, cleanId)))
+      .limit(1);
+
+    if (existing.length === 0) {
+      return res.status(404).json({ success: false, error: "Personnel record not found." });
+    }
+
+    const targetLecturer = existing[0];
+    const updatedFields: Record<string, boolean> = {};
+
+    if (typeof isAccountant === "boolean") {
+      updatedFields.isAccountant = isAccountant;
+    }
+    if (typeof isLibrarian === "boolean") {
+      updatedFields.isLibrarian = isLibrarian;
+    }
+    if (typeof isActive === "boolean") {
+      updatedFields.isActive = isActive;
+    }
+
+    if (Object.keys(updatedFields).length === 0) {
+      return res.status(400).json({ success: false, error: "No permission fields provided for update." });
+    }
+
+    // 2. Update PostgreSQL using parameterized query
+    const [updatedLecturer] = await db
+      .update(lecturers)
+      .set(updatedFields)
+      .where(eq(lecturers.id, targetLecturer.id))
+      .returning();
+
+    // 3. Update auth records if primary role affected
+    const primaryRole = updatedLecturer.isAccountant
+      ? "accountant"
+      : updatedLecturer.isLibrarian
+      ? "librarian"
+      : "lecturer";
+
+    try {
+      const authConditions: any[] = [];
+      if (updatedLecturer.designatorCode) {
+        authConditions.push(eq(users.username, updatedLecturer.designatorCode));
+      }
+      if (updatedLecturer.id) {
+        authConditions.push(eq(users.roleId, updatedLecturer.id));
+      }
+      if (updatedLecturer.email) {
+        authConditions.push(eq(users.email, updatedLecturer.email.toLowerCase()));
+      }
+      if (authConditions.length > 0) {
+        await db
+          .update(users)
+          .set({ role: primaryRole, isActive: updatedLecturer.isActive })
+          .where(or(...authConditions));
+      }
+    } catch (authErr) {
+      console.warn("Notice: Auth user role sync warning:", authErr);
+    }
+
+    // 4. Record audit event
+    const changesSummary = [
+      typeof isAccountant === "boolean" ? `Accountant Access: ${isAccountant ? "Granted" : "Revoked"}` : null,
+      typeof isLibrarian === "boolean" ? `Librarian Access: ${isLibrarian ? "Granted" : "Revoked"}` : null,
+      typeof isActive === "boolean" ? `Status: ${isActive ? "Active" : "Inactive"}` : null,
+    ].filter(Boolean).join(", ");
+
+    await writeAdminAudit(req, "personnel.permissions_updated", "personnel", targetLecturer.id, {
+      personnelName: targetLecturer.name,
+      designatorCode: targetLecturer.designatorCode,
+      changes: changesSummary,
+      isAccountant: updatedLecturer.isAccountant,
+      isLibrarian: updatedLecturer.isLibrarian,
+      isActive: updatedLecturer.isActive,
+    });
+
+    // Also push into db_store.json audits array for memory cache consistency
+    const fullDb = await loadFullDatabaseState();
+    if (fullDb.lecturers) {
+      const idx = fullDb.lecturers.findIndex((l: any) => l.id === targetLecturer.id || l.designatorCode === targetLecturer.designatorCode);
+      if (idx !== -1) {
+        fullDb.lecturers[idx] = { ...fullDb.lecturers[idx], ...updatedFields };
+      }
+    }
+    fullDb.audits = fullDb.audits || [];
+    fullDb.audits.unshift({
+      id: crypto.randomUUID(),
+      role: req.user?.role || "Admin",
+      user: req.user?.username || req.user?.email || "Admin User",
+      action: "PERMISSION_UPDATE",
+      status: "Success",
+      resource: `Updated permissions for ${targetLecturer.name} (${targetLecturer.designatorCode}): ${changesSummary}`,
+      timestamp: new Date().toISOString().replace("T", " ").slice(0, 19),
+    });
+    saveDatabase(fullDb);
+
+    return res.status(200).json({
+      success: true,
+      message: `Successfully updated permissions for ${targetLecturer.name}.`,
+      personnel: updatedLecturer,
+    });
+  } catch (error: any) {
+    console.error("Failed to update personnel permissions:", error);
+    return res.status(500).json({
+      success: false,
+      error: clientSafeDbError("Failed to update personnel access permissions.", error),
+    });
+  }
+});
+
+// Admin Route: Get Personnel Access Audit Logs
+app.get("/api/admin/personnel/access-logs", checkRBAC(["admin", "super_admin", "accountant", "librarian"]), async (req: any, res: any) => {
+  try {
+    // 1. Try fetching audit logs from PostgreSQL admin_audit_logs
+    try {
+      const auditRows = await db.execute(
+        sql`SELECT id, actor_id, actor_role, action, resource_type, resource_id, details, created_at
+            FROM admin_audit_logs
+            WHERE resource_type IN ('personnel', 'auth', 'lecturers') OR action LIKE 'personnel%' OR action LIKE 'PERMISSION%'
+            ORDER BY created_at DESC LIMIT 25`
+      );
+      if (auditRows.rows && auditRows.rows.length > 0) {
+        const mapped = auditRows.rows.map((row: any) => {
+          const details = typeof row.details === "string" ? JSON.parse(row.details) : (row.details || {});
+          return {
+            id: String(row.id),
+            role: row.actor_role || "Admin",
+            user: details.personnelName ? `Admin (${details.personnelName})` : row.actor_id || "Admin User",
+            action: row.action || "PERMISSION_UPDATE",
+            status: "Success",
+            resource: details.changes || details.resource || `Updated access for ID ${row.resource_id}`,
+            timestamp: row.created_at ? new Date(row.created_at).toISOString().replace("T", " ").slice(0, 19) : new Date().toISOString(),
+          };
+        });
+        return res.json(mapped);
+      }
+    } catch (pgErr) {
+      console.warn("Notice: PostgreSQL admin_audit_logs query notice:", pgErr);
+    }
+
+    // 2. Fallback to in-memory JSON db_store.json audits
+    const fullDb = getDatabase();
+    const auditsList = (fullDb.audits || []).filter((a: any) =>
+      a.action?.includes("PERMISSION") || a.action?.includes("ROLE") || a.resource?.toLowerCase().includes("permission") || a.resource?.toLowerCase().includes("accountant") || a.resource?.toLowerCase().includes("staff")
+    );
+    return res.json(auditsList.length > 0 ? auditsList.slice(0, 20) : (fullDb.audits || []).slice(0, 20));
+  } catch (error: any) {
+    console.error("Failed to fetch access logs:", error);
+    return res.status(500).json({ error: "Failed to fetch access logs" });
+  }
+});
+
+// ==========================================
+// FACULTY / LECTURER DASHBOARD API ENDPOINTS
+// ==========================================
+
+// GET Faculty / Lecturer Dashboard Summary
+app.get(
+  [
+    "/api/lecturer/dashboard-summary",
+    "/api/faculty/dashboard-summary",
+    "/api/faculty/dashboard",
+    "/api/lecturer/dashboard",
+    "/api/faculty",
+  ],
+  async (req: any, res: any) => {
+    try {
+      const queryId = req.query.lecturerId || req.query.facultyId || req.query.id;
+      let targetLecturer: any = null;
+
+      if (queryId && typeof queryId === "string" && queryId.trim() !== "") {
+        const cleanId = queryId.trim();
+        const found = await db
+          .select()
+          .from(lecturers)
+          .where(eq(lecturers.id, cleanId))
+          .limit(1);
+        if (found.length > 0) {
+          targetLecturer = found[0];
+        } else {
+          const foundByAlt = await db
+            .select()
+            .from(lecturers)
+            .where(
+              or(
+                eq(lecturers.designatorCode, cleanId),
+                eq(lecturers.email, cleanId)
+              )
+            )
+            .limit(1);
+          if (foundByAlt.length > 0) {
+            targetLecturer = foundByAlt[0];
+          }
+        }
+      }
+
+      if (!targetLecturer) {
+        const allLects = await db.select().from(lecturers).limit(1);
+        if (allLects.length > 0) {
+          targetLecturer = allLects[0];
+        }
+      }
+
+      const lecturerId = targetLecturer ? targetLecturer.id : (queryId || "");
+
+      // Assigned subjects
+      const assignedRows = targetLecturer
+        ? await db
+            .select()
+            .from(lecturerSubjects)
+            .where(eq(lecturerSubjects.lecturerId, targetLecturer.id))
+        : [];
+      const subjectCodes = assignedRows.map((r) => r.subjectCode);
+
+      const coursesMap = new Map<string, string>();
+      if (subjectCodes.length > 0) {
+        const matchingCourses = await db
+          .select()
+          .from(courses)
+          .where(inArray(courses.code, subjectCodes));
+        for (const c of matchingCourses) {
+          coursesMap.set(c.code, c.title);
+        }
+      }
+
+      const assignedSubjects = assignedRows.map((r) => {
+        const title = coursesMap.get(r.subjectCode) || `Course Unit ${r.subjectCode}`;
+        return {
+          code: r.subjectCode,
+          title,
+          label: `${r.subjectCode} – ${title}`,
+          semester: "Current Semester",
+          academicYear: "2025/2026",
+        };
+      });
+
+      // Teaching sessions & logged hours
+      const sessionRows = targetLecturer
+        ? await db
+            .select()
+            .from(teachingSessions)
+            .where(eq(teachingSessions.lecturerId, targetLecturer.id))
+            .orderBy(desc(teachingSessions.sessionDate))
+        : [];
+
+      let totalLoggedHours = 0;
+      for (const s of sessionRows) {
+        totalLoggedHours += Number(s.durationHours) || 0;
+      }
+      if (totalLoggedHours === 0 && targetLecturer?.loggedHours) {
+        totalLoggedHours = Number(targetLecturer.loggedHours) || 0;
+      }
+
+      const recentSessions = sessionRows.slice(0, 10).map((s) => ({
+        id: s.id,
+        date: s.sessionDate,
+        courseCode: s.subjectCode,
+        topic: s.topic,
+        hours: Number(s.durationHours) || 0,
+        time: s.sessionTime || "09:00",
+        status: (s.status === "Approved" ? "Approved" : "Pending") as "Pending" | "Approved",
+      }));
+
+      // Hourly rate & payout
+      const hourlyRate = targetLecturer ? Number(targetLecturer.hourlyRate) || 0 : 0;
+      const estimatedPayout = totalLoggedHours * hourlyRate;
+
+      // Next class schedule
+      const todayStr = new Date().toISOString().split("T")[0];
+      let nextClassObj = null;
+      if (targetLecturer) {
+        const nextSchedules = await db
+          .select()
+          .from(lectureSchedules)
+          .where(
+            and(
+              eq(lectureSchedules.lecturerId, targetLecturer.id),
+              sql`${lectureSchedules.sessionDate} >= ${todayStr}`
+            )
+          )
+          .orderBy(asc(lectureSchedules.sessionDate), asc(lectureSchedules.startTime))
+          .limit(1);
+        if (nextSchedules.length > 0) {
+          const sched = nextSchedules[0];
+          nextClassObj = {
+            subjectCode: sched.subjectCode,
+            subjectTitle: coursesMap.get(sched.subjectCode) || sched.subjectCode,
+            room: sched.room,
+            date: sched.sessionDate,
+            startTime: sched.startTime,
+            endTime: sched.endTime,
+          };
+        }
+      }
+
+      // Weekly hours breakdown
+      const weeklyHoursMap = new Map<string, number>();
+      weeklyHoursMap.set("Week 1", 0);
+      weeklyHoursMap.set("Week 2", 0);
+      weeklyHoursMap.set("Week 3", 0);
+      weeklyHoursMap.set("Week 4", 0);
+
+      if (sessionRows.length > 0) {
+        const quarter = Math.ceil(sessionRows.length / 4);
+        sessionRows.forEach((s, idx) => {
+          const weekIndex = Math.min(4, Math.floor(idx / quarter) + 1);
+          const key = `Week ${weekIndex}`;
+          weeklyHoursMap.set(key, (weeklyHoursMap.get(key) || 0) + (Number(s.durationHours) || 0));
+        });
+      } else if (totalLoggedHours > 0) {
+        const perWeek = Math.round((totalLoggedHours / 4) * 10) / 10;
+        weeklyHoursMap.set("Week 1", perWeek);
+        weeklyHoursMap.set("Week 2", perWeek);
+        weeklyHoursMap.set("Week 3", perWeek);
+        weeklyHoursMap.set("Week 4", Math.round((totalLoggedHours - perWeek * 3) * 10) / 10);
+      }
+
+      const weeklyHours = Array.from(weeklyHoursMap.entries()).map(([name, hours]) => ({
+        name,
+        hours,
+        weekStart: todayStr,
+      }));
+
+      // Syllabus coverage: logged topics cannot exceed planned topics for display.
+      // With zero planned topics, report 0/0 and null percent (N/A) — never "1 of 0".
+      let plannedTopicsCount = 0;
+      if (subjectCodes.length > 0) {
+        const topics = await db
+          .select()
+          .from(syllabusTopics)
+          .where(inArray(syllabusTopics.subjectCode, subjectCodes));
+        plannedTopicsCount = topics.length;
+      }
+      const rawLoggedSessionsCount = sessionRows.length;
+      const completedSessionsCount =
+        plannedTopicsCount > 0
+          ? Math.min(rawLoggedSessionsCount, plannedTopicsCount)
+          : 0;
+      const coveragePercent =
+        plannedTopicsCount > 0
+          ? Math.min(
+              100,
+              Math.max(
+                0,
+                Math.round((completedSessionsCount / plannedTopicsCount) * 100)
+              )
+            )
+          : null;
+
+      // Attendance statistics
+      let attendanceRate = 0;
+      if (targetLecturer) {
+        const attendanceRows = await db
+          .select()
+          .from(classAttendanceSessions)
+          .where(eq(classAttendanceSessions.lecturerId, targetLecturer.id));
+        if (attendanceRows.length > 0) {
+          let totalPresent = 0;
+          let totalTotal = 0;
+          for (const att of attendanceRows) {
+            const pres = (att.presentStudentIds || []).length;
+            const late = (att.lateStudentIds || []).length;
+            const abs = (att.absentStudentIds || []).length;
+            totalPresent += pres + late;
+            totalTotal += pres + late + abs;
+          }
+          if (totalTotal > 0) {
+            attendanceRate = Math.round((totalPresent / totalTotal) * 100);
+          }
+        }
+      }
+
+      // Distinct students taught
+      let studentCount = 0;
+      if (subjectCodes.length > 0) {
+        const studentGrades = await db
+          .select({ studentId: grades.studentId })
+          .from(grades)
+          .where(inArray(grades.subjectCode, subjectCodes));
+        const uniqueStudents = new Set(studentGrades.map((g) => g.studentId));
+        studentCount = uniqueStudents.size;
+      }
+
+      // Pending grades count
+      let pendingGradesCount = 0;
+      if (subjectCodes.length > 0) {
+        const pendingList = await db
+          .select()
+          .from(grades)
+          .where(
+            and(
+              inArray(grades.subjectCode, subjectCodes),
+              eq(grades.examScore, "0.00")
+            )
+          );
+        pendingGradesCount = pendingList.length;
+      }
+
+      const tasks = [
+        {
+          id: "task-1",
+          title: "Submit Mid-Semester CAT Grades",
+          detail: `${pendingGradesCount > 0 ? pendingGradesCount : 0} student grade submission(s) pending`,
+          priority: (pendingGradesCount > 0 ? "high" : "done") as "high" | "done" | "normal",
+          type: "grading",
+          completed: pendingGradesCount === 0,
+        },
+        {
+          id: "task-2",
+          title: "Verify Class Attendance Register",
+          detail: `${assignedSubjects.length} active subject unit(s) registered`,
+          priority: "normal" as "normal",
+          type: "attendance",
+          completed: false,
+        },
+      ];
+
+      res.json({
+        // LecturerDashboardSummary props
+        lecturerId,
+        name: targetLecturer ? targetLecturer.name : "Faculty Lecturer",
+        email: targetLecturer ? targetLecturer.email : "",
+        designatorCode: targetLecturer ? targetLecturer.designatorCode : "",
+        assignedSubjectsCount: assignedSubjects.length,
+        assignedSubjects,
+        loggedHours: totalLoggedHours,
+        hourlyRate,
+        rateSource: "lecturer" as const,
+        estimatedPayout,
+        nextClass: nextClassObj,
+        weeklyHours,
+        workload: {
+          todayHours: 0,
+          weekHours: totalLoggedHours,
+          monthHours: totalLoggedHours,
+          assignedModules: assignedSubjects.length,
+          studentsTaught: studentCount,
+          estimatedPayroll: estimatedPayout,
+        },
+        syllabusCoverage: {
+          percent: coveragePercent,
+          completedSessions: completedSessionsCount,
+          plannedTopics: plannedTopicsCount,
+          note: `${completedSessionsCount} of ${plannedTopicsCount} planned topics logged`,
+        },
+        tasks,
+        recentSessions,
+
+        // Step 4 generic response properties
+        faculty: targetLecturer
+          ? {
+              id: targetLecturer.id,
+              name: targetLecturer.name,
+              email: targetLecturer.email,
+              phone: targetLecturer.phone,
+              designatorCode: targetLecturer.designatorCode,
+              bio: targetLecturer.bio,
+            }
+          : {},
+        assignedModules: assignedSubjects,
+        todayClasses: nextClassObj ? [nextClassObj] : [],
+        pendingGrades: pendingGradesCount,
+        attendanceRate,
+        studentCount,
+        teachingHours: totalLoggedHours,
+      });
+    } catch (error: any) {
+      console.error("Failed to fetch faculty dashboard summary:", error);
+      res.status(500).json({ error: clientSafeDbError("Failed to load dashboard summary", error) });
+    }
+  }
+);
+
+// GET/POST assessment configuration for a module (lecturer/admin)
+app.get(["/api/lecturer/assessment-config", "/api/faculty/assessment-config"], authenticateJWT, checkRBAC(["lecturer", "admin", "super_admin"]), async (req: any, res: any) => {
+  try {
+    const { subjectCode } = req.query || {};
+    if (!subjectCode) return res.status(400).json({ error: 'subjectCode is required' });
+    const configs = await db.select().from(assessmentConfigurations).where(eq(assessmentConfigurations.subjectCode, subjectCode));
+    return res.json(configs.map((c:any) => ({ assessmentKind: c.assessmentKind, assessmentName: c.assessmentName, maxMarks: Number(c.maxMarks), weight: Number(c.weight) })));
+  } catch (error:any) {
+    console.error('Failed to fetch assessment config:', error);
+    return res.status(500).json({ error: clientSafeDbError('Failed to fetch assessment config', error) });
+  }
+});
+
+app.post(["/api/lecturer/assessment-config", "/api/faculty/assessment-config"], authenticateJWT, checkRBAC(["lecturer", "admin", "super_admin"]), async (req:any, res:any) => {
+  try {
+    const actorRole = req.user?.role;
+    const actorId = req.user?.userId;
+    const { subjectCode, assessments } = req.body || {};
+    if (!subjectCode || !Array.isArray(assessments)) return res.status(400).json({ error: 'subjectCode and assessments are required' });
+
+    // If lecturer role, ensure they are assigned to the subject
+    if (actorRole === 'lecturer') {
+      const assigned = await db.select().from(lecturerSubjects).where(and(eq(lecturerSubjects.lecturerId, actorId), eq(lecturerSubjects.subjectCode, subjectCode)));
+      if (!assigned || assigned.length === 0) return res.status(403).json({ error: 'You are not assigned to this subject' });
+    }
+
+    // Validate assessments structure
+    const weightError = validateAssessmentWeights(assessments);
+    if (weightError) return res.status(400).json({ error: `Assessment configuration invalid: ${weightError}` });
+
+    // Upsert each assessment config
+    for (const a of assessments) {
+      if (!a.assessmentKind || !a.assessmentName || !Number.isFinite(Number(a.maxMarks)) || Number(a.maxMarks) <= 0 || !Number.isFinite(Number(a.weight)) || Number(a.weight) < 0) {
+        return res.status(400).json({ error: 'Each assessment requires assessmentKind, assessmentName, maxMarks>0, weight>=0' });
+      }
+      await db.insert(assessmentConfigurations).values({ id: crypto.randomUUID(), subjectCode, assessmentKind: a.assessmentKind, assessmentName: a.assessmentName, maxMarks: String(a.maxMarks), weight: String(a.weight) }).onConflictDoUpdate({ target: [assessmentConfigurations.subjectCode, assessmentConfigurations.assessmentKind], set: { assessmentName: a.assessmentName, maxMarks: String(a.maxMarks), weight: String(a.weight), updatedAt: new Date().toISOString() } });
+    }
+
+    await writeAdminAudit(req, 'assessment_config.update', 'assessment_configurations', subjectCode, { actorId, actorRole, count: assessments.length });
+    return res.json({ success: true });
+  } catch (error:any) {
+    console.error('Failed to save assessment config:', error);
+    return res.status(500).json({ error: clientSafeDbError('Failed to save assessment config', error) });
+  }
+});
+
+// POST Log Teaching Session
+app.post(
+  ["/api/lecturer/teaching-sessions", "/api/faculty/teaching-sessions"],
+  async (req: any, res: any) => {
+    try {
+      const { lecturerId, subjectCode, topic, durationHours, sessionDate, sessionTime } = req.body;
+      if (!lecturerId || !subjectCode || !topic || !durationHours) {
+        return res.status(400).json({
+          error: "Missing required fields (lecturerId, subjectCode, topic, durationHours)",
+        });
+      }
+
+      const duration = Number(durationHours) || 0;
+      const dateStr = sessionDate || new Date().toISOString().split("T")[0];
+      const timeStr = sessionTime || "09:00";
+
+      const [inserted] = await db
+        .insert(teachingSessions)
+        .values({
+          lecturerId,
+          subjectCode,
+          topic,
+          durationHours: String(duration),
+          sessionDate: dateStr,
+          sessionTime: timeStr,
+          status: "Pending",
+        })
+        .returning();
+
+      const lectRows = await db
+        .select()
+        .from(lecturers)
+        .where(eq(lecturers.id, lecturerId))
+        .limit(1);
+
+      let newLoggedHours = duration;
+      let rate = 0;
+      if (lectRows.length > 0) {
+        const current = Number(lectRows[0].loggedHours) || 0;
+        newLoggedHours = current + duration;
+        rate = Number(lectRows[0].hourlyRate) || 0;
+        await db
+          .update(lecturers)
+          .set({ loggedHours: String(newLoggedHours) })
+          .where(eq(lecturers.id, lecturerId));
+      }
+
+      res.json({
+        session: {
+          id: inserted.id,
+          date: inserted.sessionDate,
+          courseCode: inserted.subjectCode,
+          topic: inserted.topic,
+          hours: Number(inserted.durationHours),
+          time: inserted.sessionTime,
+          status: inserted.status,
+        },
+        loggedHours: newLoggedHours,
+        hourlyRate: rate,
+        estimatedPayout: newLoggedHours * rate,
+      });
+    } catch (error: any) {
+      console.error("Failed to log teaching session:", error);
+      res.status(500).json({ error: clientSafeDbError("Failed to log session", error) });
+    }
+  }
+);
+
+// POST validated lecturer assessment raw marks; do not write aggregate totals into the legacy grades table.
+app.post(
+  ["/api/lecturer/grades", "/api/faculty/grades"],
+  async (req: any, res: any) => {
+    try {
+      const { studentId, subjectCode, assessments, marks } = req.body || {};
+      if (!studentId || !subjectCode) {
+        return res.status(400).json({ error: "studentId and subjectCode are required." });
+      }
+
+      const componentMarks = marks || {};
+      const assessmentList = Array.isArray(assessments) ? assessments : [];
+      const componentErrors = validateMarkBreakdown(componentMarks, assessmentList);
+      if (Object.keys(componentErrors).length > 0) {
+        const firstError = Object.values(componentErrors)[0];
+        return res.status(400).json({ error: firstError || "Invalid marks provided." });
+      }
+
+      const finalWeightedResult = calculateWeightedAssessmentResult(componentMarks, assessmentList);
+      const finalOverallPercentage = calculateOverallPercentage(componentMarks, assessmentList);
+      const finalGradeLetter = letterGradeFromOverallPercentage(finalOverallPercentage);
+      const configuredAssessmentKinds = new Map<string, { name: string; maxMarks: number; weight: number }>();
+      for (const assessment of assessmentList) {
+        if (!assessment || typeof assessment.kind !== "string") continue;
+        const kind = String(assessment.kind);
+        const maxMarks = Number(assessment.maxMarks);
+        const weight = Number(assessment.weight ?? 0);
+        if (!Number.isFinite(maxMarks) || maxMarks <= 0) continue;
+        configuredAssessmentKinds.set(kind, {
+          name: assessment.name || kind,
+          maxMarks,
+          weight: Number.isFinite(weight) && weight >= 0 ? weight : 0,
+        });
+      }
+
+      const rawAssessmentRows: Array<{
+        studentId: string;
+        subjectCode: string;
+        assessmentKind: string;
+        assessmentName: string;
+        rawMark: number;
+        maxMarks: number;
+        weight: number;
+        lecturerId?: string | null;
+      }> = [];
+
+      for (const [fieldKey, fieldValue] of Object.entries(componentMarks as Record<string, number>)) {
+        const field = String(fieldKey);
+        const kindMap: Record<string, string> = {
+          cat1: "CAT1",
+          cat2: "CAT2",
+          assignment: "Assignment",
+          exam: "FinalExam",
+        };
+        const normalizedField = field as keyof typeof kindMap;
+        const assessmentKind = kindMap[normalizedField] || field;
+        const config = configuredAssessmentKinds.get(assessmentKind);
+        const maxMarks = config?.maxMarks ?? maxMarksForField(assessmentList, normalizedField as any);
+        if (!Number.isFinite(Number(fieldValue)) || Number(fieldValue) < 0 || maxMarks <= 0) {
+          continue;
+        }
+        rawAssessmentRows.push({
+          studentId,
+          subjectCode: String(subjectCode).trim(),
+          assessmentKind,
+          assessmentName: config?.name || assessmentKind,
+          rawMark: Number(fieldValue),
+          maxMarks,
+          weight: config?.weight ?? 0,
+          lecturerId: req.body?.lecturerId || null,
+        });
+      }
+
+      if (rawAssessmentRows.length === 0) {
+        return res.status(400).json({ error: "No valid assessment marks were provided." });
+      }
+
+      for (const record of rawAssessmentRows) {
+        await db
+          .insert(studentAssessmentMarks)
+          .values({
+            id: crypto.randomUUID(),
+            studentId: record.studentId,
+            subjectCode: record.subjectCode,
+            assessmentKind: record.assessmentKind,
+            assessmentName: record.assessmentName,
+            rawMark: String(record.rawMark),
+            maxMarks: String(record.maxMarks),
+            weight: String(record.weight),
+            lecturerId: record.lecturerId,
+            updatedAt: new Date().toISOString(),
+          })
+          .onConflictDoUpdate({
+            target: [studentAssessmentMarks.studentId, studentAssessmentMarks.subjectCode, studentAssessmentMarks.assessmentKind],
+            set: {
+              assessmentName: record.assessmentName,
+              rawMark: String(record.rawMark),
+              maxMarks: String(record.maxMarks),
+              weight: String(record.weight),
+              lecturerId: record.lecturerId,
+              updatedAt: new Date().toISOString(),
+            },
+          });
+      }
+
+      const dbVal = getDatabase();
+      if (Array.isArray(dbVal.students)) {
+        dbVal.students = dbVal.students.map((student: any) => {
+          if (student.id !== studentId) return student;
+          const examValue = Number(componentMarks.exam ?? 0);
+          return {
+            ...student,
+            grades: {
+              ...(student.grades || {}),
+              [String(subjectCode).trim()]: { cat: finalWeightedResult, exam: Number.isFinite(examValue) ? examValue : 0 },
+            },
+          };
+        });
+        saveDatabase(dbVal);
+      }
+
+      res.json({
+        success: true,
+        grade: { cat: finalWeightedResult, exam: Number(componentMarks.exam ?? 0) },
+        overallPercent: finalOverallPercentage,
+        gradeLetter: finalGradeLetter,
+        saved: rawAssessmentRows.length,
+      });
+    } catch (error: any) {
+      console.error("Failed to save lecturer assessment marks:", error);
+      res.status(500).json({ error: clientSafeDbError("Unable to save grade.", error) });
+    }
+  }
+);
+
+// GET Lecturer Assessment Analytics
+app.get(
+  ["/api/lecturer/assessment-analytics", "/api/faculty/assessment-analytics"],
+  async (req: any, res: any) => {
+    try {
+      const { subjectCode } = req.query;
+      if (!subjectCode || typeof subjectCode !== "string") {
+        return res.json({
+          averageScore: 0,
+          highestScore: 0,
+          lowestScore: 0,
+          passRate: 0,
+          totalStudents: 0,
+          gradeDistribution: { A: 0, B: 0, C: 0, D: 0, F: 0 },
+        });
+      }
+
+      const gradeRows = await db
+        .select()
+        .from(grades)
+        .where(eq(grades.subjectCode, subjectCode.trim()));
+
+      if (gradeRows.length === 0) {
+        return res.json({
+          averageScore: 0,
+          highestScore: 0,
+          lowestScore: 0,
+          passRate: 0,
+          totalStudents: 0,
+          gradeDistribution: { A: 0, B: 0, C: 0, D: 0, F: 0 },
+        });
+      }
+
+      let sum = 0;
+      let highest = -Infinity;
+      let lowest = Infinity;
+      let passCount = 0;
+      const dist = { A: 0, B: 0, C: 0, D: 0, F: 0 };
+
+      for (const g of gradeRows) {
+        const cat = Number(g.catScore) || 0;
+        const exam = Number(g.examScore) || 0;
+        const total = cat + exam;
+        sum += total;
+        if (total > highest) highest = total;
+        if (total < lowest) lowest = total;
+        if (total >= 40) passCount++;
+
+        const letter = total >= 70 ? "A" : total >= 60 ? "B" : total >= 50 ? "C" : total >= 40 ? "D" : "F";
+        if (letter.startsWith("A")) dist.A++;
+        else if (letter.startsWith("B")) dist.B++;
+        else if (letter.startsWith("C")) dist.C++;
+        else if (letter.startsWith("D")) dist.D++;
+        else dist.F++;
+      }
+
+      const totalStudents = gradeRows.length;
+      const averageScore = Math.round((sum / totalStudents) * 10) / 10;
+      const passRate = Math.round((passCount / totalStudents) * 100);
+
+      res.json({
+        averageScore,
+        highestScore: highest === -Infinity ? 0 : highest,
+        lowestScore: lowest === Infinity ? 0 : lowest,
+        passRate,
+        totalStudents,
+        gradeDistribution: dist,
+      });
+    } catch (error: any) {
+      console.error("Failed to fetch assessment analytics:", error);
+      res.json({
+        averageScore: 0,
+        highestScore: 0,
+        lowestScore: 0,
+        passRate: 0,
+        totalStudents: 0,
+        gradeDistribution: { A: 0, B: 0, C: 0, D: 0, F: 0 },
+      });
+    }
+  }
+);
+
+// POST publish a student's result for a subject (backend-enforced)
+app.post(
+  ["/api/lecturer/publish-result", "/api/faculty/publish-result"],
+  authenticateJWT,
+  checkRBAC(["lecturer", "admin", "super_admin"]),
+  async (req: any, res: any) => {
+    try {
+      const actorId = req.user?.userId;
+      const actorRole = req.user?.role;
+      const { studentId, subjectCode } = req.body || {};
+      if (!studentId || !subjectCode) return res.status(400).json({ error: 'studentId and subjectCode are required.' });
+
+      // Verify student exists
+      const [studentRow] = await db.select().from(students).where(eq(students.id, studentId)).limit(1);
+      if (!studentRow) return res.status(404).json({ error: 'Student not found.' });
+
+      // Verify lecturer / actor is allowed to publish this subject when role is lecturer
+      if (actorRole === 'lecturer') {
+        const assigned = await db.select().from(lecturerSubjects).where(and(eq(lecturerSubjects.lecturerId, actorId), eq(lecturerSubjects.subjectCode, subjectCode)));
+        if (!assigned || assigned.length === 0) {
+          return res.status(403).json({ error: 'You are not assigned to this subject.' });
+        }
+      }
+
+      // Fetch raw assessment rows for this student & subject
+      const assessmentRows = await db.select({
+        assessmentKind: studentAssessmentMarks.assessmentKind,
+        rawMark: studentAssessmentMarks.rawMark,
+        maxMarks: studentAssessmentMarks.maxMarks,
+        weight: studentAssessmentMarks.weight,
+      }).from(studentAssessmentMarks).where(and(eq(studentAssessmentMarks.studentId, studentId), eq(studentAssessmentMarks.subjectCode, subjectCode)));
+
+      if (!assessmentRows || assessmentRows.length === 0) {
+        return res.status(400).json({ error: 'No assessment marks found for this student and subject.' });
+      }
+
+      // Build assessment configuration from rows or module-level configuration
+      const configMap = new Map<string, { kind: string; maxMarks: number; weight: number }>();
+
+      // Try to load module-level configuration if present
+      const moduleConfigs = await db.select().from(assessmentConfigurations).where(eq(assessmentConfigurations.subjectCode, subjectCode));
+      if (moduleConfigs && moduleConfigs.length > 0) {
+        for (const c of moduleConfigs) {
+          configMap.set(String(c.assessmentKind), { kind: String(c.assessmentKind), maxMarks: Number(c.maxMarks || 0), weight: Number(c.weight || 0) });
+        }
+      }
+      for (const r of assessmentRows) {
+        const kind = String(r.assessmentKind || '').trim();
+        if (!kind) continue;
+        const maxMarks = Number(r.maxMarks) || 0;
+        const weight = Number(r.weight) || 0;
+        if (!configMap.has(kind)) configMap.set(kind, { kind, maxMarks, weight });
+        else {
+          const exist = configMap.get(kind)!;
+          // prefer configured maxMarks/weight if present; otherwise keep first
+          if ((exist.maxMarks || 0) <= 0 && maxMarks > 0) exist.maxMarks = maxMarks;
+          if ((exist.weight || 0) <= 0 && weight > 0) exist.weight = weight;
+          configMap.set(kind, exist);
+        }
+      }
+      const assessmentList = Array.from(configMap.values()).map((c) => ({ kind: c.kind, maxMarks: c.maxMarks, weight: c.weight }));
+
+      // Validate assessment weights and totals
+      const weightError = validateAssessmentWeights(assessmentList as any);
+      if (weightError) return res.status(400).json({ error: `Assessment configuration invalid: ${weightError}` });
+
+      // Compute published summary and overall percentage
+      const publishedSummary = computePublishedAssessmentSummary(assessmentRows.map((r: any) => ({ subjectCode, rawMark: r.rawMark, maxMarks: r.maxMarks, weight: r.weight, assessmentKind: r.assessmentKind })), [], { courseTitle: null, courseCode: null });
+      const subjectEntry = (publishedSummary.subjects || []).find((s) => s.subjectCode === subjectCode);
+      if (!subjectEntry) return res.status(400).json({ error: 'Unable to compute overall percentage; assessment data invalid.' });
+
+      if (!Number.isFinite(subjectEntry.totalWeight) || Number(subjectEntry.totalWeight) <= 0) {
+        return res.status(400).json({ error: 'Assessment weights must total > 0 before publishing.' });
+      }
+
+      const overallPercent = Number(subjectEntry.overallPercent || 0);
+      const catScore = Math.round(Number((overallPercent * 0.3).toFixed(2)));
+      const examScore = Math.round(Number((overallPercent * 0.7).toFixed(2)));
+
+      // Validate aggregate against configured maxima
+      const aggregateValidation = validateAggregateGrade(catScore, examScore, assessmentList as any);
+      if (!aggregateValidation.ok) return res.status(400).json({ error: `Aggregate grade invalid: ${(aggregateValidation as any).error}` });
+
+      // Upsert into legacy grades table as the authoritative published result
+      await db.insert(grades).values({ id: crypto.randomUUID(), studentId, subjectCode, catScore: String(catScore), examScore: String(examScore), gradedAt: new Date().toISOString() }).onConflictDoUpdate({
+        target: [grades.studentId, grades.subjectCode],
+        set: { catScore: String(catScore), examScore: String(examScore), gradedAt: new Date().toISOString() },
+      });
+
+      // Audit
+      await writeAdminAudit(req, 'grades.publish', 'grades', `${studentId}:${subjectCode}`, { actorId, actorRole, overallPercent, catScore, examScore });
+
+      return res.json({ success: true, studentId, subjectCode, overallPercent, catScore, examScore, gradeLetter: letterGradeFromOverallPercentage(overallPercent) });
+    } catch (error: any) {
+      console.error('Failed to publish result:', error);
+      return res.status(500).json({ error: clientSafeDbError('Failed to publish result.', error) });
+    }
+  }
+);
+
+// GET Lecturer Student Directory
+app.get(
+  ["/api/lecturer/students", "/api/faculty/students"],
+  async (req: any, res: any) => {
+    try {
+      const { lecturerId, q } = req.query;
+      let subjectCodes: string[] = [];
+
+      if (lecturerId && typeof lecturerId === "string") {
+        const assigned = await db
+          .select()
+          .from(lecturerSubjects)
+          .where(eq(lecturerSubjects.lecturerId, lecturerId.trim()));
+        subjectCodes = assigned.map((a) => a.subjectCode);
+      }
+
+      let studentList: any[] = [];
+      if (subjectCodes.length > 0) {
+        const enrolledStudents = await db
+          .select({ studentId: studentEnrollments.studentId })
+          .from(studentEnrollments)
+          .where(inArray(studentEnrollments.courseCode, subjectCodes));
+        const studentIds = Array.from(new Set(enrolledStudents.map((row) => row.studentId)));
+
+        if (studentIds.length > 0) {
+          studentList = await db
+            .select({
+              id: students.id,
+              name: students.name,
+              admissionNo: students.admissionNo,
+              cohort: students.cohort,
+              email: students.email,
+              phone: students.phone,
+              accountStatus: students.accountStatus,
+              courseId: students.courseId,
+              programme: students.programme,
+              department: students.department,
+              avatar: students.avatar,
+              courseTitle: courses.title,
+              courseCode: courses.code,
+              courseDepartment: courses.faculty,
+            })
+            .from(students)
+            .leftJoin(courses, eq(students.courseId, courses.id))
+            .where(inArray(students.id, studentIds));
+        }
+      }
+
+      if (studentList.length === 0) {
+        studentList = await db
+          .select({
+            id: students.id,
+            name: students.name,
+            admissionNo: students.admissionNo,
+            cohort: students.cohort,
+            email: students.email,
+            phone: students.phone,
+            accountStatus: students.accountStatus,
+            courseId: students.courseId,
+            programme: students.programme,
+            department: students.department,
+            avatar: students.avatar,
+            courseTitle: courses.title,
+            courseCode: courses.code,
+            courseDepartment: courses.faculty,
+          })
+          .from(students)
+          .leftJoin(courses, eq(students.courseId, courses.id))
+          .limit(20);
+      }
+
+      if (q && typeof q === "string" && q.trim()) {
+        const term = q.trim().toLowerCase();
+        studentList = studentList.filter(
+          (s) =>
+            s.name.toLowerCase().includes(term) ||
+            s.admissionNo.toLowerCase().includes(term) ||
+            (s.programme || s.courseTitle || "").toLowerCase().includes(term)
+        );
+      }
+
+      const result = studentList.map((s) => ({
+        id: s.id,
+        name: s.name,
+        admissionNo: s.admissionNo,
+        cohort: s.cohort || "Not recorded",
+        email: s.email || null,
+        phone: s.phone || null,
+        courseId: s.courseId || null,
+        programme: s.programme || s.courseTitle || null,
+        courseCode: s.courseCode || null,
+        courseTitle: s.courseTitle || s.programme || null,
+        department: s.courseDepartment || s.department || null,
+        accountStatus: s.accountStatus || "Active",
+      }));
+
+      res.json(result);
+    } catch (error: any) {
+      console.error("Failed to fetch lecturer student directory:", error);
+      res.json([]);
+    }
+  }
+);
+
+// GET Lecturer Student Lookup
+app.get(
+  ["/api/lecturer/student-lookup", "/api/faculty/student-lookup"],
+  async (req: any, res: any) => {
+    try {
+      const { studentId, admission_no } = req.query;
+      let targetStudent: any = null;
+
+      if (studentId && typeof studentId === "string") {
+        const found = await db
+          .select({
+            id: students.id,
+            name: students.name,
+            email: students.email,
+            phone: students.phone,
+            admissionNo: students.admissionNo,
+            cohort: students.cohort,
+            courseId: students.courseId,
+            programme: students.programme,
+            department: students.department,
+            avatar: students.avatar,
+            accountStatus: students.accountStatus,
+            courseTitle: courses.title,
+            courseCode: courses.code,
+            courseDepartment: courses.faculty,
+          })
+          .from(students)
+          .leftJoin(courses, eq(students.courseId, courses.id))
+          .where(eq(students.id, studentId.trim()))
+          .limit(1);
+        if (found.length > 0) targetStudent = found[0];
+      }
+
+      if (!targetStudent && admission_no && typeof admission_no === "string") {
+        const found = await db
+          .select({
+            id: students.id,
+            name: students.name,
+            email: students.email,
+            phone: students.phone,
+            admissionNo: students.admissionNo,
+            cohort: students.cohort,
+            courseId: students.courseId,
+            programme: students.programme,
+            department: students.department,
+            avatar: students.avatar,
+            accountStatus: students.accountStatus,
+            courseTitle: courses.title,
+            courseCode: courses.code,
+            courseDepartment: courses.faculty,
+          })
+          .from(students)
+          .leftJoin(courses, eq(students.courseId, courses.id))
+          .where(eq(students.admissionNo, admission_no.trim()))
+          .limit(1);
+        if (found.length > 0) targetStudent = found[0];
+      }
+
+      if (!targetStudent) {
+        return res.status(404).json({ error: "Student record not found" });
+      }
+
+      const courseTitle = targetStudent.courseTitle || targetStudent.programme || null;
+      const courseCode = targetStudent.courseCode || null;
+      const department = targetStudent.courseDepartment || targetStudent.department || null;
+
+      const gradeRows = await db
+        .select({
+          subjectCode: grades.subjectCode,
+          catScore: grades.catScore,
+          examScore: grades.examScore,
+        })
+        .from(grades)
+        .where(eq(grades.studentId, targetStudent.id));
+
+      const enrollmentRows = await db
+        .select({ courseCode: studentEnrollments.courseCode })
+        .from(studentEnrollments)
+        .where(eq(studentEnrollments.studentId, targetStudent.id));
+
+      const academicSummary = computeStudentAcademicSummary(
+        gradeRows.map((row) => ({
+          subjectCode: row.subjectCode,
+          catScore: row.catScore,
+          examScore: row.examScore,
+        })),
+        enrollmentRows,
+        {
+          courseTitle,
+          courseCode,
+          department,
+        }
+      );
+
+      const registeredUnits = enrollmentRows.map((enrollment) => ({
+        code: enrollment.courseCode,
+        title: enrollment.courseCode,
+        faculty: department,
+        isMyClass: true,
+        attendanceRate: null,
+        grade: null,
+      }));
+
+      const gpa = academicSummary.gpa;
+      const academicStanding = academicSummary.academicStanding;
+
+      res.json({
+        id: targetStudent.id,
+        name: targetStudent.name,
+        email: targetStudent.email,
+        phone: targetStudent.phone,
+        admissionNo: targetStudent.admissionNo,
+        avatar: targetStudent.avatar || null,
+        cohort: targetStudent.cohort || "Not recorded",
+        programme: courseTitle,
+        course: courseTitle,
+        department,
+        courseId: targetStudent.courseId || null,
+        courseCode,
+        courseTitle,
+        yearOfStudy: null,
+        semester: null,
+        financeStatus: "Finance Cleared",
+        gpa,
+        academicStanding,
+        registeredUnits,
+        advisorNotes: [],
+        accountStatus: targetStudent.accountStatus || "Active",
+      });
+    } catch (error: any) {
+      console.error("Failed to lookup student for lecturer:", error);
+      res.status(500).json({ error: "Failed to load student details" });
+    }
+  }
+);
+   
+// GET API for transactions (fetches 5 most recent)
+app.get("/api/transactions", async (req, res) => {
+  try {
+    const recentTransactions = await db
+      .select()
+      .from(transactions)
+      .orderBy(desc(transactions.createdAt))
+      .limit(5);
+
+    const result = recentTransactions.map(t => ({
+      id: t.id,
+      reference_no: t.referenceNo,
+      recipient_sender: t.recipientSender,
+      description: t.description,
+      amount: Number(t.amount),
+      currency: t.currency,
+      created_at: t.createdAt,
+    }));
+    res.json(result);
+  } catch (err: any) {
+    console.error("Failed to fetch transactions:", err);
+    res.status(500).json({ error: "Failed to fetch transactions" });
+  }
+});
+
+// GET API to search for a student by their admission_no
+app.get("/api/students/search", async (req, res) => {
+  try {
+    const admissionNoQuery = req.query.admission_no || req.query.admissionNo;
+    if (!admissionNoQuery || typeof admissionNoQuery !== "string") {
+      return res.status(400).json({ error: "admission_no query parameter is required" });
+    }
+
+    const admissionNo = admissionNoQuery.trim();
+
+    // Query fully constructed students list (with all nested details like grades, ledger, etc.)
+    const fullDb = await loadFullDatabaseState();
+    const student = (fullDb.students || []).find(
+      (s: any) => s.admissionNo?.toLowerCase() === admissionNo.toLowerCase()
+    );
+
+    if (!student) {
+      // Fallback: check local database cache
+      const cachedStudents = getDatabase().students || [];
+      const cachedStudent = cachedStudents.find(
+        (s: any) => s.admissionNo?.toLowerCase() === admissionNo.toLowerCase()
+      );
+
+      if (cachedStudent) {
+        const { passcode, ...studentWithoutPasscode } = cachedStudent;
+        return res.json(studentWithoutPasscode);
+      }
+      return res.status(404).json({ error: `Student with admission number ${admissionNo} not found.` });
+    }
+
+    const { passcode, ...studentWithoutPasscode } = student;
+    res.json(studentWithoutPasscode);
+  } catch (err: any) {
+    console.error("Error searching student by admission_no:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// FINANCIAL SUITE AND LEDGER APIS
+// 1. GET /api/finance/students (fetches students with computed outstanding ledger balances)
+app.get("/api/finance/students", async (req, res) => {
+  try {
+    const allStudents = await db.select().from(students);
+    const ledgerEntries = await db.select().from(studentLedger);
+
+    const result = allStudents.map(s => {
+      const studentEntries = ledgerEntries.filter(entry => entry.studentId === s.id);
+      const debits = studentEntries
+        .filter(entry => entry.entryType === 'DEBIT')
+        .reduce((sum, entry) => sum + Number(entry.amount), 0);
+      const credits = studentEntries
+        .filter(entry => entry.entryType === 'CREDIT')
+        .reduce((sum, entry) => sum + Number(entry.amount), 0);
+      
+      const outstandingBalance = debits - credits;
+      const status = outstandingBalance > 0 ? "Outstanding" : "Cleared";
+
+      return {
+        id: s.id,
+        name: s.name,
+        admissionNo: s.admissionNo,
+        cohort: s.cohort,
+        courseId: s.courseId,
+        programme: s.programme,
+        department: s.department,
+        outstandingBalance,
+        status
+      };
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    console.error("Failed to fetch finance students from PostgreSQL:", err);
+    res.status(500).json({ error: "Failed to fetch finance students" });
+  }
+});
+
+// 2. POST /api/finance/bill (process a debit ledger entry and corresponding unpaid invoice)
+app.post("/api/finance/bill", async (req, res) => {
+  const { studentId, voteHead, amount, description } = req.body;
+
+  if (!studentId || !voteHead || !amount || isNaN(Number(amount))) {
+    return res.status(400).json({ error: "Missing required billing fields or invalid amount" });
+  }
+
+  const invoiceNo = await generateInvoiceNumber();
+  const dateStr = new Date().toISOString().substring(0, 10);
+  const formattedDesc = `[${voteHead}] ${description || "Semester Fees"}`;
+
+  try {
+    // 1. Insert into student_ledger
+    const [ledgerEntry] = await db.insert(studentLedger).values({
+      studentId,
+      entryType: 'DEBIT',
+      voteHead,
+      amount: String(amount),
+      description: formattedDesc,
+    }).returning();
+
+    // 2. Insert corresponding invoice to maintain system compatibility
+    await db.insert(invoices).values({
+      studentId,
+      invoiceNo,
+      description: formattedDesc,
+      amount: String(amount),
+      date: dateStr,
+      dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+      outstandingBalance: String(amount),
+      status: "unpaid",
+    });
+
+    res.status(201).json({
+      success: true,
+      ledgerEntry,
+      invoiceNo
+    });
+  } catch (err: any) {
+    console.error("Failed to create billing debit entry in PostgreSQL:", err);
+    // JSON file fallback
+    try {
+      const dbVal = getDatabase();
+      dbVal.student_ledger = dbVal.student_ledger || [];
+      dbVal.invoices = dbVal.invoices || [];
+
+      const newLedgerEntry = {
+        id: `ledger-${Date.now()}`,
+        studentId,
+        entryType: 'DEBIT',
+        voteHead,
+        amount: Number(amount),
+        description: formattedDesc,
+        createdAt: new Date().toISOString(),
+      };
+
+      const newInvoice = {
+        id: `inv-${Date.now()}`,
+        studentId,
+        invoiceNo,
+        description: formattedDesc,
+        amount: Number(amount),
+        date: dateStr,
+        status: "unpaid"
+      };
+
+      dbVal.student_ledger.push(newLedgerEntry);
+      dbVal.invoices.push(newInvoice);
+
+      const student = dbVal.students?.find((s: any) => s.id === studentId);
+      if (student) {
+        student.ledger = student.ledger || [];
+        student.ledger.push(newInvoice);
+      }
+
+      saveDatabase(dbVal);
+      res.status(201).json({
+        success: true,
+        ledgerEntry: newLedgerEntry,
+        invoiceNo
+      });
+    } catch (fallbackErr: any) {
+      res.status(500).json({ error: fallbackErr.message });
+    }
+  }
+});
+
+// 3. POST /api/finance/grant (process a credit ledger entry and negative waiver invoice)
+app.post("/api/finance/grant", async (req, res) => {
+  const { studentId, discountTypology, amount, description } = req.body;
+  const creditAmount = Number(amount);
+
+  if (!studentId || !discountTypology || !Number.isFinite(creditAmount) || creditAmount <= 0) {
+    return res.status(400).json({ error: "Missing required grant fields or credit value must be greater than zero" });
+  }
+
+  const creditNo = await generateInvoiceNumber();
+  const dateStr = new Date().toISOString().substring(0, 10);
+  const formattedDesc = `[${discountTypology} Approved] ${description || "Waiver allocation"}`;
+
+  try {
+    // Keep the ledger credit and its negative paid invoice in sync.
+    const ledgerEntry = await db.transaction(async (tx) => {
+      const [createdLedgerEntry] = await tx.insert(studentLedger).values({
+        studentId,
+        entryType: 'CREDIT',
+        voteHead: discountTypology,
+        amount: String(creditAmount),
+        description: formattedDesc,
+      }).returning();
+
+      await tx.insert(invoices).values({
+        studentId,
+        invoiceNo: creditNo,
+        description: formattedDesc,
+        amount: String(-creditAmount),
+        date: dateStr,
+        dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+        outstandingBalance: '0.00',
+        status: "paid",
+      });
+
+      return createdLedgerEntry;
+    });
+
+    res.status(201).json({
+      success: true,
+      ledgerEntry,
+      creditNo
+    });
+  } catch (err: any) {
+    console.error("Failed to create grant credit entry in PostgreSQL:", err);
+    // JSON file fallback
+    try {
+      const dbVal = getDatabase();
+      dbVal.student_ledger = dbVal.student_ledger || [];
+      dbVal.invoices = dbVal.invoices || [];
+
+      const newLedgerEntry = {
+        id: `ledger-${Date.now()}`,
+        studentId,
+        entryType: 'CREDIT',
+        voteHead: discountTypology,
+        amount: creditAmount,
+        description: formattedDesc,
+        createdAt: new Date().toISOString(),
+      };
+
+      const newInvoice = {
+        id: `inv-${Date.now()}`,
+        studentId,
+        invoiceNo: creditNo,
+        description: formattedDesc,
+        amount: -creditAmount,
+        date: dateStr,
+        status: "paid"
+      };
+
+      dbVal.student_ledger.push(newLedgerEntry);
+      dbVal.invoices.push(newInvoice);
+
+      const student = dbVal.students?.find((s: any) => s.id === studentId);
+      if (student) {
+        student.ledger = student.ledger || [];
+        student.ledger.push(newInvoice);
+      }
+
+      saveDatabase(dbVal);
+      res.status(201).json({
+        success: true,
+        ledgerEntry: newLedgerEntry,
+        creditNo
+      });
+    } catch (fallbackErr: any) {
+      res.status(500).json({ error: fallbackErr.message });
+    }
+  }
+});
+
+// 4. POST /api/finance/reconcile (automatically match statement records with unpaid student bills)
+app.post("/api/finance/reconcile", async (req, res) => {
+  let matchCount = 0;
+  const matches: any[] = [];
+
+  try {
+    const allTransactions = await db.select().from(transactions);
+    const unpaidInvoices = await db.select().from(invoices).where(eq(invoices.status, "unpaid"));
+    const allPayments = await db.select().from(payments);
+
+    const usedRefs = new Set(allPayments.map(p => p.transactionId));
+
+    for (const tx of allTransactions) {
+      if (usedRefs.has(tx.referenceNo) || Number(tx.amount) <= 0) {
+        continue;
+      }
+
+      const txAmount = Number(tx.amount);
+      const matchingInvoice = unpaidInvoices.find(inv => Number(inv.amount) === txAmount && !matches.some(m => m.invoiceId === inv.id));
+
+      if (matchingInvoice) {
+        const dateStr = new Date().toISOString().substring(0, 10);
+        
+        let paymentMethod: 'M-Pesa' | 'Bank Transfer' | 'Card' = 'Bank Transfer';
+        if (tx.referenceNo.toLowerCase().includes('mpesa') || tx.description.toLowerCase().includes('mpesa')) {
+          paymentMethod = 'M-Pesa';
+        } else if (tx.referenceNo.toLowerCase().includes('card') || tx.description.toLowerCase().includes('card')) {
+          paymentMethod = 'Card';
+        }
+
+        await db.update(invoices)
+          .set({ status: 'paid' })
+          .where(eq(invoices.id, matchingInvoice.id));
+
+        await db.insert(payments).values({
+          studentId: matchingInvoice.studentId,
+          invoiceId: matchingInvoice.id,
+          amount: String(txAmount),
+          paymentMethod,
+          transactionId: tx.referenceNo,
+          date: dateStr,
+          status: 'reconciled',
+        });
+
+        await db.insert(studentLedger).values({
+          studentId: matchingInvoice.studentId,
+          entryType: 'CREDIT',
+          voteHead: 'Tuition',
+          amount: String(txAmount),
+          description: `Broad Matching Sync Reconciled Ref: ${tx.referenceNo}`,
+        });
+
+        matches.push({
+          invoiceId: matchingInvoice.id,
+          referenceNo: tx.referenceNo,
+          studentId: matchingInvoice.studentId,
+          amount: txAmount
+        });
+
+        matchCount++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Broad matching sync complete. Reconciled ${matchCount} payments.`,
+      matchCount,
+      matches
+    });
+  } catch (err: any) {
+    console.error("PostgreSQL automated reconciliation failed:", err);
+    // JSON file fallback
+    try {
+      const dbVal = getDatabase();
+      dbVal.transactions = dbVal.transactions || [];
+      dbVal.invoices = dbVal.invoices || [];
+      dbVal.payments = dbVal.payments || [];
+      dbVal.student_ledger = dbVal.student_ledger || [];
+
+      const usedRefs = new Set(dbVal.payments.map((p: any) => p.transactionId || p.transaction_id));
+      const unpaidInvoices = dbVal.invoices.filter((inv: any) => inv.status === 'unpaid');
+
+      for (const tx of dbVal.transactions) {
+        const ref = tx.referenceNo || tx.reference_no;
+        const amt = tx.amount;
+
+        if (usedRefs.has(ref) || amt <= 0) {
+          continue;
+        }
+
+        const matchingInvoice = unpaidInvoices.find((inv: any) => Number(inv.amount) === amt && !matches.some(m => m.invoiceId === inv.id));
+
+        if (matchingInvoice) {
+          const dateStr = new Date().toISOString().substring(0, 10);
+          
+          let paymentMethod: 'M-Pesa' | 'Bank Transfer' | 'Card' = 'Bank Transfer';
+          if (ref.toLowerCase().includes('mpesa') || tx.description.toLowerCase().includes('mpesa')) {
+            paymentMethod = 'M-Pesa';
+          }
+
+          matchingInvoice.status = 'paid';
+
+          const student = dbVal.students?.find((s: any) => s.id === matchingInvoice.studentId);
+          if (student) {
+            const studentInv = student.ledger?.find((i: any) => i.id === matchingInvoice.id);
+            if (studentInv) studentInv.status = 'paid';
+          }
+
+          const newPayment = {
+            id: `pay-${Date.now()}-${matchCount}`,
+            studentId: matchingInvoice.studentId,
+            invoiceId: matchingInvoice.id,
+            amount: amt,
+            paymentMethod,
+            transactionId: ref,
+            date: dateStr,
+            status: 'reconciled'
+          };
+          dbVal.payments.push(newPayment);
+          if (student) {
+            student.payments = student.payments || [];
+            student.payments.push(newPayment);
+          }
+
+          const newLedgerEntry = {
+            id: `ledger-${Date.now()}-${matchCount}`,
+            studentId: matchingInvoice.studentId,
+            entryType: 'CREDIT',
+            voteHead: 'Tuition',
+            amount: amt,
+            description: `Broad Matching Sync Reconciled Ref: ${ref}`,
+            createdAt: new Date().toISOString()
+          };
+          dbVal.student_ledger.push(newLedgerEntry);
+
+          matches.push({
+            invoiceId: matchingInvoice.id,
+            referenceNo: ref,
+            studentId: matchingInvoice.studentId,
+            amount: amt
+          });
+
+          matchCount++;
+        }
+      }
+
+      saveDatabase(dbVal);
+      res.json({
+        success: true,
+        message: `Broad matching sync complete (fallback mode). Reconciled ${matchCount} payments.`,
+        matchCount,
+        matches
+      });
+    } catch (fallbackErr: any) {
+      res.status(500).json({ error: fallbackErr.message });
+    }
+  }
+});
+
+// 5. Payment reconciliation review queue and single-payment approval.
+// A student-initiated payment remains unreconciled until an accountant approves it.
+app.get("/api/finance/payments", async (_req, res) => {
+  try {
+    const paymentRows = await db.select().from(payments).orderBy(desc(payments.date));
+    res.json(paymentRows.map((payment) => ({
+      ...payment,
+      amount: Number(payment.amount),
+    })));
+  } catch (error: any) {
+    const requestId = crypto.randomUUID();
+    console.error(`[${requestId}] Failed to fetch finance payments`, {
+      message: error?.message,
+      code: error?.cause?.code || error?.code,
+    });
+    res.status(500).json({
+      error: "Unable to load payments for reconciliation.",
+      code: "PAYMENTS_FETCH_FAILED",
+      requestId,
+    });
+  }
+});
+
+app.patch("/api/finance/payments/:paymentId/reconcile", async (req, res) => {
+  const { paymentId } = req.params;
+
+  if (!paymentId) {
+    return res.status(400).json({
+      error: "A payment ID is required.",
+      code: "PAYMENT_ID_REQUIRED",
+    });
+  }
+
+  try {
+    const result = await db.transaction(async (tx) => {
+      // Lock the payment so duplicate clicks cannot create duplicate ledger credits.
+      await tx.execute(sql`SELECT id FROM payments WHERE id = ${paymentId} FOR UPDATE`);
+      const [payment] = await tx.select().from(payments).where(eq(payments.id, paymentId));
+
+      if (!payment) {
+        return { kind: "not_found" as const };
+      }
+
+      if (payment.status === "reconciled") {
+        return { kind: "already_reconciled" as const, payment };
+      }
+
+      if (!payment.invoiceId) {
+        return { kind: "invoice_required" as const };
+      }
+
+      await tx.execute(sql`SELECT id FROM invoices WHERE id = ${payment.invoiceId} FOR UPDATE`);
+      const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, payment.invoiceId));
+
+      if (!invoice) {
+        return { kind: "invoice_not_found" as const };
+      }
+
+      if (invoice.studentId !== payment.studentId) {
+        return { kind: "student_mismatch" as const };
+      }
+
+      if (Math.abs(Number(invoice.amount) - Number(payment.amount)) > 0.004) {
+        return { kind: "amount_mismatch" as const, invoiceAmount: Number(invoice.amount) };
+      }
+
+      if (invoice.status === "paid") {
+        return { kind: "invoice_already_paid" as const };
+      }
+
+      const [reconciledPayment] = await tx
+        .update(payments)
+        .set({ status: "reconciled" })
+        .where(eq(payments.id, payment.id))
+        .returning();
+
+      await tx.update(invoices).set({ status: "paid" }).where(eq(invoices.id, invoice.id));
+      await tx.insert(studentLedger).values({
+        studentId: payment.studentId,
+        entryType: "CREDIT",
+        voteHead: "Tuition",
+        amount: String(payment.amount),
+        description: `Payment reconciled: ${payment.transactionId}`,
+      });
+
+      return { kind: "reconciled" as const, payment: reconciledPayment, invoiceId: invoice.id };
+    });
+
+    if (result.kind === "not_found") {
+      return res.status(404).json({ error: "Payment not found.", code: "PAYMENT_NOT_FOUND" });
+    }
+    if (result.kind === "invoice_required") {
+      return res.status(422).json({ error: "This payment has no linked invoice to reconcile.", code: "PAYMENT_INVOICE_REQUIRED" });
+    }
+    if (result.kind === "invoice_not_found") {
+      return res.status(422).json({ error: "The invoice linked to this payment no longer exists.", code: "PAYMENT_INVOICE_NOT_FOUND" });
+    }
+    if (result.kind === "student_mismatch") {
+      return res.status(422).json({ error: "The payment and linked invoice belong to different students.", code: "PAYMENT_INVOICE_STUDENT_MISMATCH" });
+    }
+    if (result.kind === "amount_mismatch") {
+      return res.status(422).json({
+        error: `Payment amount does not match the invoice amount (KES ${result.invoiceAmount.toLocaleString()}).`,
+        code: "PAYMENT_INVOICE_AMOUNT_MISMATCH",
+      });
+    }
+    if (result.kind === "invoice_already_paid") {
+      return res.status(409).json({ error: "The linked invoice is already paid.", code: "INVOICE_ALREADY_PAID" });
+    }
+
+    res.status(200).json({
+      success: true,
+      alreadyReconciled: result.kind === "already_reconciled",
+      message: result.kind === "already_reconciled" ? "Payment was already reconciled." : "Payment reconciled successfully.",
+      payment: { ...result.payment, amount: Number(result.payment.amount) },
+      invoiceId: result.kind === "reconciled" ? result.invoiceId : result.payment.invoiceId,
+    });
+  } catch (error: any) {
+    const requestId = crypto.randomUUID();
+    console.error(`[${requestId}] Payment reconciliation failed`, {
+      paymentId,
+      message: error?.message,
+      code: error?.cause?.code || error?.code,
+      constraint: error?.cause?.constraint,
+      detail: error?.cause?.detail,
+    });
+    res.status(500).json({
+      error: "Payment reconciliation could not be completed. Please try again.",
+      code: "PAYMENT_RECONCILIATION_FAILED",
+      requestId,
+    });
+  }
+});
+
+// ==========================================
+// ADDITIONAL FINANCE SUITE ENDPOINTS
+// ==========================================
+
+// Budgets
+app.get("/api/finance/budgets", async (_req, res) => {
+  try {
+    const fullDb = getDatabase();
+    res.json(fullDb.budgets || [
+      { id: "b1", department: "Computer Science & IT", amount: 2500000, spent: 1420000, color: "from-blue-600 to-cyan-500" },
+      { id: "b2", department: "Business & Economics", amount: 1800000, spent: 980000, color: "from-purple-600 to-indigo-500" },
+      { id: "b3", department: "Health Sciences & Nursing", amount: 3200000, spent: 2150000, color: "from-emerald-600 to-teal-500" },
+      { id: "b4", department: "Library & Learning Resources", amount: 1200000, spent: 750000, color: "from-amber-600 to-orange-500" }
+    ]);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch budgets" });
+  }
+});
+
+app.post("/api/finance/budgets", async (req, res) => {
+  try {
+    const { department, amount } = req.body;
+    const fullDb = await loadFullDatabaseState();
+    fullDb.budgets = fullDb.budgets || [
+      { id: "b1", department: "Computer Science & IT", amount: 2500000, spent: 1420000, color: "from-blue-600 to-cyan-500" },
+      { id: "b2", department: "Business & Economics", amount: 1800000, spent: 980000, color: "from-purple-600 to-indigo-500" },
+      { id: "b3", department: "Health Sciences & Nursing", amount: 3200000, spent: 2150000, color: "from-emerald-600 to-teal-500" },
+      { id: "b4", department: "Library & Learning Resources", amount: 1200000, spent: 750000, color: "from-amber-600 to-orange-500" }
+    ];
+    const idx = fullDb.budgets.findIndex((b: any) => b.department === department);
+    if (idx !== -1) {
+      fullDb.budgets[idx].amount = Number(amount);
+    } else {
+      fullDb.budgets.push({ id: crypto.randomUUID(), department, amount: Number(amount), spent: 0, color: "from-blue-600 to-indigo-500" });
+    }
+    saveDatabase(fullDb);
+    res.json({ success: true, department, amount });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to update budget ceiling" });
+  }
+});
+
+// Vouchers
+app.get("/api/finance/vouchers", async (_req, res) => {
+  try {
+    const fullDb = getDatabase();
+    res.json(fullDb.vouchers || []);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch vouchers" });
+  }
+});
+
+app.post("/api/finance/vouchers", async (req, res) => {
+  try {
+    const voucher = {
+      id: crypto.randomUUID(),
+      ...req.body,
+      createdAt: new Date().toISOString()
+    };
+    const fullDb = await loadFullDatabaseState();
+    fullDb.vouchers = fullDb.vouchers || [];
+    fullDb.vouchers.unshift(voucher);
+    saveDatabase(fullDb);
+    res.json(voucher);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to create voucher" });
+  }
+});
+
+app.patch("/api/finance/vouchers/:id/approve", async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    const fullDb = await loadFullDatabaseState();
+    fullDb.vouchers = fullDb.vouchers || [];
+    const idx = fullDb.vouchers.findIndex((v: any) => v.id === id || v.voucherNo === id);
+    if (idx !== -1) {
+      fullDb.vouchers[idx].status = "Approved";
+      fullDb.vouchers[idx].approvedBy = req.user?.username || "Admin";
+      saveDatabase(fullDb);
+      res.json({ success: true, voucher: fullDb.vouchers[idx] });
+    } else {
+      res.status(404).json({ error: "Voucher not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to approve voucher" });
+  }
+});
+
+// Imprests
+app.get("/api/finance/imprests", async (_req, res) => {
+  try {
+    const fullDb = getDatabase();
+    res.json(fullDb.imprests || []);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch imprests" });
+  }
+});
+
+app.post("/api/finance/imprests", async (req, res) => {
+  try {
+    const imprest = {
+      id: crypto.randomUUID(),
+      ...req.body,
+      status: "pending",
+      date: new Date().toISOString().substring(0, 10)
+    };
+    const fullDb = await loadFullDatabaseState();
+    fullDb.imprests = fullDb.imprests || [];
+    fullDb.imprests.unshift(imprest);
+    saveDatabase(fullDb);
+    res.json(imprest);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to request imprest" });
+  }
+});
+
+app.patch("/api/finance/imprests/:id/status", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const fullDb = await loadFullDatabaseState();
+    fullDb.imprests = fullDb.imprests || [];
+    const idx = fullDb.imprests.findIndex((imp: any) => imp.id === id);
+    if (idx !== -1) {
+      fullDb.imprests[idx].status = status;
+      saveDatabase(fullDb);
+      res.json({ success: true, imprest: fullDb.imprests[idx] });
+    } else {
+      res.status(404).json({ error: "Imprest record not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to update imprest status" });
+  }
+});
+
+// Suppliers & POs
+app.get("/api/finance/suppliers", async (_req, res) => {
+  try {
+    const fullDb = getDatabase();
+    res.json(fullDb.suppliers || []);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch suppliers" });
+  }
+});
+
+app.post("/api/finance/suppliers", async (req, res) => {
+  try {
+    const supplier = {
+      id: crypto.randomUUID(),
+      ...req.body,
+      pos: []
+    };
+    const fullDb = await loadFullDatabaseState();
+    fullDb.suppliers = fullDb.suppliers || [];
+    fullDb.suppliers.push(supplier);
+    saveDatabase(fullDb);
+    res.json(supplier);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to register supplier" });
+  }
+});
+
+app.post("/api/finance/suppliers/po", async (req, res) => {
+  try {
+    const { supplierId, itemName, amount } = req.body;
+    const po = {
+      id: crypto.randomUUID(),
+      poNo: `PO-${Math.floor(1000 + Math.random() * 9000)}`,
+      itemName,
+      amount: Number(amount),
+      status: 'pending',
+      date: new Date().toISOString().substring(0, 10)
+    };
+    const fullDb = await loadFullDatabaseState();
+    fullDb.suppliers = fullDb.suppliers || [];
+    const idx = fullDb.suppliers.findIndex((s: any) => s.id === supplierId);
+    if (idx !== -1) {
+      fullDb.suppliers[idx].pos = fullDb.suppliers[idx].pos || [];
+      fullDb.suppliers[idx].pos.unshift(po);
+      saveDatabase(fullDb);
+      res.json(po);
+    } else {
+      res.status(404).json({ error: "Supplier not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to raise Purchase Order" });
+  }
+});
+
+app.patch("/api/finance/suppliers/po/:poId", async (req: any, res: any) => {
+  try {
+    const { poId } = req.params;
+    const { supplierId, action } = req.body;
+    const fullDb = await loadFullDatabaseState();
+    fullDb.suppliers = fullDb.suppliers || [];
+    const supIdx = fullDb.suppliers.findIndex((s: any) => s.id === supplierId);
+    if (supIdx !== -1) {
+      const pos = fullDb.suppliers[supIdx].pos || [];
+      const poIdx = pos.findIndex((p: any) => p.id === poId || p.poNo === poId);
+      if (poIdx !== -1) {
+        pos[poIdx].status = action === 'approve' ? 'approved' : action === 'settle' ? 'settled' : pos[poIdx].status;
+        saveDatabase(fullDb);
+        return res.json({ success: true, po: pos[poIdx] });
+      }
+    }
+    res.status(404).json({ error: "Purchase order not found" });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to update purchase order" });
+  }
+});
+
+// Expenses
+app.get("/api/finance/expenses", async (_req, res) => {
+  try {
+    const fullDb = getDatabase();
+    res.json(fullDb.expenses || []);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch expenses" });
+  }
+});
+
+app.post("/api/finance/expenses", async (req, res) => {
+  try {
+    const expense = {
+      id: crypto.randomUUID(),
+      ...req.body
+    };
+    const fullDb = await loadFullDatabaseState();
+    fullDb.expenses = fullDb.expenses || [];
+    fullDb.expenses.unshift(expense);
+    saveDatabase(fullDb);
+    res.json(expense);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to log expense" });
+  }
+});
+
+// Bank Statements & Audits
+app.get("/api/finance/bank-statements", async (_req, res) => {
+  try {
+    const fullDb = getDatabase();
+    res.json(fullDb.bankStatements || []);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch bank statements" });
+  }
+});
+
+app.post("/api/finance/bank-statements/match", async (req, res) => {
+  try {
+    const { statementId, studentId } = req.body;
+    const fullDb = await loadFullDatabaseState();
+    fullDb.bankStatements = fullDb.bankStatements || [];
+    const idx = fullDb.bankStatements.findIndex((s: any) => s.id === statementId);
+    if (idx !== -1) {
+      fullDb.bankStatements[idx].status = 'Matched';
+      fullDb.bankStatements[idx].matchedStudentId = studentId;
+      saveDatabase(fullDb);
+      res.json({ success: true, statement: fullDb.bankStatements[idx] });
+    } else {
+      res.status(404).json({ error: "Bank statement record not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to match bank statement" });
+  }
+});
+
+app.get("/api/finance/audits", async (_req, res) => {
+  try {
+    const fullDb = getDatabase();
+    res.json(fullDb.financeAudits || fullDb.audits || []);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch finance audit logs" });
+  }
+});
+
+app.post("/api/finance/audits", async (req, res) => {
+  try {
+    const audit = {
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
+      ...req.body
+    };
+    const fullDb = await loadFullDatabaseState();
+    fullDb.financeAudits = fullDb.financeAudits || [];
+    fullDb.financeAudits.unshift(audit);
+    saveDatabase(fullDb);
+    res.json(audit);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to record audit log" });
+  }
+});
+
+// 6. REST Resource: Students with Server-Side Pagination, Filtering, Sorting, and Search
+app.get("/api/students", async (req, res) => {
+  try {
+    const pageParam = parseInt(req.query.page as string, 10);
+    const limitParam = parseInt(req.query.limit as string, 10);
+    const searchParam = ((req.query.search as string) || "").trim();
+    const cohortParam = ((req.query.cohort as string) || "").trim();
+    const statusParam = ((req.query.accountStatus as string) || "").trim();
+    const unitsParam = ((req.query.registeredUnits as string) || (req.query.units as string) || "").trim();
+    const sortField = resolveStudentSortField(req.query.sortBy as string);
+    const sortOrderParam = resolveStudentSortOrder(req.query.sortOrder as string);
+    const isAllParam = req.query.all === "true";
+
+    const page = !isNaN(pageParam) && pageParam > 0 ? pageParam : 1;
+    const limit = !isNaN(limitParam) && limitParam > 0 ? Math.min(limitParam, 200) : 25;
+    const offset = (page - 1) * limit;
+
+    // Build SQL conditions (all user values are bound parameters — never concatenated)
+    const conditions = [];
+
+    if (searchParam) {
+      // Escape LIKE metacharacters; bind pattern as a parameter with ESCAPE '\'
+      const searchPattern = toIlikeContainsPattern(searchParam);
+      conditions.push(
+        or(
+          sql`${students.name} ILIKE ${searchPattern} ESCAPE '\\'`,
+          sql`${students.admissionNo} ILIKE ${searchPattern} ESCAPE '\\'`,
+          sql`${students.email} ILIKE ${searchPattern} ESCAPE '\\'`,
+          sql`${students.cohort} ILIKE ${searchPattern} ESCAPE '\\'`
+        )
+      );
+    }
+
+    if (cohortParam && cohortParam !== "all" && cohortParam !== "All Cohorts") {
+      conditions.push(eq(students.cohort, cohortParam));
+    }
+
+    if (statusParam && statusParam !== "all" && statusParam !== "All Statuses") {
+      conditions.push(eq(students.accountStatus, statusParam));
+    }
+
+    if (unitsParam && unitsParam !== "all" && unitsParam !== "All Units") {
+      const enrolledCountSubquery = sql<number>`(SELECT COUNT(*)::int FROM student_enrollments WHERE student_id = ${students.id})`;
+      if (unitsParam === "0" || unitsParam === "none" || unitsParam === "no_units") {
+        conditions.push(sql`${enrolledCountSubquery} = 0`);
+      } else if (unitsParam === "1") {
+        conditions.push(sql`${enrolledCountSubquery} = 1`);
+      } else if (unitsParam === "2") {
+        conditions.push(sql`${enrolledCountSubquery} = 2`);
+      } else if (unitsParam === "3+" || unitsParam === "3_plus" || unitsParam === "3") {
+        conditions.push(sql`${enrolledCountSubquery} >= 3`);
+      } else if (unitsParam === "has_units") {
+        conditions.push(sql`${enrolledCountSubquery} > 0`);
+      } else if (!isNaN(parseInt(unitsParam, 10))) {
+        conditions.push(sql`${enrolledCountSubquery} = ${parseInt(unitsParam, 10)}`);
+      }
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    // Sorting: allowlisted field only — never interpolate client sortBy into SQL
+    let orderByClause;
+    const unitCountSubquery = sql<number>`(SELECT COUNT(*)::int FROM student_enrollments WHERE student_id = ${students.id})`;
+    switch (sortField) {
+      case "name":
+        orderByClause = sortOrderParam === "desc" ? desc(students.name) : asc(students.name);
+        break;
+      case "cohort":
+        orderByClause = sortOrderParam === "desc" ? desc(students.cohort) : asc(students.cohort);
+        break;
+      case "accountStatus":
+        orderByClause = sortOrderParam === "desc" ? desc(students.accountStatus) : asc(students.accountStatus);
+        break;
+      case "createdAt":
+        orderByClause = sortOrderParam === "desc" ? desc(students.createdAt) : asc(students.createdAt);
+        break;
+      case "registeredUnits":
+        orderByClause = sortOrderParam === "desc" ? desc(unitCountSubquery) : asc(unitCountSubquery);
+        break;
+      case "admissionNo":
+      default:
+        orderByClause = sortOrderParam === "desc" ? desc(students.admissionNo) : asc(students.admissionNo);
+        break;
+    }
+
+    // 1. Total matching count query
+    const countRes = await db.select({ total: count() }).from(students).where(whereClause);
+    const totalRecords = Number(countRes[0]?.total || 0);
+    const totalPages = totalRecords > 0 ? Math.ceil(totalRecords / limit) : 1;
+
+    // 2. Paginated student records query
+    const studentRows = isAllParam 
+      ? await db.select().from(students).where(whereClause).orderBy(orderByClause)
+      : await db.select().from(students).where(whereClause).orderBy(orderByClause).limit(limit).offset(offset);
+
+    const pageStudentIds = studentRows.map((s) => s.id);
+
+    let enrollmentRows: any[] = [];
+    let gradeRows: any[] = [];
+    let invoiceRows: any[] = [];
+    let paymentRows: any[] = [];
+    let attendanceRows: any[] = [];
+
+    if (pageStudentIds.length > 0) {
+      enrollmentRows = await db.select().from(studentEnrollments).where(inArray(studentEnrollments.studentId, pageStudentIds));
+      gradeRows = await db.select().from(grades).where(inArray(grades.studentId, pageStudentIds));
+      invoiceRows = await db.select().from(invoices).where(inArray(invoices.studentId, pageStudentIds));
+      paymentRows = await db.select().from(payments).where(inArray(payments.studentId, pageStudentIds));
+      attendanceRows = await db.select().from(studentAttendance).where(inArray(studentAttendance.studentId, pageStudentIds));
+    }
+
+    const studentList = studentRows.map((s) => {
+      const enrolledUnits = enrollmentRows.filter((e) => e.studentId === s.id).map((e) => e.courseCode);
+
+      const studentGradesMap: Record<string, { cat: number; exam: number }> = {};
+      gradeRows
+        .filter((g) => g.studentId === s.id)
+        .forEach((g) => {
+          studentGradesMap[g.subjectCode] = {
+            cat: g.catScore ? Number(g.catScore) : 0,
+            exam: g.examScore ? Number(g.examScore) : 0,
+          };
+        });
+
+      const ledgerList = invoiceRows
+        .filter((i) => i.studentId === s.id)
+        .map((i) => ({
+          id: i.id,
+          invoiceNo: i.invoiceNo,
+          description: i.description,
+          amount: Number(i.amount),
+          date: i.date,
+          status: i.status as "unpaid" | "paid",
+        }));
+
+      const paymentsList = paymentRows
+        .filter((p) => p.studentId === s.id)
+        .map((p) => ({
+          id: p.id,
+          amount: Number(p.amount),
+          invoiceId: p.invoiceId ?? "",
+          studentId: p.studentId,
+          paymentMethod: p.paymentMethod as "M-Pesa" | "Bank Transfer" | "Card",
+          transactionId: p.transactionId,
+          transactionRef: p.transactionId,
+          date: p.date,
+          status: p.status,
+        }));
+
+      const attendanceMap: Record<string, number> = {};
+      attendanceRows
+        .filter((a) => a.studentId === s.id)
+        .forEach((a) => {
+          attendanceMap[a.subjectCode] = Number(a.attendanceRate);
+        });
+
+      return {
+        id: s.id,
+        name: s.name,
+        email: s.email,
+        phone: s.phone,
+        admissionNo: s.admissionNo,
+        cohort: s.cohort,
+        courseId: s.courseId,
+        programme: s.programme,
+        department: s.department,
+        avatar: s.avatar ?? "",
+        accountStatus: s.accountStatus,
+        createdAt: s.createdAt,
+        enrolledUnits,
+        grades: studentGradesMap,
+        ledger: ledgerList,
+        payments: paymentsList,
+        attendance: attendanceMap,
+      };
+    });
+
+    if (isAllParam) {
+      res.json(studentList);
+      return;
+    }
+
+    res.json({
+      students: studentList,
+      page,
+      limit,
+      totalRecords,
+      totalPages,
+    });
+  } catch (err: any) {
+    console.error("Failed to fetch paginated students from PostgreSQL:", err);
+    // Fallback using cached database memory store
+    const fullDb = getDatabase();
+    let allStudents = fullDb.students || [];
+
+    const searchParam = ((req.query.search as string) || "").toLowerCase().trim();
+    const cohortParam = ((req.query.cohort as string) || "").trim();
+    const statusParam = ((req.query.accountStatus as string) || "").trim();
+    const unitsParam = ((req.query.registeredUnits as string) || (req.query.units as string) || "").trim();
+    const sortField = resolveStudentSortField(req.query.sortBy as string);
+    const sortOrderParam = resolveStudentSortOrder(req.query.sortOrder as string);
+
+    if (searchParam) {
+      allStudents = allStudents.filter(
+        (s: any) =>
+          s.name?.toLowerCase().includes(searchParam) ||
+          s.admissionNo?.toLowerCase().includes(searchParam) ||
+          s.email?.toLowerCase().includes(searchParam) ||
+          s.cohort?.toLowerCase().includes(searchParam)
+      );
+    }
+
+    if (cohortParam && cohortParam !== "all" && cohortParam !== "All Cohorts") {
+      allStudents = allStudents.filter((s: any) => s.cohort === cohortParam);
+    }
+
+    if (statusParam && statusParam !== "all" && statusParam !== "All Statuses") {
+      allStudents = allStudents.filter((s: any) => s.accountStatus === statusParam);
+    }
+
+    if (unitsParam && unitsParam !== "all" && unitsParam !== "All Units") {
+      if (unitsParam === "0" || unitsParam === "none" || unitsParam === "no_units") {
+        allStudents = allStudents.filter((s: any) => (s.enrolledUnits?.length || 0) === 0);
+      } else if (unitsParam === "1") {
+        allStudents = allStudents.filter((s: any) => (s.enrolledUnits?.length || 0) === 1);
+      } else if (unitsParam === "2") {
+        allStudents = allStudents.filter((s: any) => (s.enrolledUnits?.length || 0) === 2);
+      } else if (unitsParam === "3+" || unitsParam === "3_plus" || unitsParam === "3") {
+        allStudents = allStudents.filter((s: any) => (s.enrolledUnits?.length || 0) >= 3);
+      } else if (unitsParam === "has_units") {
+        allStudents = allStudents.filter((s: any) => (s.enrolledUnits?.length || 0) > 0);
+      }
+    }
+
+    allStudents.sort((a: any, b: any) => {
+      let valA: any = "";
+      let valB: any = "";
+
+      switch (sortField) {
+        case "name":
+          valA = a.name || "";
+          valB = b.name || "";
+          break;
+        case "cohort":
+          valA = a.cohort || "";
+          valB = b.cohort || "";
+          break;
+        case "accountStatus":
+          valA = a.accountStatus || "";
+          valB = b.accountStatus || "";
+          break;
+        case "registeredUnits":
+          valA = a.enrolledUnits?.length || 0;
+          valB = b.enrolledUnits?.length || 0;
+          break;
+        case "createdAt":
+          valA = a.createdAt || "";
+          valB = b.createdAt || "";
+          break;
+        case "admissionNo":
+        default:
+          valA = a.admissionNo || "";
+          valB = b.admissionNo || "";
+          break;
+      }
+
+      if (valA < valB) return sortOrderParam === "desc" ? 1 : -1;
+      if (valA > valB) return sortOrderParam === "desc" ? -1 : 1;
+      return 0;
+    });
+
+    const pageParam = parseInt(req.query.page as string, 10);
+    const limitParam = parseInt(req.query.limit as string, 10);
+    const page = !isNaN(pageParam) && pageParam > 0 ? pageParam : 1;
+    const limit = !isNaN(limitParam) && limitParam > 0 ? Math.min(limitParam, 200) : 25;
+
+    const totalRecords = allStudents.length;
+    const totalPages = totalRecords > 0 ? Math.ceil(totalRecords / limit) : 1;
+    const offset = (page - 1) * limit;
+
+    const sliced = allStudents.slice(offset, offset + limit);
+
+    if (req.query.all === "true") {
+      res.json(allStudents);
+      return;
+    }
+
+    res.json({
+      students: sliced,
+      page,
+      limit,
+      totalRecords,
+      totalPages,
+    });
+  }
+});
+
+app.post("/api/students", async (req: any, res: any) => {
+  // Student creation is Admissions-owned. Keep this path as a compatibility alias
+  // of POST /api/admin/admissions/enroll — never invent a second student identity.
+  if (!requireAdminRole(req, res)) return;
+  try {
+    const studentData = req.body || {};
+    if (!studentData?.name || !studentData?.email || !studentData?.phone || !studentData?.courseId || !studentData?.cohort) {
+      return res.status(400).json({ error: "Name, email, phone, programme, and intake are required for student admission." });
+    }
+
+    const enrolled = await enrollAdmittedStudentRecord({
+      name: studentData.name,
+      email: studentData.email,
+      phone: studentData.phone,
+      admissionNo: studentData.admissionNo,
+      cohort: studentData.cohort,
+      courseId: studentData.courseId,
+      department: studentData.department,
+      avatar: studentData.avatar ?? null,
+      accountStatus: studentData.accountStatus || "Pending Setup",
+      passcode: studentData.passcode,
+    });
+
+    try {
+      const fullDb = await loadFullDatabaseState();
+      saveDatabase(fullDb);
+    } catch {}
+
+    res.status(enrolled.created ? 201 : 200).json({
+      ...enrolled.student,
+      id: enrolled.student.id,
+      admissionNo: enrolled.student.admission_no || enrolled.student.admissionNo,
+      accountStatus: enrolled.student.account_status || enrolled.student.accountStatus,
+      created: enrolled.created,
+      defaultPassword: enrolled.defaultPassword,
+    });
+  } catch (error: any) {
+    console.error("Registration failed:", error);
+    res.status(500).json({ error: clientSafeDbError("Failed to enroll student.", error) });
+  }
+});
+
+// Admin Route: Hard Delete / Purge User Account and automatically purge all associated relational records
+app.delete(["/api/admin/users/:id", "/api/admin/users/[id]", "/api/students/:id"], checkRBAC(["admin"]), async (req: any, res: any) => {
+  try {
+    const targetId = req.params.id;
+    if (!targetId) {
+      return res.status(400).json({ success: false, error: "User ID parameter is required for hard delete." });
+    }
+
+    let deletedCount = 0;
+
+    // 1. Delete from PostgreSQL students table if matching ID, admissionNo, or email (cascades enrollments, grades, attendance, invoices, payments, ledger, reviews)
+    try {
+      const deletedStudents = await db.delete(students)
+        .where(or(eq(students.id, targetId), eq(students.admissionNo, targetId), eq(students.email, targetId.toLowerCase())))
+        .returning();
+      deletedCount += deletedStudents.length;
+    } catch (err) {
+      console.warn("Notice: PostgreSQL students table purge warning:", err);
+    }
+
+    // 2. Delete from PostgreSQL lecturers table if matching ID, designatorCode, or email (cascades publications, research interests, office hours, subjects, reading lists)
+    try {
+      const deletedLecturers = await db.delete(lecturers)
+        .where(or(eq(lecturers.id, targetId), eq(lecturers.designatorCode, targetId), eq(lecturers.email, targetId.toLowerCase())))
+        .returning();
+      deletedCount += deletedLecturers.length;
+    } catch (err) {
+      console.warn("Notice: PostgreSQL lecturers table purge warning:", err);
+    }
+
+    // 3. Delete from PostgreSQL users table by integer id, username, roleId, or email
+    const numId = parseInt(targetId, 10);
+    const userWhereClause = !isNaN(numId)
+      ? or(eq(users.id, numId), eq(users.username, targetId), eq(users.roleId, targetId), eq(users.email, targetId.toLowerCase()))
+      : or(eq(users.username, targetId), eq(users.roleId, targetId), eq(users.email, targetId.toLowerCase()));
+
+    try {
+      const deletedUsers = await db.delete(users).where(userWhereClause).returning();
+      deletedCount += deletedUsers.length;
+    } catch (err) {
+      console.warn("Notice: PostgreSQL users table purge warning:", err);
+    }
+
+    // 4. Delete associated password reset requests and notifications
+    try {
+      await db.delete(passwordResetRequests).where(eq(passwordResetRequests.userId, targetId));
+    } catch (err) {}
+    try {
+      await db.delete(notifications).where(eq(notifications.targetUserId, targetId));
+    } catch (err) {}
+
+    // Update in-memory JSON database cache
+    const fullDb = getDatabase();
+    if (fullDb.students) {
+      fullDb.students = fullDb.students.filter((s: any) => s.id !== targetId && s.admissionNo !== targetId && s.email?.toLowerCase() !== targetId.toLowerCase());
+    }
+    if (fullDb.lecturers) {
+      fullDb.lecturers = fullDb.lecturers.filter((l: any) => l.id !== targetId && l.designatorCode !== targetId && l.email?.toLowerCase() !== targetId.toLowerCase());
+    }
+    saveDatabase(fullDb);
+
+    return res.status(200).json({
+      success: true,
+      message: "User permanently purged",
+      purgedUserId: targetId,
+      deletedCount
+    });
+  } catch (error: any) {
+    console.error("Purge user error:", error);
+    return res.status(500).json({ success: false, error: clientSafeDbError("Failed to purge user record.", error) });
+  }
+});
+
+// Admin Route: Generate temporary activation credentials / password reset
+app.post("/api/students/:id/reset-password", checkRBAC(["admin", "super_admin"]), async (req: any, res: any) => {
+  try {
+    const studentId = req.params.id;
+    const result = await resetStudentPassword(studentId);
+    await writeAdminAudit(req, "student.password_reset", "student", studentId, { temporaryPasscodeIssued: true });
+    return res.status(200).json({
+      success: true,
+      message: "Student passcode reset successfully.",
+      temporaryPasscode: result.temporaryPasscode,
+    });
+  } catch (error: any) {
+    if (error instanceof PasswordResetError) {
+      return res.status(error.statusCode).json({ error: error.message, code: error.code });
+    }
+    console.error("Password reset failed:", error);
+    return res.status(500).json({ error: clientSafeDbError("Failed to reset student password.", error) });
+  }
+});
+
+/**
+ * Student portal visual summary used by StudentVisualSummaryDashboard.
+ * Requires an authenticated student JWT; students may only load their own data.
+ */
+app.get("/api/student/dashboard-summary", checkRBAC(["student"]), async (req: any, res: any) => {
+  try {
+    if (req.user?.role !== "student" || !req.user?.userId) {
+      return res.status(403).json({
+        error: "Only an authenticated student may load this dashboard summary.",
+      });
+    }
+
+    const requestedStudentId =
+      (req.query.studentId as string) || (req.headers["x-student-id"] as string);
+    const studentId = req.user.userId as string;
+    const roleId = (req.user.roleId as string) || studentId;
+
+    const [studentRow] = await db
+      .select()
+      .from(students)
+      .where(or(eq(students.id, studentId), eq(students.id, roleId), eq(students.admissionNo, studentId), eq(students.admissionNo, roleId)))
+      .limit(1);
+
+    if (!studentRow) {
+      return res.status(404).json({ error: "Student profile not found" });
+    }
+
+    const actualStudentId = studentRow.id;
+
+    if (requestedStudentId && requestedStudentId !== actualStudentId && requestedStudentId !== studentRow.admissionNo) {
+      return res.status(403).json({ error: "Students can only view their own dashboard." });
+    }
+
+    const enrollmentRows = await db
+      .select()
+      .from(studentEnrollments)
+      .where(eq(studentEnrollments.studentId, studentId));
+
+    const rawAssessmentRows = await db
+      .select({
+        subjectCode: studentAssessmentMarks.subjectCode,
+        rawMark: studentAssessmentMarks.rawMark,
+        maxMarks: studentAssessmentMarks.maxMarks,
+        weight: studentAssessmentMarks.weight,
+        assessmentKind: studentAssessmentMarks.assessmentKind,
+        recordedAt: studentAssessmentMarks.recordedAt,
+      })
+      .from(studentAssessmentMarks)
+      .where(eq(studentAssessmentMarks.studentId, studentId));
+
+    const gradeRows = await db
+      .select()
+      .from(grades)
+      .where(eq(grades.studentId, studentId));
+
+    const attendanceRows = await db
+      .select()
+      .from(studentAttendance)
+      .where(eq(studentAttendance.studentId, studentId));
+
+    const invoiceRows = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.studentId, studentId));
+
+    const [paymentRows, notificationRows, scheduleRows, courseRows, lecturerRows, lecturerSubjectRows] =
+      await Promise.all([
+        db.select().from(payments).where(eq(payments.studentId, studentId)),
+        db
+          .select()
+          .from(notifications)
+          .where(
+            or(
+              eq(notifications.targetUserId, studentId),
+              eq(notifications.targetUserRole, "student"),
+              eq(notifications.targetUserRole, "all")
+            )
+          )
+          .orderBy(desc(notifications.dateTime))
+          .limit(5),
+        db.select().from(lectureSchedules),
+        db.select().from(courses),
+        db.select().from(lecturers).where(eq(lecturers.isActive, true)),
+        db.select().from(lecturerSubjects),
+      ]);
+    const activeCourseCount = courseRows.filter((c) => c.active !== false).length;
+
+    const markToGpa = (mark: number): number => {
+      if (mark >= 70) return 4.0;
+      if (mark >= 60) return 3.0;
+      if (mark >= 50) return 2.0;
+      if (mark >= 40) return 1.0;
+      return 0.0;
+    };
+
+    const gradePointForPercent = (percent: number): number => {
+      if (percent >= 70) return 4.0;
+      if (percent >= 60) return 3.0;
+      if (percent >= 50) return 2.0;
+      if (percent >= 40) return 1.0;
+      return 0.0;
+    };
+
+    const gpaStanding = (value: number): string => {
+      if (value >= 3.7) return "Excellent";
+      if (value >= 3.0) return "Good";
+      if (value >= 2.0) return "Satisfactory";
+      if (value > 0) return "At Risk";
+      return "N/A";
+    };
+
+    const publishedSummary = computePublishedAssessmentSummary(rawAssessmentRows, enrollmentRows, {
+      courseTitle: studentRow.programme || studentRow.department || null,
+      courseCode: studentRow.programme || studentRow.department || null,
+      department: studentRow.department || null,
+    });
+
+    // Build per-subject published details including grade rows and amendment detection
+    const gradeBySubject = new Map<string, any>();
+    for (const g of gradeRows) gradeBySubject.set(g.subjectCode, g);
+
+    const latestUpdateBySubject = new Map<string, string>();
+    for (const r of rawAssessmentRows) {
+      const code = r.subjectCode;
+      const prev = latestUpdateBySubject.get(code);
+      const rowUpdatedAt = (r as any).updatedAt;
+      if (!prev || (rowUpdatedAt && String(rowUpdatedAt) > prev)) latestUpdateBySubject.set(code, String(rowUpdatedAt));
+    }
+
+    const publishedSubjectsDetailed = (publishedSummary.subjects || []).map((s: any) => {
+      const gradeRow = gradeBySubject.get(s.subjectCode) || null;
+      const gradedAt = gradeRow ? String(gradeRow.gradedAt) : null;
+      const latestUpdate = latestUpdateBySubject.get(s.subjectCode) || null;
+      const status = gradeRow ? ((latestUpdate && gradedAt && latestUpdate > gradedAt) ? 'Amended' : 'Published') : 'Published';
+      return {
+        subjectCode: s.subjectCode,
+        overallPercent: s.overallPercent,
+        grade: s.grade,
+        passed: s.passed,
+        totalWeight: s.totalWeight,
+        catScore: gradeRow ? Number(gradeRow.catScore) : null,
+        examScore: gradeRow ? Number(gradeRow.examScore) : null,
+        gradedAt,
+        status,
+      };
+    });
+
+    // Also provide entries for enrolled units with no published results
+    const enrolledCodes = enrollmentRows.map((e) => e.courseCode);
+    for (const code of enrolledCodes) {
+      if (!publishedSubjectsDetailed.find((p: any) => p.subjectCode === code)) {
+        const hasRaw = rawAssessmentRows.some((r) => r.subjectCode === code);
+        const status = hasRaw ? 'Draft / Not Published' : 'No Result';
+        publishedSubjectsDetailed.push({ subjectCode: code, overallPercent: 0, grade: null, passed: false, totalWeight: 0, catScore: null, examScore: null, gradedAt: null, status });
+      }
+    }
+
+    const publishedOverallPercents = (publishedSummary.subjects || []).map((s: any) => Number(s.overallPercent || 0));
+    const semesterAverage = publishedOverallPercents.length > 0 ? Number((publishedOverallPercents.reduce((a,b) => a+b, 0)/publishedOverallPercents.length).toFixed(2)) : null;
+
+    let gpa: number | null = publishedSummary.gpa;
+    let gpaLabel = gpa === null ? "N/A" : deriveAcademicStanding(gpa);
+
+    const gpaTrend = (publishedSummary.subjects || []).map((entry, index) => ({
+      label: entry.subjectCode,
+      semester: entry.subjectCode,
+      GPA: Number((gradePointForPercent(entry.overallPercent) || 0).toFixed(2)),
+      subjectCode: entry.subjectCode,
+      gradedAt: null,
+    }));
+
+    // Build detailed attendance by querying per-session roll-call records
+    const sessionRows = await db
+      .select()
+      .from(classAttendanceSessions)
+      .where(inArray(classAttendanceSessions.subjectCode, enrolledCodes));
+
+    const modulesAttendanceMap = new Map<string, { totalSessions: number; present: number; late: number; absent: number }>();
+    for (const s of sessionRows) {
+      const code = s.subjectCode;
+      const entry = modulesAttendanceMap.get(code) || { totalSessions: 0, present: 0, late: 0, absent: 0 };
+      entry.totalSessions += 1;
+      const presentIds: string[] = Array.isArray(s.presentStudentIds) ? s.presentStudentIds : (s.presentStudentIds || []);
+      const lateIds: string[] = Array.isArray(s.lateStudentIds) ? s.lateStudentIds : (s.lateStudentIds || []);
+      const absentIds: string[] = Array.isArray(s.absentStudentIds) ? s.absentStudentIds : (s.absentStudentIds || []);
+      if (presentIds.includes(studentId)) entry.present += 1;
+      if (lateIds.includes(studentId)) entry.late += 1;
+      if (absentIds.includes(studentId)) entry.absent += 1;
+      modulesAttendanceMap.set(code, entry);
+    }
+
+    const modulesAttendance = Array.from(modulesAttendanceMap.entries()).map(([subjectCode, v]) => {
+      const total = v.totalSessions;
+      const attended = v.present + v.late;
+      const rate = total > 0 ? Math.round((attended / total) * 100) : null;
+      return {
+        subjectCode,
+        attendanceRate: rate,
+        present: v.present,
+        late: v.late,
+        absent: v.absent,
+        totalSessions: v.totalSessions,
+      };
+    });
+
+    const totalPresent = modulesAttendance.reduce((s, m) => s + (m.present || 0) + (m.late || 0), 0);
+    const totalLate = modulesAttendance.reduce((s, m) => s + (m.late || 0), 0);
+    const totalAbsent = modulesAttendance.reduce((s, m) => s + (m.absent || 0), 0);
+    const totalSessions = modulesAttendance.reduce((s, m) => s + (m.totalSessions || 0), 0);
+    const attendanceRate = totalSessions > 0 ? Math.round((totalPresent / totalSessions) * 100) : null;
+
+    const outstandingFees = invoiceRows
+      .filter((i) => i.status === "unpaid")
+      .reduce((sum, i) => sum + Number(i.amount || 0), 0);
+    const totalFees = invoiceRows.reduce((sum, i) => sum + Number(i.amount || 0), 0);
+    const paidFees = paymentRows.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+
+    const courseByCode = new Map(courseRows.map((course) => [course.code, course]));
+    const lecturerById = new Map(lecturerRows.map((lecturer) => [lecturer.id, lecturer]));
+    const lecturerIdByCourse = new Map(
+      lecturerSubjectRows.map((assignment) => [assignment.subjectCode, assignment.lecturerId])
+    );
+    const today = new Date().toISOString().slice(0, 10);
+    const todaySchedule = scheduleRows
+      .filter((schedule) => enrolledCodes.includes(schedule.subjectCode) && schedule.sessionDate === today)
+      .sort((a, b) => a.startTime.localeCompare(b.startTime))
+      .map((schedule) => ({
+        id: schedule.id,
+        time: `${schedule.startTime}–${schedule.endTime}`,
+        courseCode: schedule.subjectCode,
+        unitName: courseByCode.get(schedule.subjectCode)?.title || schedule.subjectCode,
+        lecturer: lecturerById.get(schedule.lecturerId)?.name || null,
+        room: schedule.room || null,
+      }));
+    const registeredUnits = enrolledCodes.map((courseCode) => ({
+      courseCode,
+      unitName: courseByCode.get(courseCode)?.title || courseCode,
+      credits: null,
+      lecturer: lecturerById.get(lecturerIdByCourse.get(courseCode) || "")?.name || null,
+      status: "Active",
+    }));
+
+    const completedUnits = publishedSummary.modulesPassed ?? 0;
+
+    const requiredUnits = Math.max(activeCourseCount, completedUnits, 1);
+    const degreePercent = Math.min(100, Math.round((completedUnits / requiredUnits) * 100));
+
+    const gradedCodes = new Set(rawAssessmentRows.map((g) => g.subjectCode));
+
+    // Identify subjects where marks exist but no weights have been configured
+    const unpublishedSubjects: string[] = [];
+    try {
+      const weightBySubject = new Map<string, number>();
+      for (const r of rawAssessmentRows) {
+        const code = r.subjectCode;
+        const w = Number(r.weight || 0) || 0;
+        weightBySubject.set(code, (weightBySubject.get(code) || 0) + w);
+      }
+      for (const [code, totalWeight] of weightBySubject.entries()) {
+        if ((Number(totalWeight) || 0) <= 0) unpublishedSubjects.push(code);
+      }
+    } catch (err) {
+      console.warn('Failed to compute unpublishedSubjects', err);
+    }
+    const deliverables: Array<{
+      id: string;
+      title: string;
+      detail: string;
+      priority: "high" | "normal" | "done";
+      type: string;
+    }> = [];
+
+    if (outstandingFees > 0) {
+      deliverables.push({
+        id: "fees",
+        title: "Settle outstanding tuition fees",
+        detail: `KES ${outstandingFees.toLocaleString()} unpaid on your finance ledger.`,
+        priority: "high",
+        type: "finance",
+      });
+    }
+
+    const remainingToEnroll = Math.max(0, activeCourseCount - enrolledCodes.length);
+    if (remainingToEnroll > 0) {
+      deliverables.push({
+        id: "enroll",
+        title: "Complete unit registration",
+        detail: `${remainingToEnroll} curriculum unit${remainingToEnroll === 1 ? "" : "s"} still available to enroll.`,
+        priority: "normal",
+        type: "enrollment",
+      });
+    }
+
+    const awaitingGrades = enrolledCodes.filter((code) => !gradedCodes.has(code));
+    if (awaitingGrades.length > 0) {
+      deliverables.push({
+        id: "grades",
+        title: "Awaiting published grades",
+        detail: `${awaitingGrades.length} enrolled module${awaitingGrades.length === 1 ? "" : "s"} without CAT/exam marks yet.`,
+        priority: "normal",
+        type: "grades",
+      });
+    }
+
+    // Build a simple attendance map from `student_attendance` as a fallback
+    const attendanceMap = new Map(attendanceRows.map((a: any) => [a.subjectCode, Number(a.attendanceRate)]));
+
+    for (const code of enrolledCodes) {
+      const moduleStats = modulesAttendanceMap.get(code);
+      const rate = moduleStats && moduleStats.totalSessions > 0
+        ? Math.round(((moduleStats.present || 0) + (moduleStats.late || 0)) / moduleStats.totalSessions * 100)
+        : attendanceMap.get(code);
+      if (typeof rate === "number" && rate < 75) {
+        deliverables.push({
+          id: `att-${code}`,
+          title: `Attendance below threshold (${code})`,
+          detail: `Current rate ${rate}% — exam eligibility requires at least 75%.`,
+          priority: "high",
+          type: "attendance",
+        });
+      }
+    }
+
+    const paperRows = await db
+      .select({
+        semester: examPapers.semester,
+        year: examPapers.year,
+        subjectCode: examPapers.subjectCode,
+      })
+      .from(examPapers)
+      .orderBy(desc(examPapers.year))
+      .limit(50);
+    const relevantPapers = paperRows.filter((paper) => enrolledCodes.includes(paper.subjectCode));
+    const latestPaper = (relevantPapers.length > 0 ? relevantPapers : paperRows)[0];
+    const academicYear = studentRow.cohort || null;
+
+    res.json({
+      studentId,
+      admissionNo: studentRow.admissionNo,
+      programme: studentRow.programme || studentRow.department || null,
+      semester: latestPaper?.semester || null,
+      academicYear,
+      gpa,
+      gpaLabel,
+      creditsEarned: null,
+      modulesPassed: completedUnits,
+      attendance: attendanceRate,
+      attendanceRate,
+      presentCount: totalPresent,
+      lateCount: totalLate,
+      absentCount: totalAbsent,
+      totalSessions,
+      attendanceModules: modulesAttendance,
+      activeModules: enrolledCodes.length,
+      requiredUnits: null,
+      outstandingFees,
+      feeSummary: {
+        total: totalFees,
+        paid: paidFees,
+        balance: Math.max(0, totalFees - paidFees),
+        status: outstandingFees > 0 ? "Outstanding" : totalFees > 0 ? "Paid" : "No fees posted",
+      },
+      gpaTrend,
+      todaySchedule,
+      registeredUnits,
+      unpublishedSubjects,
+      publishedSubjects: publishedSummary.subjects || [],
+      publishedSubjectsDetailed,
+      semesterAverage,
+      notifications: notificationRows.map((notification) => ({
+        id: notification.id,
+        title: notification.title,
+        message: notification.message,
+        type: notification.type,
+        dateTime: notification.dateTime,
+      })),
+      degreeProgress: {
+        completed: completedUnits,
+        required: requiredUnits,
+        percent: degreePercent,
+        note:
+          "Required units currently equal active courses in the catalogue until a degree_requirements table is added.",
+      },
+      deliverables,
+      nextLecture: todaySchedule[0] || null,
+      scheduleAvailable: todaySchedule.length > 0,
+    });
+  } catch (error: any) {
+    console.error("Failed to build student dashboard summary:", error);
+    res.status(500).json({ error: error.message || "Failed to load dashboard summary" });
+  }
+});
+
+// GET assessment breakdown details for a published subject (student view)
+app.get("/api/student/assessment-details", checkRBAC(["student"]), async (req:any, res:any) => {
+  try {
+    const studentId = req.user?.userId;
+    const subjectCode = (req.query.subjectCode as string) || null;
+    if (!studentId || !subjectCode) return res.status(400).json({ error: 'studentId and subjectCode required' });
+
+    // Ensure student may only query their own data
+    const rows = await db.select().from(studentAssessmentMarks).where(and(eq(studentAssessmentMarks.studentId, studentId), eq(studentAssessmentMarks.subjectCode, subjectCode)));
+    if (!rows || rows.length === 0) return res.status(404).json({ error: 'No assessment breakdown found' });
+
+    // Only return published breakdowns. The authoritative published result
+    // is stored in the `grades` table (legacy published snapshot). If there
+    // is no grade row for this student+subject the lecturer has not published
+    // the results yet and we should not reveal assessment details.
+    const [gradeRow] = await db.select().from(grades).where(and(eq(grades.studentId, studentId), eq(grades.subjectCode, subjectCode))).limit(1);
+    if (!gradeRow) return res.status(404).json({ error: 'No published assessment breakdown found' });
+
+    // compute weighted contributions using authoritative backend logic
+    const configMap = new Map<string, { maxMarks:number; weight:number }>();
+    for (const r of rows) {
+      const kind = String(r.assessmentKind || '').trim();
+      if (!kind) continue;
+      const maxMarks = Number(r.maxMarks) || 0;
+      const weight = Number(r.weight) || 0;
+      if (!configMap.has(kind)) configMap.set(kind, { maxMarks, weight });
+      else {
+        const exist = configMap.get(kind)!;
+        if ((exist.maxMarks || 0) <= 0 && maxMarks > 0) exist.maxMarks = maxMarks;
+        if ((exist.weight || 0) <= 0 && weight > 0) exist.weight = weight;
+        configMap.set(kind, exist);
+      }
+    }
+
+    const assessmentList = Array.from(configMap.entries()).map(([kind, v]) => ({ kind, maxMarks: v.maxMarks, weight: v.weight }));
+    const weightTotal = assessmentList.reduce((s,a) => s + (Number(a.weight)||0),0);
+
+    const items = rows.map((r:any) => {
+      const raw = Number(r.rawMark || 0);
+      const max = Number(r.maxMarks || 0);
+      const weight = Number(r.weight || 0);
+      const percentage = (max > 0) ? Number(Math.min((raw/max) * 100, 100).toFixed(2)) : 0;
+      const contribution = weightTotal > 0 ? Number(((percentage * weight)/weightTotal).toFixed(2)) : 0;
+      return {
+        assessmentKind: r.assessmentKind,
+        assessmentName: r.assessmentName,
+        rawMark: Number(r.rawMark),
+        maxMarks: Number(r.maxMarks),
+        weight: Number(r.weight),
+        percentage,
+        contribution,
+        recordedAt: r.recordedAt,
+        updatedAt: r.updatedAt,
+      };
+    });
+
+    const publishedSummary = computePublishedAssessmentSummary(rows.map((r:any) => ({ subjectCode, rawMark: r.rawMark, maxMarks: r.maxMarks, weight: r.weight, assessmentKind: r.assessmentKind })), [], { courseTitle: null, courseCode: null });
+    const subjectEntry = (publishedSummary.subjects || []).find((s:any) => s.subjectCode === subjectCode) || null;
+
+    return res.json({ subject: subjectEntry, breakdown: items });
+  } catch (error:any) {
+    console.error('Failed to fetch assessment details:', error);
+    return res.status(500).json({ error: clientSafeDbError('Failed to fetch assessment details', error) });
+  }
+});
+
+/**
+ * Load the student portal in independently-failable modules.  This deliberately
+ * does not use loadFullDatabaseState(): one unrelated table (for example the
+ * library) must never prevent a student from seeing their profile or fees.
+ */
+app.get("/api/student/dashboard", async (req: any, res: any) => {
+  const requestId = crypto.randomUUID();
+  const startedAt = Date.now();
+  const userId = req.user?.userId;
+  const role = req.user?.role;
+  const queryTimeoutMs = Math.max(500, Number(process.env.STUDENT_DASHBOARD_QUERY_TIMEOUT_MS) || 4000);
+
+  if (role !== "student" || !userId) {
+    console.warn("[student-dashboard] forbidden request", { requestId, role, userId });
+    return res.status(403).json({
+      error: "Only an authenticated student may load this dashboard.",
+      requestId,
+    });
+  }
+
+  const failures: Array<{ module: string; message: string }> = [];
+  const loadModule = async <T>(module: string, fallback: T, query: () => Promise<T>): Promise<T> => {
+    const moduleStartedAt = Date.now();
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timeoutHandle = setTimeout(() => {
+          const timeoutError: any = new Error(`Database query exceeded ${queryTimeoutMs}ms`);
+          timeoutError.code = "DASHBOARD_QUERY_TIMEOUT";
+          reject(timeoutError);
+        }, queryTimeoutMs);
+      });
+      const value = await Promise.race([query(), timeout]);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      console.info("[student-dashboard] module loaded", {
+        requestId,
+        module,
+        durationMs: Date.now() - moduleStartedAt,
+      });
+      return value;
+    } catch (error: any) {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      const message = error instanceof Error ? error.message : String(error);
+      failures.push({ module, message });
+      console.error("[student-dashboard] module failed", {
+        requestId,
+        module,
+        durationMs: Date.now() - moduleStartedAt,
+        error: message,
+        code: error?.code,
+      });
+      return fallback;
+    }
+  };
+
+  // initPostgresDB loads this fallback on a database outage. It is used only to
+  // keep the already-authenticated student's portal readable during a transient
+  // database failure; every fallback use is surfaced in failedModules/logs.
+  const snapshot = getDatabase();
+  const snapshotStudent = (snapshot?.students || []).find((student: any) => student?.id === userId || student?.admissionNo === userId || student?.email === userId) || null;
+  const profilePromise = loadModule("student-profile", snapshotStudent, async () => {
+    const [row] = await db.select().from(students).where(or(eq(students.id, userId), eq(students.admissionNo, userId))).limit(1);
+    return row || null;
+  });
+
+  // All module queries are keyed by the authenticated profile ID, so they can
+  // run while the profile lookup is reconnecting instead of adding its latency
+  // in front of every dashboard query.
+  const modulesPromise = Promise.all([
+    loadModule("enrolled-units", (snapshotStudent?.enrolledUnits || []).map((courseCode: string) => ({ courseCode })), () => db.select().from(studentEnrollments).where(eq(studentEnrollments.studentId, userId))),
+    loadModule("attendance", Object.entries(snapshotStudent?.attendance || {}).map(([subjectCode, attendanceRate]) => ({ subjectCode, attendanceRate })), () => db.select().from(studentAttendance).where(eq(studentAttendance.studentId, userId))),
+    loadModule("results", Object.entries(snapshotStudent?.grades || {}).map(([subjectCode, grade]: [string, any]) => ({ subjectCode, rawMark: grade?.cat, maxMarks: 100, weight: 100 })), () =>
+      db.select({
+        subjectCode: studentAssessmentMarks.subjectCode,
+        rawMark: studentAssessmentMarks.rawMark,
+        maxMarks: studentAssessmentMarks.maxMarks,
+        weight: studentAssessmentMarks.weight,
+        assessmentKind: studentAssessmentMarks.assessmentKind,
+      }).from(studentAssessmentMarks).where(eq(studentAssessmentMarks.studentId, userId)) as any
+    ),
+    loadModule("finance-invoices", snapshotStudent?.ledger || [], () => db.select().from(invoices).where(eq(invoices.studentId, userId))),
+    loadModule("finance-payments", snapshotStudent?.payments || [], () => db.select().from(payments).where(eq(payments.studentId, userId))),
+    loadModule("courses", snapshot?.courses || [], () => db.select().from(courses).where(eq(courses.active, true))),
+    loadModule("semester", snapshot?.examPapers || [], () => db.select().from(examPapers)),
+    loadModule("timetable-and-announcements", snapshot || {}, async () => {
+      const [row] = await db.select().from(systemState).where(eq(systemState.id, 1)).limit(1);
+      return (row?.data as Record<string, unknown>) || {};
+    }),
+  ]);
+
+  const profile = await profilePromise;
+
+  if (!profile) {
+    const profileFailure = failures.find((failure) => failure.module === "student-profile");
+    if (profileFailure) {
+      console.error("[student-dashboard] profile query unavailable", { requestId, userId, error: profileFailure.message });
+      return res.status(503).json({
+        error: "The student profile service is temporarily unavailable.",
+        requestId,
+        failedModules: failures,
+      });
+    }
+    console.warn("[student-dashboard] profile missing", { requestId, userId });
+    return res.status(404).json({ error: "Student profile was not found.", requestId });
+  }
+
+  const [enrollmentRows, attendanceRows, gradeRows, invoiceRows, paymentRows, courseRows, examPaperRows, state] = await modulesPromise;
+
+  const enrolledUnits = enrollmentRows.map((row: any) => row?.courseCode).filter((code: unknown): code is string => typeof code === "string");
+  const attendance: Record<string, number> = {};
+  attendanceRows.forEach((row: any) => {
+    if (typeof row?.subjectCode === "string") attendance[row.subjectCode] = Number(row.attendanceRate) || 0;
+  });
+  const rawAssessmentGroups = new Map<string, { rawMark: number; maxMarks: number; weight: number }[]>();
+  gradeRows.forEach((row: any) => {
+    if (typeof row?.subjectCode !== "string") return;
+    const subjectCode = row.subjectCode;
+    const entry = { rawMark: Number(row.rawMark ?? 0) || 0, maxMarks: Number(row.maxMarks ?? 0) || 0, weight: Number(row.weight ?? 0) || 0 };
+    const current = rawAssessmentGroups.get(subjectCode) || [];
+    current.push(entry);
+    rawAssessmentGroups.set(subjectCode, current);
+  });
+
+  const gradesByUnit: Record<string, { cat: number; exam: number }> = {};
+  for (const [subjectCode, rows] of rawAssessmentGroups.entries()) {
+    let weightedPercentTotal = 0;
+    let totalWeight = 0;
+    for (const row of rows) {
+      if (row.maxMarks <= 0) continue;
+      if (row.weight <= 0) continue;
+      weightedPercentTotal += ((row.rawMark / row.maxMarks) * 100) * row.weight;
+      totalWeight += row.weight;
+    }
+    const overallPercent = totalWeight > 0 ? weightedPercentTotal / totalWeight : 0;
+    gradesByUnit[subjectCode] = {
+      cat: Number((overallPercent * 0.3).toFixed(2)),
+      exam: Number((overallPercent * 0.7).toFixed(2)),
+    };
+  }
+
+  const dashboardStudent = {
+    id: profile.id,
+    name: profile.name || "Student",
+    email: profile.email || "",
+    phone: profile.phone || "",
+    admissionNo: profile.admissionNo || "Not recorded",
+    cohort: profile.cohort || "Not recorded",
+    programme: profile.programme || undefined,
+    department: profile.department || undefined,
+    avatar: profile.avatar || undefined,
+    accountStatus: profile.accountStatus || "Active",
+    createdAt: profile.createdAt || undefined,
+    enrolledUnits,
+    attendance,
+    grades: gradesByUnit,
+    ledger: invoiceRows.map((row: any) => ({
+      id: row.id, invoiceNo: row.invoiceNo, description: row.description || "", amount: Number(row.amount) || 0,
+      date: row.date || null, status: row.status || "unpaid",
+    })),
+    payments: paymentRows.map((row: any) => ({
+      id: row.id, studentId: row.studentId, invoiceId: row.invoiceId || "", amount: Number(row.amount) || 0,
+      paymentMethod: row.paymentMethod || "M-Pesa", transactionId: row.transactionId || "", date: row.date || null,
+      status: row.status || "unreconciled",
+    })),
+  };
+
+  const timetable = Array.isArray(state.timetable) ? state.timetable : [];
+  const announcements = Array.isArray(state.news) ? state.news : [];
+  // A cached profile is sufficient to render a degraded dashboard. Non-2xx is
+  // reserved for the earlier no-profile/failed-profile cases, because clients
+  // correctly discard a response marked as an HTTP error.
+  const status = 200;
+  console.info("[student-dashboard] response", {
+    requestId,
+    studentId: profile.id,
+    status,
+    partial: failures.length > 0,
+    failedModules: failures.map((failure) => failure.module),
+    durationMs: Date.now() - startedAt,
+  });
+  return res.status(status).json({
+    requestId,
+    partial: failures.length > 0,
+    failedModules: failures,
+    student: dashboardStudent,
+    courses: courseRows.map((row: any) => ({ ...row, fees: Number(row.fees) || 0, description: row.description || "", thumbnail: row.thumbnail || "" })),
+    attendance,
+    finance: { invoices: dashboardStudent.ledger, payments: dashboardStudent.payments },
+    semester: examPaperRows.filter((row: any) => enrolledUnits.includes(row.subjectCode)),
+    timetable,
+    announcements,
+  });
+});
+
+app.get("/api/student/registered-units", async (req, res) => {
+  try {
+    let studentId = (req.query.studentId as string) || (req.headers["x-student-id"] as string);
+
+    if (!studentId) {
+      const [cateStudent] = await db
+        .select()
+        .from(students)
+        .where(eq(students.name, "Cate Wanjiru"))
+        .limit(1);
+
+      if (cateStudent) {
+        studentId = cateStudent.id;
+      } else {
+        const [firstStudent] = await db.select().from(students).limit(1);
+        if (firstStudent) {
+          studentId = firstStudent.id;
+        }
+      }
+    }
+
+    if (!studentId) {
+      return res.status(404).json({ error: "Student profile not found" });
+    }
+
+    // Perform join between studentEnrollments relation and courses table using Drizzle ORM
+    const activeEnrollments = await db
+      .select({
+        studentId: studentEnrollments.studentId,
+        courseCode: studentEnrollments.courseCode,
+        enrolledAt: studentEnrollments.enrolledAt,
+        courseId: courses.id,
+        courseTitle: courses.title,
+        description: courses.description,
+        duration: courses.duration,
+        faculty: courses.faculty,
+        fees: courses.fees,
+        thumbnail: courses.thumbnail,
+      })
+      .from(studentEnrollments)
+      .innerJoin(courses, eq(studentEnrollments.courseCode, courses.code))
+      .where(eq(studentEnrollments.studentId, studentId));
+
+    const attendanceLogs = await db
+      .select()
+      .from(studentAttendance)
+      .where(eq(studentAttendance.studentId, studentId));
+
+    // Calculate and aggregate dynamic metrics for each enrolled unit
+    const result = activeEnrollments.map((item) => {
+      const code = item.courseCode;
+
+      let hash = 0;
+      for (let i = 0; i < code.length; i++) {
+        hash = code.charCodeAt(i) + ((hash << 5) - hash);
+      }
+      const absHash = Math.abs(hash);
+
+      const totalLectures = 16;
+      const attRecord = attendanceLogs.find((a) => a.subjectCode === code);
+      let attendedLectures = attRecord
+        ? Math.round((attRecord.attendanceRate / 100) * totalLectures)
+        : 12 + (absHash % 5);
+      const attendanceRate = Math.round((attendedLectures / totalLectures) * 100);
+
+      const totalAssignments = 5;
+      const submittedAssignments = 3 + (Math.abs(hash >> 2) % 3);
+      const assignmentRate = Math.round((submittedAssignments / totalAssignments) * 100);
+
+      const overallProgress = Math.round((attendanceRate + assignmentRate) / 2);
+
+      return {
+        courseCode: item.courseCode,
+        courseTitle: item.courseTitle,
+        description: item.description,
+        duration: item.duration,
+        faculty: item.faculty,
+        fees: item.fees,
+        thumbnail: item.thumbnail,
+        enrolledAt: item.enrolledAt,
+        // Aggregated dynamic metrics
+        attendedLectures,
+        totalLectures,
+        lectures: `${attendedLectures}/${totalLectures} lectures`,
+        attendanceRate,
+        submittedAssignments,
+        totalAssignments,
+        assignments: `${submittedAssignments}/${totalAssignments} assignments`,
+        assignmentRate,
+        overallProgress,
+        completionPercentage: overallProgress,
+      };
+    });
+
+    res.json(result);
+  } catch (error: any) {
+    console.error("Failed to fetch registered units:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/student-enrollments", async (req, res) => {
+  try {
+    const { studentId, courseCode } = req.body;
+
+    if (!studentId || !courseCode) {
+      return res.status(400).json({
+        error: "studentId and courseCode are required",
+      });
+    }
+
+    // Insert with onConflictDoNothing to gracefully handle duplicate enrollments
+    const [enrollment] = await db
+      .insert(studentEnrollments)
+      .values({
+        studentId,
+        courseCode,
+      })
+      .onConflictDoNothing()
+      .returning();
+
+    const responseData = enrollment || {
+      studentId,
+      courseCode,
+      alreadyEnrolled: true,
+      message: "Unit module already registered.",
+    };
+
+    // Update cache in memory and local file directly to avoid slow db sync locks
+    if (cachedDb && cachedDb.students) {
+      const student = cachedDb.students.find((s: any) => s.id === studentId);
+      if (student) {
+        if (!student.enrolledUnits) {
+          student.enrolledUnits = [];
+        }
+        if (!student.enrolledUnits.includes(courseCode)) {
+          student.enrolledUnits.push(courseCode);
+        }
+      }
+    }
+    try {
+      fs.writeFileSync(DB_FILE, JSON.stringify(cachedDb, null, 2), "utf-8");
+    } catch (e) {
+      console.error("Error writing fallback db_store.json", e);
+    }
+
+    res.status(201).json(responseData);
+  } catch (error: any) {
+    if (error.code === '23505' || (error.cause && error.cause.code === '23505')) {
+      return res.status(200).json({
+        studentId: req.body.studentId,
+        courseCode: req.body.courseCode,
+        alreadyEnrolled: true,
+        message: "Student is already enrolled in this unit module",
+      });
+    }
+
+    console.error("Failed to register unit:", error);
+
+    res.status(500).json({
+      error: error.message,
+    });
+  }
+});
+
+app.delete("/api/student-enrollments", async (req, res) => {
+  try {
+    const studentId = (req.query.studentId as string) || (req.body?.studentId as string);
+    const courseCode = (req.query.courseCode as string) || (req.body?.courseCode as string);
+
+    if (!studentId || !courseCode) {
+      return res.status(400).json({ error: "studentId and courseCode are required" });
+    }
+
+    await db
+      .delete(studentEnrollments)
+      .where(and(eq(studentEnrollments.studentId, studentId), eq(studentEnrollments.courseCode, courseCode)));
+
+    if (cachedDb && cachedDb.students) {
+      const student = cachedDb.students.find((s: any) => s.id === studentId);
+      if (student && student.enrolledUnits) {
+        student.enrolledUnits = student.enrolledUnits.filter((code: string) => code !== courseCode);
+      }
+    }
+    try {
+      fs.writeFileSync(DB_FILE, JSON.stringify(cachedDb, null, 2), "utf-8");
+    } catch (e) {
+      console.error("Error writing fallback db_store.json", e);
+    }
+
+    res.json({ success: true, message: `Deregistered unit ${courseCode}` });
+  } catch (error: any) {
+    console.error("Failed to deregister unit:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// System Registration Deadline Endpoint
+app.get("/api/system/registration-deadline", (req, res) => {
+  try {
+    // Current academic term registration deadline
+    const deadline = new Date();
+    deadline.setMonth(deadline.getMonth() + 1);
+    const deadlineISO = deadline.toISOString();
+
+    res.json({
+      deadline: deadlineISO,
+      isPastDeadline: false,
+      term: "Term 1 2026/2027",
+      academicYear: "2026/2027",
+      lateRegistrationAllowed: true,
+      message: "Unit module registration is currently open."
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Unit Drop Requests Endpoints
+app.get("/api/unit-drop-requests", async (req, res) => {
+  try {
+    const studentId = req.query.studentId as string;
+    const dbData = getDatabase();
+    if (!dbData.unitDropRequests) {
+      dbData.unitDropRequests = [];
+    }
+
+    let filtered = dbData.unitDropRequests;
+    if (studentId) {
+      filtered = filtered.filter((r: any) => r.studentId === studentId);
+    }
+
+    res.json(filtered);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/unit-drop-requests", async (req, res) => {
+  try {
+    const { studentId, courseCode, unitName, reason } = req.body;
+    if (!studentId || !courseCode) {
+      return res.status(400).json({ error: "studentId and courseCode are required" });
+    }
+
+    const dbData = getDatabase();
+    if (!dbData.unitDropRequests) {
+      dbData.unitDropRequests = [];
+    }
+
+    const newRequest = {
+      id: "drop-" + Date.now() + "-" + Math.random().toString(36).substring(2, 7),
+      studentId,
+      courseCode,
+      unitName: unitName || courseCode,
+      reason: reason || "Student requested unit drop",
+      status: "Pending Approval",
+      submittedAt: new Date().toISOString(),
+      decidedAt: null,
+      decidedBy: null,
+    };
+
+    dbData.unitDropRequests.unshift(newRequest);
+    saveDatabase(dbData);
+
+    res.status(201).json(newRequest);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch("/api/unit-drop-requests/:id/status", checkRBAC(["admin", "super_admin", "lecturer"]), async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    if (!status || !["Approved", "Rejected", "Cancelled"].includes(status)) {
+      return res.status(400).json({ error: "Valid status (Approved, Rejected, Cancelled) required" });
+    }
+
+    const dbData = getDatabase();
+    if (!dbData.unitDropRequests) {
+      dbData.unitDropRequests = [];
+    }
+
+    const targetIndex = dbData.unitDropRequests.findIndex((r: any) => r.id === id);
+    if (targetIndex === -1) {
+      return res.status(404).json({ error: "Unit drop request not found" });
+    }
+
+    dbData.unitDropRequests[targetIndex].status = status;
+    dbData.unitDropRequests[targetIndex].decidedAt = new Date().toISOString();
+    dbData.unitDropRequests[targetIndex].decidedBy = req.user?.email || "Admin";
+
+    // If approved, deregister unit from student enrollments
+    if (status === "Approved") {
+      const dropReq = dbData.unitDropRequests[targetIndex];
+      try {
+        await db.delete(studentEnrollments).where(
+          and(eq(studentEnrollments.studentId, dropReq.studentId), eq(studentEnrollments.courseCode, dropReq.courseCode))
+        );
+      } catch (e) {}
+
+      if (dbData.students) {
+        const student = dbData.students.find((s: any) => s.id === dropReq.studentId);
+        if (student && student.enrolledUnits) {
+          student.enrolledUnits = student.enrolledUnits.filter((c: string) => c !== dropReq.courseCode);
+        }
+      }
+    }
+
+    saveDatabase(dbData);
+    res.json({ success: true, request: dbData.unitDropRequests[targetIndex] });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Archive Management Endpoints
+app.get("/api/archive", checkRBAC(["admin", "super_admin"]), async (req: any, res: any) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 25));
+    const search = ((req.query.search as string) || "").trim().toLowerCase();
+    const type = ((req.query.type as string) || "").trim().toLowerCase();
+    const from = (req.query.from as string) || "";
+    const to = (req.query.to as string) || "";
+    const sort = (req.query.sort as string) || "archivedAtDesc";
+
+    let records: any[] = [];
+
+    // 1. Fetch from PostgreSQL archive_records table if table exists
+    try {
+      const dbRecords = await db.select().from(archiveRecords);
+      for (const r of dbRecords) {
+        records.push({
+          resourceType: r.resourceType,
+          resourceId: r.resourceId,
+          displayName: r.displayName,
+          archivedAt: r.archivedAt,
+          archivedBy: r.archivedBy,
+          snapshot: r.snapshot,
+        });
+      }
+    } catch (e) {
+      // Fallback: check inactive records in local state
+      const dbData = getDatabase();
+      if (dbData.archiveRecords && Array.isArray(dbData.archiveRecords)) {
+        records.push(...dbData.archiveRecords);
+      }
+
+      // Check inactive students
+      if (dbData.students) {
+        const archivedStudents = dbData.students.filter((s: any) => s.accountStatus === "Archived" || s.status === "archived");
+        for (const s of archivedStudents) {
+          if (!records.some(r => r.resourceId === s.id && r.resourceType === "student")) {
+            records.push({
+              resourceType: "student",
+              resourceId: s.id,
+              displayName: `${s.name} (${s.admissionNo || s.id})`,
+              archivedAt: s.updatedAt || new Date().toISOString(),
+              archivedBy: "System Administrator",
+              snapshot: s,
+            });
+          }
+        }
+      }
+
+      // Check inactive courses
+      if (dbData.courses) {
+        const archivedCourses = dbData.courses.filter((c: any) => c.active === false);
+        for (const c of archivedCourses) {
+          if (!records.some(r => r.resourceId === c.id && r.resourceType === "course")) {
+            records.push({
+              resourceType: "course",
+              resourceId: c.id,
+              displayName: `${c.code} - ${c.title}`,
+              archivedAt: new Date().toISOString(),
+              archivedBy: "Academic Board",
+              snapshot: c,
+            });
+          }
+        }
+      }
+
+      // Check inactive lecturers
+      if (dbData.lecturers) {
+        const archivedLecturers = dbData.lecturers.filter((l: any) => l.isActive === false || l.active === false);
+        for (const l of archivedLecturers) {
+          if (!records.some(r => r.resourceId === l.id && r.resourceType === "lecturer")) {
+            records.push({
+              resourceType: "lecturer",
+              resourceId: l.id,
+              displayName: `${l.name} (${l.designatorCode || l.staffNumber || l.email})`,
+              archivedAt: new Date().toISOString(),
+              archivedBy: "HR Department",
+              snapshot: l,
+            });
+          }
+        }
+      }
+    }
+
+    // Filter by type
+    if (type) {
+      records = records.filter(r => r.resourceType?.toLowerCase() === type);
+    }
+
+    // Filter by search
+    if (search) {
+      records = records.filter(r => 
+        r.displayName?.toLowerCase().includes(search) ||
+        r.resourceId?.toLowerCase().includes(search) ||
+        r.resourceType?.toLowerCase().includes(search)
+      );
+    }
+
+    // Filter by date range
+    if (from) {
+      const fromTime = new Date(from).getTime();
+      records = records.filter(r => new Date(r.archivedAt).getTime() >= fromTime);
+    }
+    if (to) {
+      const toTime = new Date(to).getTime() + (24 * 60 * 60 * 1000 - 1);
+      records = records.filter(r => new Date(r.archivedAt).getTime() <= toTime);
+    }
+
+    // Sorting
+    records.sort((a, b) => {
+      if (sort === "archivedAtAsc") {
+        return new Date(a.archivedAt).getTime() - new Date(b.archivedAt).getTime();
+      }
+      if (sort === "nameAsc") {
+        return (a.displayName || "").localeCompare(b.displayName || "");
+      }
+      if (sort === "nameDesc") {
+        return (b.displayName || "").localeCompare(a.displayName || "");
+      }
+      // default: archivedAtDesc
+      return new Date(b.archivedAt).getTime() - new Date(a.archivedAt).getTime();
+    });
+
+    const totalRecords = records.length;
+    const totalPages = Math.ceil(totalRecords / limit) || 1;
+    const paginated = records.slice((page - 1) * limit, page * limit);
+
+    res.json({
+      records: paginated,
+      totalPages,
+      totalRecords,
+      page,
+      limit,
+    });
+  } catch (error: any) {
+    console.error("Archive listing error:", error);
+    res.status(500).json({ error: error.message || "Failed to query archive records" });
+  }
+});
+
+// Archive a student record
+app.post(["/api/archive/student/:id", "/api/archive/student/:id/archive"], checkRBAC(["admin", "super_admin"]), async (req: any, res: any) => {
+  try {
+    const studentId = req.params.id;
+    if (!studentId) {
+      return res.status(400).json({ error: "Student ID required" });
+    }
+
+    // 1. Update PostgreSQL students table
+    try {
+      await db.update(students).set({ accountStatus: "Archived" }).where(eq(students.id, studentId));
+    } catch (e) {}
+
+    // 2. Insert into archiveRecords table
+    const dbData = getDatabase();
+    const student = dbData.students?.find((s: any) => s.id === studentId);
+    const displayName = student ? `${student.name} (${student.admissionNo || studentId})` : `Student ${studentId}`;
+
+    try {
+      await db.insert(archiveRecords).values({
+        resourceType: "student",
+        resourceId: studentId,
+        displayName,
+        snapshot: student || { id: studentId },
+        archivedBy: req.user?.email || "Admin",
+      }).onConflictDoNothing();
+    } catch (e) {}
+
+    // Update in-memory DB
+    if (student) {
+      student.accountStatus = "Archived";
+    }
+    if (!dbData.archiveRecords) {
+      dbData.archiveRecords = [];
+    }
+    if (!dbData.archiveRecords.some((r: any) => r.resourceId === studentId && r.resourceType === "student")) {
+      dbData.archiveRecords.push({
+        resourceType: "student",
+        resourceId: studentId,
+        displayName,
+        archivedAt: new Date().toISOString(),
+        archivedBy: req.user?.email || "Admin",
+        snapshot: student || { id: studentId },
+      });
+    }
+    saveDatabase(dbData);
+
+    res.json({ success: true, message: `Archived record for ${displayName}` });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Restore an archived record
+app.post("/api/archive/:resourceType/:resourceId/restore", checkRBAC(["admin", "super_admin"]), async (req: any, res: any) => {
+  try {
+    const { resourceType, resourceId } = req.params;
+    if (!resourceType || !resourceId) {
+      return res.status(400).json({ error: "resourceType and resourceId required" });
+    }
+
+    const dbData = getDatabase();
+
+    if (resourceType === "student") {
+      try {
+        await db.update(students).set({ accountStatus: "Active" }).where(eq(students.id, resourceId));
+      } catch (e) {}
+      const st = dbData.students?.find((s: any) => s.id === resourceId);
+      if (st) st.accountStatus = "Active";
+    } else if (resourceType === "course") {
+      try {
+        await db.update(courses).set({ active: true }).where(eq(courses.id, resourceId));
+      } catch (e) {}
+      const cr = dbData.courses?.find((c: any) => c.id === resourceId);
+      if (cr) cr.active = true;
+    } else if (resourceType === "lecturer") {
+      try {
+        await db.update(lecturers).set({ isActive: true }).where(eq(lecturers.id, resourceId));
+      } catch (e) {}
+      const lc = dbData.lecturers?.find((l: any) => l.id === resourceId);
+      if (lc) lc.isActive = true;
+    } else if (resourceType === "user") {
+      try {
+        await db.update(users).set({ isActive: true }).where(eq(users.id, Number(resourceId)));
+      } catch (e) {}
+    }
+
+    // Remove from archiveRecords
+    try {
+      await db.delete(archiveRecords).where(
+        and(eq(archiveRecords.resourceType, resourceType), eq(archiveRecords.resourceId, resourceId))
+      );
+    } catch (e) {}
+
+    if (dbData.archiveRecords) {
+      dbData.archiveRecords = dbData.archiveRecords.filter((r: any) => !(r.resourceType === resourceType && r.resourceId === resourceId));
+    }
+    saveDatabase(dbData);
+
+    res.json({ success: true, message: `Successfully restored ${resourceType} record` });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Permanently delete an archived record
+app.delete("/api/archive/:resourceType/:resourceId/permanent", checkRBAC(["admin", "super_admin"]), async (req: any, res: any) => {
+  try {
+    const { resourceType, resourceId } = req.params;
+    if (!resourceType || !resourceId) {
+      return res.status(400).json({ error: "resourceType and resourceId required" });
+    }
+
+    const dbData = getDatabase();
+
+    if (resourceType === "student") {
+      try {
+        await db.delete(students).where(eq(students.id, resourceId));
+      } catch (e) {}
+      if (dbData.students) {
+        dbData.students = dbData.students.filter((s: any) => s.id !== resourceId);
+      }
+    } else if (resourceType === "course") {
+      try {
+        await db.delete(courses).where(eq(courses.id, resourceId));
+      } catch (e) {}
+      if (dbData.courses) {
+        dbData.courses = dbData.courses.filter((c: any) => c.id !== resourceId);
+      }
+    } else if (resourceType === "lecturer") {
+      try {
+        await db.delete(lecturers).where(eq(lecturers.id, resourceId));
+      } catch (e) {}
+      if (dbData.lecturers) {
+        dbData.lecturers = dbData.lecturers.filter((l: any) => l.id !== resourceId);
+      }
+    }
+
+    // Remove from archiveRecords
+    try {
+      await db.delete(archiveRecords).where(
+        and(eq(archiveRecords.resourceType, resourceType), eq(archiveRecords.resourceId, resourceId))
+      );
+    } catch (e) {}
+
+    if (dbData.archiveRecords) {
+      dbData.archiveRecords = dbData.archiveRecords.filter((r: any) => !(r.resourceType === resourceType && r.resourceId === resourceId));
+    }
+    saveDatabase(dbData);
+
+    res.json({ success: true, message: `Permanently deleted ${resourceType} record` });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+//--payments
+app.post("/api/payments", async (req, res) => {
+  try {
+    const paymentData = req.body;
+
+    if (
+      !paymentData?.studentId ||
+      !paymentData?.amount ||
+      !paymentData?.paymentMethod ||
+      !paymentData?.transactionId
+    ) {
+      return res.status(400).json({
+        error: "Missing payment details",
+      });
+    }
+
+    const [payment] = await db
+      .insert(payments)
+      .values({
+        studentId: paymentData.studentId,
+        invoiceId: paymentData.invoiceId ?? null,
+        amount: String(paymentData.amount),
+        paymentMethod: paymentData.paymentMethod,
+        transactionId: paymentData.transactionId,
+        date: new Date().toISOString().split("T")[0],
+        status: "unreconciled",
+      })
+      .returning();
+
+    // Sync database cache
+    const fullDb = await loadFullDatabaseState();
+    saveDatabase(fullDb);
+
+    res.status(201).json({
+      ...payment,
+      amount: Number(payment.amount)
+    });
+  } catch (error: any) {
+    console.error("Failed to create payment:", error);
+
+    res.status(500).json({
+      error: error.message,
+    });
+  }
+});
+// 7. REST Resource: Books
+app.get("/api/books", async (req, res) => {
+  try {
+    const bookRows = await db.select().from(books);
+    const result = bookRows.map(b => ({
+      id: b.id,
+      title: b.title,
+      author: b.author,
+      isbn: b.isbn,
+      publisher: b.publisher ?? "",
+      edition: b.edition ?? "",
+      purchasePrice: Number(b.purchasePrice),
+      rackNumber: b.rackNumber,
+      shelfRow: b.shelfRow,
+      libraryCode: b.libraryCode,
+      type: b.type,
+      eUrl_aid: b.eUrl ?? undefined,
+      copiesTotal: b.copiesTotal,
+      copiesAvailable: b.copiesAvailable,
+      category: b.category
+    }));
+    res.json(result);
+  } catch (err: any) {
+    console.error("Failed to fetch books:", err);
+    res.json(getDatabase().books || []);
+  }
+});
+
+app.post("/api/books", async (req, res) => {
+  const bookData = req.body;
+  if (!bookData || !bookData.title || !bookData.author) {
+    res.status(400).json({ error: "Book title and author are required" });
+    return;
+  }
+
+  try {
+    const [book] = await db.insert(books).values({
+      id: bookData.id || undefined,
+      title: bookData.title,
+      author: bookData.author,
+      isbn: bookData.isbn || `ISBN-${Date.now()}`,
+      publisher: bookData.publisher || null,
+      edition: bookData.edition || null,
+      purchasePrice: String(bookData.purchasePrice || 0),
+      rackNumber: bookData.rackNumber || 'N/A',
+      shelfRow: bookData.shelfRow || 'N/A',
+      libraryCode: bookData.libraryCode || `LIB-${Date.now()}`,
+      type: bookData.type || 'Physical Book',
+      eUrl: bookData.eUrl_aid || null,
+      copiesTotal: Number(bookData.copiesTotal) || 1,
+      copiesAvailable: Number(bookData.copiesAvailable) || 1,
+      category: bookData.category || 'General'
+    }).onConflictDoUpdate({
+      target: books.id,
+      set: {
+        title: bookData.title,
+        author: bookData.author,
+        isbn: bookData.isbn || undefined,
+        publisher: bookData.publisher || null,
+        edition: bookData.edition || null,
+        purchasePrice: String(bookData.purchasePrice || 0),
+        rackNumber: bookData.rackNumber || 'N/A',
+        shelfRow: bookData.shelfRow || 'N/A',
+        libraryCode: bookData.libraryCode || undefined,
+        type: bookData.type || 'Physical Book',
+        eUrl: bookData.eUrl_aid || null,
+        copiesTotal: Number(bookData.copiesTotal) || 1,
+        copiesAvailable: Number(bookData.copiesAvailable) || 1,
+        category: bookData.category || 'General'
+      }
+    }).returning();
+
+    // Sync database cache
+    const fullDb = await loadFullDatabaseState();
+    saveDatabase(fullDb);
+
+    res.status(201).json({
+      ...book,
+      purchasePrice: Number(book.purchasePrice),
+      eUrl_aid: book.eUrl || undefined
+    });
+  } catch (err: any) {
+    console.error("Failed to create/update book:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// REST Resource: Exam Papers
+app.get("/api/exam-papers", async (req, res) => {
+  try {
+    const papers = await db.select().from(examPapers);
+    const result = papers.map(ep => ({
+      id: ep.id,
+      title: ep.title,
+      subjectCode: ep.subjectCode,
+      year: ep.year,
+      semester: ep.semester,
+      examType: ep.examType,
+      downloadUrl_aid: ep.downloadUrl,
+      downloadsCount: ep.downloadsCount
+    }));
+    res.json(result);
+  } catch (error) {
+    console.error("Failed to fetch exam papers:", error);
+    res.status(500).json({
+      error: "Failed to fetch exam papers",
+    });
+  }
+});
+
+// 8. REST Resource: Loans
+app.get("/api/loans", async (req, res) => {
+  try {
+    const loanRows = await db.select().from(loans);
+    const result = loanRows.map(l => ({
+      id: l.id,
+      bookId: l.bookId,
+      bookTitle: l.bookTitle,
+      patronId: l.patronId,
+      patronName: l.patronName,
+      patronRole: l.patronRole,
+      checkoutDate: l.checkoutDate,
+      dueDate: l.dueDate,
+      returnDate: l.returnDate ?? undefined,
+      status: l.status,
+      lateFeeAssessed: Number(l.lateFeeAssessed)
+    }));
+    res.json(result);
+  } catch (err: any) {
+    console.error("Failed to fetch loans:", err);
+    res.json(getDatabase().loans || []);
+  }
+});
+
+app.post("/api/loans", async (req, res) => {
+  const loanData = req.body;
+  if (!loanData || !loanData.bookId || !loanData.patronId) {
+    res.status(400).json({ error: "Book ID and Patron ID are required" });
+    return;
+  }
+
+  try {
+    const [loan] = await db.insert(loans).values({
+      id: loanData.id || undefined,
+      bookId: loanData.bookId,
+      bookTitle: loanData.bookTitle || 'N/A',
+      patronId: loanData.patronId,
+      patronName: loanData.patronName || 'N/A',
+      patronRole: loanData.patronRole || 'student',
+      checkoutDate: loanData.checkoutDate || new Date().toISOString().split('T')[0],
+      dueDate: loanData.dueDate || new Date().toISOString().split('T')[0],
+      returnDate: loanData.returnDate || null,
+      status: loanData.status || 'borrowed',
+      lateFeeAssessed: String(loanData.lateFeeAssessed || 0)
+    }).onConflictDoUpdate({
+      target: loans.id,
+      set: {
+        bookId: loanData.bookId,
+        bookTitle: loanData.bookTitle || 'N/A',
+        patronId: loanData.patronId,
+        patronName: loanData.patronName || 'N/A',
+        patronRole: loanData.patronRole || 'student',
+        checkoutDate: loanData.checkoutDate || undefined,
+        dueDate: loanData.dueDate || undefined,
+        returnDate: loanData.returnDate || null,
+        status: loanData.status || 'borrowed',
+        lateFeeAssessed: String(loanData.lateFeeAssessed || 0)
+      }
+    }).returning();
+
+    // Sync database cache
+    const fullDb = await loadFullDatabaseState();
+    saveDatabase(fullDb);
+
+    res.status(201).json({
+      ...loan,
+      lateFeeAssessed: Number(loan.lateFeeAssessed)
+    });
+  } catch (err: any) {
+    console.error("Failed to create/update loan:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 9. REST Resource: Library Gate Logs
+app.get("/api/gate-logs", async (req, res) => {
+  try {
+    const logs = await db.select().from(libraryGateLogs);
+    res.json(logs);
+  } catch (err: any) {
+    console.error("Failed to fetch gate logs:", err);
+    res.json(getDatabase().libraryGateLogs || []);
+  }
+});
+
+app.post("/api/gate-logs", async (req, res) => {
+  const gateLog = req.body;
+  if (!gateLog || !gateLog.patronName || !gateLog.gateAction) {
+    res.status(400).json({ error: "Patron name and gate action are required" });
+    return;
+  }
+
+  try {
+    const ts = gateLog.timestamp ? new Date(gateLog.timestamp).toISOString() : new Date().toISOString();
+    const [log] = await db.insert(libraryGateLogs).values({
+      id: gateLog.id || undefined,
+      timestamp: ts,
+      patronName: gateLog.patronName,
+      patronId: gateLog.patronId || '00000000-0000-0000-0000-000000000000',
+      role: gateLog.role || 'student',
+      authMethod: gateLog.authMethod || 'rfid_tap',
+      gateAction: gateLog.gateAction || 'Entry'
+    }).returning();
+
+    // Sync database cache
+    const fullDb = await loadFullDatabaseState();
+    saveDatabase(fullDb);
+
+    res.status(201).json(log);
+  } catch (err: any) {
+    console.error("Failed to create gate log:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// VITE CLIENT INTEGRATION MIDDLEWARE
+// ==========================================
+
+async function startServer() {
+  // Initialize the PostgreSQL database state (or fallback store if offline)
+  try {
+    await runMigrations();
+  } catch (error: any) {
+    // Preserve the existing offline-development fallback; production must never
+    // start against an unmigrated database.
+    console.error("Database migrations failed:", error?.message || error);
+    if (process.env.NODE_ENV === "production") throw error;
+  }
+  await initPostgresDB();
+  const dbStateForAuth = getDatabase();
+  await migrateAuthSchemaAndData(dbStateForAuth);
+
+  if (process.env.NODE_ENV !== "production") {
+    console.log("Backend API server running in development mode (port " + PORT + ")");
+    try {
+      const vitePkg = "vite";
+      const { createServer: createViteServer } = await import(/* @vite-ignore */ vitePkg) as any;
+      const frontendRoot = path.resolve(process.cwd(), "frontend");
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+        root: fs.existsSync(frontendRoot) ? frontendRoot : process.cwd(),
+      });
+      app.use(vite.middlewares);
+      console.log("Vite development middleware integrated successfully");
+    } catch (viteErr: any) {
+      console.warn("Could not start Vite dev middleware:", viteErr?.message || viteErr);
+    }
+  } else {
+    // Production Mode: Serve compiled static frontend bundle from frontend workspace
+    const currentDir =
+      typeof __dirname !== "undefined"
+        ? __dirname
+        : typeof import.meta !== "undefined" && import.meta.url
+          ? path.dirname(fileURLToPath(import.meta.url))
+          : process.cwd();
+    const candidates = [
+      process.env.FRONTEND_DIST_PATH,
+      path.resolve(process.cwd(), "frontend/dist"),
+      path.resolve(process.cwd(), "dist"),
+      path.resolve(process.cwd(), "../frontend/dist"),
+      path.resolve(currentDir, "../frontend/dist"),
+      path.resolve(currentDir, "./frontend/dist"),
+      path.resolve(currentDir, "../dist"),
+      path.resolve(currentDir, "./dist"),
+    ].filter(Boolean) as string[];
+
+    const distPath = candidates.find((dir) => fs.existsSync(dir) && fs.existsSync(path.join(dir, "index.html")));
+
+    if (distPath) {
+      app.use(express.static(distPath));
+      app.get("*", (req, res) => {
+        res.sendFile(path.join(distPath, "index.html"));
+      });
+      console.log("Production static build routing loaded from " + distPath);
+    } else {
+      app.get("/", (req, res) => {
+        res.json({ message: "Alika Medical Training College & Medical Center Backend API is running." });
+      });
+      console.log("Production mode: frontend build directory not found, serving API only");
+    }
+  }
+
+  if (!process.env.VERCEL) {
+    const serverInstance = app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server is running on port ${PORT}`);
+    });
+    serverInstance.on("error", (err: any) => {
+      if (err.code === "EADDRINUSE") {
+        console.error(`Port ${PORT} is already in use by another process (EADDRINUSE).`);
+      } else {
+        console.error("Server listener error:", err);
+      }
+    });
+
+    const cleanup = () => {
+      serverInstance.close(() => {
+        process.exit(0);
+      });
+      setTimeout(() => process.exit(0), 1000).unref();
+    };
+
+    process.once("SIGTERM", cleanup);
+    process.once("SIGINT", cleanup);
+  }
+}
+
+startServer().catch((err) => {
+  console.error("Failed to start server:", err);
+});
+
+export default app;
