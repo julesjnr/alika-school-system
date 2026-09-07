@@ -1,5 +1,20 @@
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const currentDir =
+  typeof __dirname !== 'undefined'
+    ? __dirname
+    : typeof import.meta !== 'undefined' && import.meta.url
+      ? path.dirname(fileURLToPath(import.meta.url))
+      : process.cwd();
+
+// Load environment variables (supports running from repository root or backend workspace)
 dotenv.config({ override: true });
+dotenv.config({ path: path.resolve(currentDir, '../../../.env'), override: true });
+dotenv.config({ path: path.resolve(process.cwd(), '../.env'), override: true });
+dotenv.config({ path: path.resolve(process.cwd(), '.env'), override: true });
+
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pkg from 'pg';
 const { Pool } = pkg;
@@ -36,6 +51,9 @@ function checkDatabaseConfigured(): boolean {
 
 export const isDatabaseConfigured = checkDatabaseConfigured();
 
+import { resolveSslConfig, decodePassword } from './ssl.ts';
+export { resolveSslConfig, decodePassword };
+
 // Function to create a new connection pool.
 export const createPool = () => {
   const connectionString = process.env.DATABASE_URL;
@@ -46,6 +64,8 @@ export const createPool = () => {
     process.env.SQL_DB_NAME
   );
 
+  const ssl = resolveSslConfig(connectionString);
+
   // Supabase session poolers enforce comparatively small connection limits.  A
   // small application pool prevents concurrent startup reads/syncs from
   // exhausting those sessions and makes every connection reusable.
@@ -54,15 +74,11 @@ export const createPool = () => {
   const idleTimeoutMillis = Number(process.env.DB_IDLE_TIMEOUT_MS) || 30000;
   const maxLifetimeSeconds = Number(process.env.DB_MAX_LIFETIME_SECONDS) || 300;
 
-  if (isDatabaseConfigured && hasSqlConfig) {
+  if (isDatabaseConfigured && connectionString) {
     return new Pool({
-      host: process.env.SQL_HOST,
-      port: process.env.SQL_PORT ? Number(process.env.SQL_PORT) : 5432,
-      user: process.env.SQL_USER,
-      password: process.env.SQL_PASSWORD,
-      database: process.env.SQL_DB_NAME,
+      connectionString,
       connectionTimeoutMillis,
-      ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false },
+      ssl,
       max,
       min: 0,
       idleTimeoutMillis,
@@ -72,11 +88,15 @@ export const createPool = () => {
     });
   }
 
-  if (isDatabaseConfigured && connectionString) {
+  if (isDatabaseConfigured && hasSqlConfig) {
     return new Pool({
-      connectionString,
+      host: process.env.SQL_HOST,
+      port: process.env.SQL_PORT ? Number(process.env.SQL_PORT) : 5432,
+      user: process.env.SQL_USER,
+      password: decodePassword(process.env.SQL_PASSWORD),
+      database: process.env.SQL_DB_NAME,
       connectionTimeoutMillis,
-      ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false },
+      ssl,
       max,
       min: 0,
       idleTimeoutMillis,

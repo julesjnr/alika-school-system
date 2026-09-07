@@ -1,5 +1,8 @@
 import pg from 'pg';
-const c = new pg.Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+import dotenv from 'dotenv';
+dotenv.config();
+const ssl = process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false;
+const c = new pg.Client({ connectionString: process.env.DATABASE_URL, ssl });
 await c.connect();
 const r = await c.query(`SELECT id, username, must_change_password, created_at, updated_at FROM users ORDER BY id`);
 console.table(r.rows);
