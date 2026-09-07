@@ -2696,7 +2696,7 @@ app.get("/api/data", async (req, res) => {
 });
 
 // 3. Sync/Save Entire Database State (Used by Frontend State-Sync Engine)
-app.post("/api/data", async (req, res) => {
+app.post("/api/data", authenticateJWT, async (req: any, res) => {
   const incomingData = req.body;
   if (!incomingData || typeof incomingData !== "object") {
     res.status(400).json({ error: "Invalid data payload" });
@@ -2707,7 +2707,11 @@ app.post("/api/data", async (req, res) => {
   // Merge keys dynamically to ensure schema resilience
   const updatedDb = { ...dbVal, ...incomingData };
 
-  // Never persist out-of-range grades from client sync payloads
+  // Grades must never be writable through this generic full-state sync path —
+  // range validation alone isn't authorization. All grade changes must go
+  // through /api/lecturer/grades, which checks subject assignment and audits
+  // the write. Here we always discard whatever grades the client sent and
+  // keep the server's existing values, regardless of caller role.
   if (Array.isArray(updatedDb.students)) {
     const previousById = new Map(
       (Array.isArray(dbVal.students) ? dbVal.students : []).map((s: any) => [s.id, s])
@@ -2715,11 +2719,9 @@ app.post("/api/data", async (req, res) => {
     updatedDb.students = updatedDb.students.map((student: any) => {
       if (!student || typeof student !== "object") return student;
       const previous = previousById.get(student.id) as { grades?: Record<string, { cat?: unknown; exam?: unknown }> } | undefined;
-      const previousGrades = previous?.grades;
-      const incomingGrades = student.grades as Record<string, { cat?: unknown; exam?: unknown }> | undefined;
       return {
         ...student,
-        grades: sanitizeStudentGradesRecord(incomingGrades, previousGrades),
+        grades: previous?.grades || {},
       };
     });
   }
@@ -4188,13 +4190,31 @@ app.post(["/api/lecturer/assessment-config", "/api/faculty/assessment-config"], 
 // POST Log Teaching Session
 app.post(
   ["/api/lecturer/teaching-sessions", "/api/faculty/teaching-sessions"],
+  authenticateJWT,
+  checkRBAC(["lecturer", "admin", "super_admin"]),
   async (req: any, res: any) => {
     try {
-      const { lecturerId, subjectCode, topic, durationHours, sessionDate, sessionTime } = req.body;
+      const actorRole = req.user?.role;
+      const actorId = req.user?.userId;
+      const bodyLecturerId = req.body?.lecturerId;
+      const lecturerId = actorRole === "lecturer" ? actorId : bodyLecturerId;
+      const { subjectCode, topic, durationHours, sessionDate, sessionTime } = req.body;
       if (!lecturerId || !subjectCode || !topic || !durationHours) {
         return res.status(400).json({
           error: "Missing required fields (lecturerId, subjectCode, topic, durationHours)",
         });
+      }
+
+      // If lecturer role, ensure they are assigned to teach this subject before
+      // letting them log hours (and therefore payout) against it.
+      if (actorRole === "lecturer") {
+        const assigned = await db
+          .select()
+          .from(lecturerSubjects)
+          .where(and(eq(lecturerSubjects.lecturerId, actorId), eq(lecturerSubjects.subjectCode, subjectCode)));
+        if (!assigned || assigned.length === 0) {
+          return res.status(403).json({ error: "You are not assigned to this subject." });
+        }
       }
 
       const duration = Number(durationHours) || 0;
@@ -4232,6 +4252,14 @@ app.post(
           .where(eq(lecturers.id, lecturerId));
       }
 
+      await writeAdminAudit(req, "teaching_session.log", "teaching_sessions", inserted.id, {
+        actorId,
+        actorRole,
+        lecturerId,
+        subjectCode,
+        durationHours: duration,
+      });
+
       res.json({
         session: {
           id: inserted.id,
@@ -4256,11 +4284,28 @@ app.post(
 // POST validated lecturer assessment raw marks; do not write aggregate totals into the legacy grades table.
 app.post(
   ["/api/lecturer/grades", "/api/faculty/grades"],
+  authenticateJWT,
+  checkRBAC(["lecturer", "admin", "super_admin"]),
   async (req: any, res: any) => {
     try {
+      const actorRole = req.user?.role;
+      const actorId = req.user?.userId;
       const { studentId, subjectCode, assessments, marks } = req.body || {};
       if (!studentId || !subjectCode) {
         return res.status(400).json({ error: "studentId and subjectCode are required." });
+      }
+
+      // If lecturer role, ensure they are assigned to teach this subject before
+      // allowing them to write grades for it — mirrors the check already used
+      // by /api/lecturer/assessment-config.
+      if (actorRole === "lecturer") {
+        const assigned = await db
+          .select()
+          .from(lecturerSubjects)
+          .where(and(eq(lecturerSubjects.lecturerId, actorId), eq(lecturerSubjects.subjectCode, subjectCode)));
+        if (!assigned || assigned.length === 0) {
+          return res.status(403).json({ error: "You are not assigned to this subject." });
+        }
       }
 
       const componentMarks = marks || {};
@@ -4322,7 +4367,7 @@ app.post(
           rawMark: Number(fieldValue),
           maxMarks,
           weight: config?.weight ?? 0,
-          lecturerId: req.body?.lecturerId || null,
+          lecturerId: actorRole === "lecturer" ? actorId : (req.body?.lecturerId || null),
         });
       }
 
@@ -4373,6 +4418,14 @@ app.post(
         });
         saveDatabase(dbVal);
       }
+
+      await writeAdminAudit(req, "grade.submit", "student_assessment_marks", `${studentId}:${subjectCode}`, {
+        actorId,
+        actorRole,
+        subjectCode: String(subjectCode).trim(),
+        studentId,
+        saved: rawAssessmentRows.length,
+      });
 
       res.json({
         success: true,

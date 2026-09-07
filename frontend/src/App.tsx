@@ -358,12 +358,12 @@ export default function App() {
     if (isBooting) return;
 
     const syncTimer = setTimeout(() => {
+      const syncToken = localStorage.getItem('zenti_session_token');
       fetch("/api/data", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-user-role": currentUserRole || "",
-          "x-user-id": currentUserId || ""
+          ...(syncToken ? { Authorization: `Bearer ${syncToken}` } : {}),
         },
         body: JSON.stringify({
           courses,
