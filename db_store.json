@@ -4,44 +4,112 @@
   "loans": [],
   "courses": [
     {
-      "id": "838779eb-1b87-4a1d-9d9c-dc6bf648979a",
-      "code": "CERT-CAREGIVER",
-      "title": "Certificate in Caregiver",
-      "description": "A practical healthcare training program focused on patient support, personal care, homecare, elderly care, basic clinical support, communication, nutrition, infection prevention, rehabilitation, and safe assistance with activities of daily living. Curriculum areas include Patient Care Foundations, Basic Human Anatomy & Physiology, Basic Pharmacology & Safety Protocols, Basic Physiotherapy & Rehabilitation, Mental Health & Dementia Care, Basic Hospital Procedures & Triage, Nutrition & Dietary Meal Planning, Common Diseases & Chronic Management, Empathy-Driven Communication, and Infection Prevention, Control & Microbiology.",
-      "duration": "4 Months",
-      "fees": 0,
-      "thumbnail": "",
-      "faculty": "Health Sciences",
+      "id": "bc4ce1a9-0b34-4b68-95fe-a7aa17f0ad39",
+      "code": "CERT/100/26",
+      "title": "Certificate in Counselling",
+      "description": "Here we are happy to offer you counselling services.",
+      "duration": "2 Years",
+      "fees": 20000,
+      "thumbnail": "/uploads/schools/admin/courses/course-1787338471235-cb915df5-mbappe.jpg",
+      "faculty": "School of Engineering",
       "active": true
     },
     {
-      "id": "e96f6dda-0e52-4b26-b0fa-462ae5eb8d99",
-      "code": "CERT-NURSE-ASST",
-      "title": "Certificate in Nurse Assistant",
-      "description": "A practical healthcare support program preparing learners for supervised patient care, hospital support duties, basic clinical procedures, vital signs monitoring, infection prevention, patient communication, mobility assistance, and healthcare documentation.",
-      "duration": "4 Months",
-      "fees": 0,
-      "thumbnail": "",
-      "faculty": "Health Sciences",
-      "active": true
-    },
-    {
-      "id": "f6fb4a36-da00-4177-952e-c0f61d72ff47",
-      "code": "CERT-HOMECARE",
-      "title": "Certificate in Homecare Assistant",
-      "description": "A practical home-based healthcare support program focused on personal care, elderly care, patient mobility, nutrition, medication safety, chronic disease support, rehabilitation, infection prevention, communication, and safe homecare practices.",
-      "duration": "4 Months",
-      "fees": 0,
-      "thumbnail": "",
-      "faculty": "Health Sciences",
+      "id": "d372b088-718d-40e5-8e06-490478a4a65e",
+      "code": "CERT/MED/100",
+      "title": "Certificate in medicine",
+      "description": "hello there med students",
+      "duration": "4 Years",
+      "fees": 30000,
+      "thumbnail": "/uploads/schools/admin/courses/course-1787383317351-77780a46-mbappe.jpg",
+      "faculty": "School of Computing & AI",
       "active": true
     }
   ],
   "reviews": [],
   "expenses": [],
-  "students": [],
+  "students": [
+    {
+      "id": "3e5977eb-044f-4abe-acfb-0522a69aa7e4",
+      "name": "Eva wambui",
+      "email": "wambui@gmail.com",
+      "phone": "07984677621",
+      "admissionNo": "ALK-001",
+      "cohort": "2026",
+      "courseId": "bc4ce1a9-0b34-4b68-95fe-a7aa17f0ad39",
+      "programme": "Certificate in Counselling",
+      "accountStatus": "Pending Setup",
+      "createdAt": "2026-08-22 06:11:22.715+00",
+      "enrolledUnits": [
+        "CERT/100/26"
+      ],
+      "grades": {
+        "CERT/100/26": {
+          "cat": 25,
+          "exam": 58
+        }
+      },
+      "unpublishedSubjects": [],
+      "ledger": [
+        {
+          "id": "a115146b-e145-4405-93f6-5147be9365ad",
+          "invoiceNo": "INV-2026-02289858",
+          "description": "please pay before semester starts",
+          "amount": 20000,
+          "date": "2026-08-22",
+          "status": "unpaid"
+        }
+      ],
+      "payments": [
+        {
+          "id": "7382ae7d-7f67-496b-98c5-c0014583d13e",
+          "amount": 20000,
+          "invoiceId": "a115146b-e145-4405-93f6-5147be9365ad",
+          "studentId": "3e5977eb-044f-4abe-acfb-0522a69aa7e4",
+          "paymentMethod": "M-Pesa",
+          "transactionId": "QB1VWMQC3",
+          "date": "2026-08-24",
+          "status": "unreconciled"
+        },
+        {
+          "id": "dcdb332f-a4ba-4f6a-a201-4ad28c82c4ee",
+          "amount": 20000,
+          "invoiceId": "a115146b-e145-4405-93f6-5147be9365ad",
+          "studentId": "3e5977eb-044f-4abe-acfb-0522a69aa7e4",
+          "paymentMethod": "M-Pesa",
+          "transactionId": "QADUWKGIZ",
+          "date": "2026-09-08",
+          "status": "unreconciled"
+        }
+      ],
+      "attendance": {}
+    }
+  ],
   "inventory": [],
-  "lecturers": [],
+  "lecturers": [
+    {
+      "id": "c5a8a812-312f-4c73-993c-473df4d70ac4",
+      "name": "wanyeki kimani",
+      "email": "wanyeki@alikamedical.ac.ke",
+      "phone": "07896575323",
+      "hourlyRate": 200,
+      "loggedHours": 80,
+      "bankDetails": "Equity Bank Kenya - 016756565627 (Nairobi Central)",
+      "contractLength": "Permanent",
+      "designatorCode": "STF-2026-001",
+      "bio": "",
+      "avatar": "",
+      "isActive": true,
+      "isAccountant": false,
+      "isLibrarian": false,
+      "subjects": [
+        "CERT/100/26"
+      ],
+      "publications": [],
+      "researchInterests": [],
+      "officeHours": []
+    }
+  ],
   "examPapers": [],
   "bookReviews": [],
   "testimonies": [],
@@ -51,101 +119,47 @@
   "reservations": [],
   "financeAudits": [
     {
-      "id": "2e73fddd-d0bf-41de-8669-a835e6976fc9",
+      "id": "e9227d80-1094-4b45-b998-4336a318a1f2",
       "role": "Accountant",
       "user": "Grace Wanjiku (Accountant)",
       "action": "CREATE_INVOICE",
       "status": "Success",
-      "resource": "Billed KES 67,000 to student ID f969a18b-42de-4274-9227-27c9fd76a4c8 (INV-2026-43143197)",
-      "timestamp": "2026-08-19 13:50:31"
-    },
-    {
-      "id": "60d173f4-a396-4ef5-bfe8-ed7fee086c8d",
-      "role": "Accountant",
-      "user": "Grace Wanjiku (Accountant)",
-      "action": "CREATE_INVOICE",
-      "status": "Success",
-      "resource": "Billed KES 70,000 to student ID fe237e2d-088d-4c86-bee8-09e9f754fa68 (INV-2026-26194646)",
-      "timestamp": "2026-08-19 07:24:22"
+      "resource": "Billed KES 20,000 to student ID 3e5977eb-044f-4abe-acfb-0522a69aa7e4 (INV-2026-02289858)",
+      "timestamp": "2026-08-22 07:17:03"
     }
   ],
   "notifications": [
     {
-      "id": "31236e4e-509f-4ca1-9250-6c3ef7ab0131",
+      "id": "53c19455-787f-48d2-b4f5-e9bfcad420cd",
+      "targetUserRole": "all",
+      "type": "library",
+      "title": " [Grade Posted] New Grade for Unit CERT/100/26",
+      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
+      "status": "unread",
+      "dateTime": "2026-09-08 07:59:14+00"
+    },
+    {
+      "id": "b3983e46-07e5-4851-979b-8e72b3625c79",
+      "targetUserRole": "all",
+      "type": "library",
+      "title": " [Grade Posted] New Grade for Unit CERT/100/26",
+      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
+      "status": "unread",
+      "dateTime": "2026-09-08 07:59:10+00"
+    },
+    {
+      "id": "aecb7efc-3dc8-4722-b01e-1aa80d787a6b",
       "targetUserRole": "all",
       "type": "payment",
-      "title": " [Invoice Generated] New Billing Invoice #INV-2026-26194646",
+      "title": " [Invoice Generated] New Billing Invoice #INV-2026-02289858",
       "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
       "status": "unread",
-      "dateTime": "2026-08-19 10:24:22+03"
-    },
-    {
-      "id": "90bf8028-8fad-4623-b8c5-ad477d37f288",
-      "targetUserRole": "all",
-      "type": "library",
-      "title": " [Grade Posted] New Grade for Unit CERT-CAREGIVER",
-      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
-      "status": "unread",
-      "dateTime": "2026-08-19 11:40:13+03"
-    },
-    {
-      "id": "0e2a5ebd-fa52-477f-a990-9a1ea8e77853",
-      "targetUserRole": "all",
-      "type": "library",
-      "title": " [Grade Posted] New Grade for Unit CERT-CAREGIVER",
-      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
-      "status": "unread",
-      "dateTime": "2026-08-19 11:40:07+03"
-    },
-    {
-      "id": "826f2125-a3a4-4773-8a7a-8e7a0081a4df",
-      "targetUserRole": "all",
-      "type": "library",
-      "title": " [Grade Posted] New Grade for Unit CERT-CAREGIVER",
-      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
-      "status": "unread",
-      "dateTime": "2026-08-19 14:59:50+03"
-    },
-    {
-      "id": "79f50eae-8b07-4ad3-9c71-d344787208e9",
-      "targetUserRole": "all",
-      "type": "library",
-      "title": " [Grade Posted] New Grade for Unit CERT-CAREGIVER",
-      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
-      "status": "unread",
-      "dateTime": "2026-08-19 16:56:44+03"
-    },
-    {
-      "id": "ed08ded6-e0b2-4e83-8128-12ee2869b181",
-      "targetUserRole": "all",
-      "type": "library",
-      "title": " [Grade Posted] New Grade for Unit CERT-CAREGIVER",
-      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
-      "status": "unread",
-      "dateTime": "2026-08-19 16:56:41+03"
-    },
-    {
-      "id": "576e223d-344e-49ef-83ad-3a688bb57efc",
-      "targetUserRole": "all",
-      "type": "payment",
-      "title": " [Invoice Generated] New Billing Invoice #INV-2026-43143197",
-      "message": "Eva wambui (eva.wambui@alikamedical.co.ke): Dear Eva wambui,",
-      "status": "unread",
-      "dateTime": "2026-08-19 16:50:31+03"
+      "dateTime": "2026-08-22 10:17:02+00"
     }
   ],
   "libraryGateLogs": [],
   "teacherResources": [],
-  "attendanceSessions": [
-    {
-      "id": "f2db794f-a904-67d1-f220-dc2123fba25a",
-      "date": "2026-08-19",
-      "subjectCode": "CERT-CAREGIVER",
-      "absentStudents": [],
-      "presentStudents": [
-        "f969a18b-42de-4274-9227-27c9fd76a4c8"
-      ]
-    }
-  ],
+  "unitDropRequests": [],
+  "attendanceSessions": [],
   "passwordResetRequests": []
 }

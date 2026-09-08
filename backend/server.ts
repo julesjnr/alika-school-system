@@ -1,10 +1,21 @@
 import dotenv from 'dotenv';
-dotenv.config({ override: true });
 import express from "express";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import crypto from "crypto";
+
+const currentDir = typeof __dirname !== 'undefined'
+  ? __dirname
+  : typeof import.meta?.url === 'string'
+    ? path.dirname(fileURLToPath(import.meta.url))
+    : process.cwd();
+
+// Load environment variables across workspaces (.env at root or current dir)
+dotenv.config({ override: true });
+dotenv.config({ path: path.resolve(currentDir, '../.env'), override: true });
+dotenv.config({ path: path.resolve(process.cwd(), '../.env'), override: true });
+dotenv.config({ path: path.resolve(process.cwd(), '.env'), override: true });
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import multer from 'multer';
@@ -187,8 +198,19 @@ const upload = multer({
 // Set up larger limit for full state synchronizations
 app.use(express.json({ limit: "20mb" }));
 
-// JWT Secret Key configuration (loads from environment, fallback to secure random on the fly)
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+// Canonical Authentication Architecture:
+// - The canonical auth token mechanism across all Alika portals is the JWT access token,
+//   persisted in localStorage as `zenti_session_token` on the frontend and transmitted
+//   via the standard `Authorization: Bearer <token>` header (or `x-session-token`).
+// - Long-lived sessions are maintained using `zenti_refresh_token` in localStorage posted to `/api/auth/refresh`.
+// - Cookie-based token mechanisms from external/unrelated projects (such as `jiwekee_token` from
+//   the separate jiwekee-restaurant project sharing localhost:3000) are NOT part of Alika
+//   School System and are neither issued nor accepted here.
+// In production, JWT_SECRET must be explicitly set via environment variables.
+// In development, a deterministic fallback ensures server restarts and tsx reloads do not invalidate active sessions.
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production'
+  ? crypto.randomBytes(32).toString('hex')
+  : 'alika_school_portal_dev_jwt_secret_key_2026_fallback');
 
 // CORS must be enabled on the API layer that serves database routes.
 app.use(createCorsMiddleware());
@@ -1572,13 +1594,14 @@ function checkRBAC(allowedRoles: string[]) {
 }
 
 // JWT Verification Middleware
+// Enforces canonical Authorization: Bearer <token> (or x-session-token) authentication.
 async function authenticateJWT(req: any, res: any, next: any) {
   const authHeader = req.headers.authorization;
   let token = null;
   if (authHeader && authHeader.toLowerCase().startsWith('bearer ')) {
     token = authHeader.substring(7);
   } else {
-    token = req.headers['x-session-token'] || req.query.token;
+    token = req.headers['x-session-token'];
   }
 
   if (!token) {
@@ -1590,6 +1613,13 @@ async function authenticateJWT(req: any, res: any, next: any) {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as any;
+    if (decoded.tokenType && decoded.tokenType !== 'access') {
+      return res.status(401).json({
+        success: false,
+        error: "Access Denied: Invalid token type."
+      });
+    }
+
     let current: any = null;
 
     if (decoded.roleId || decoded.userId) {

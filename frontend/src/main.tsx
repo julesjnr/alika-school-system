@@ -120,6 +120,15 @@ const customFetch: typeof fetch = async (input: RequestInfo | URL, init?: Reques
   };
 
   if (response.status === 401 && !isAuthEndpoint && !isRefreshEndpoint) {
+    // Only attempt refresh or session expiration if the caller was previously authenticated
+    // (i.e. has a stored session or refresh token). Unauthenticated guest requests should not expire sessions.
+    const hasStoredToken = Boolean(localStorage.getItem('zenti_session_token'));
+    const hasRefreshToken = Boolean(localStorage.getItem('zenti_refresh_token'));
+
+    if (!hasStoredToken && !hasRefreshToken) {
+      return response;
+    }
+
     const newToken = await performSilentRefresh();
     if (newToken) {
       attachTokenHeader(init, newToken);

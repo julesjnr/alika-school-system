@@ -281,8 +281,8 @@ export default function LecturerAssessmentWorkspace({
     return result;
   };
 
-  const persistAssessments = (next: AssessmentDef[]) => {
-    // Normalize and validate assessments before persisting
+  const persistAssessments = (next: AssessmentDef[], targetId?: string | null) => {
+    // Normalize assessments before persisting
     const normalized = next.map((a) => ({
       ...a,
       name: String(a.name ?? '').trim(),
@@ -290,42 +290,74 @@ export default function LecturerAssessmentWorkspace({
       weight: Number(a.weight ?? 0),
     }));
 
-    const errors: Record<string, { name?: boolean; maxMarks?: boolean; weight?: boolean }> = {};
-    for (const a of normalized) {
-      const e: { name?: boolean; maxMarks?: boolean; weight?: boolean } = {};
-      if (!a.kind || String(a.kind).trim() === '') e.name = true; // kind missing - mark name to draw attention
-      if (!a.name || a.name === '') e.name = true;
-      if (!Number.isFinite(a.maxMarks) || a.maxMarks <= 0) e.maxMarks = true;
-      if (!Number.isFinite(a.weight) || a.weight < 0) e.weight = true;
-      if (e.name || e.maxMarks || e.weight) errors[a.id] = e;
+    if (targetId !== null) {
+      // Per-row validation: if targetId is specified, only validate the row being saved, not the entire array.
+      // If targetId is omitted, only validate configured rows (maxMarks > 0) so untouched drafts do not block saving.
+      const rowsToValidate = targetId
+        ? normalized.filter((a) => a.id === targetId)
+        : normalized.filter((a) => a.maxMarks > 0);
+
+      const errors: Record<string, { name?: boolean; maxMarks?: boolean; weight?: boolean }> = {};
+      for (const a of rowsToValidate) {
+        const e: { name?: boolean; maxMarks?: boolean; weight?: boolean } = {};
+        if (!a.kind || String(a.kind).trim() === '') e.name = true; // kind missing - mark name to draw attention
+        if (!a.name || a.name === '') e.name = true;
+        if (!Number.isFinite(a.maxMarks) || a.maxMarks <= 0) e.maxMarks = true;
+        if (!Number.isFinite(a.weight) || a.weight < 0) e.weight = true;
+        if (e.name || e.maxMarks || e.weight) errors[a.id] = e;
+      }
+
+      if (Object.keys(errors).length > 0) {
+        setAssessmentErrors((prev) => ({ ...prev, ...errors }));
+        showWarning('Invalid assessment(s)', 'Each assessment requires a non-empty name, maxMarks > 0 and weight >= 0. Fix highlighted fields before saving.');
+        return;
+      }
     }
 
-    if (Object.keys(errors).length > 0) {
-      setAssessmentErrors(errors);
-      showWarning('Invalid assessment(s)', 'Each assessment requires a non-empty name, maxMarks > 0 and weight >= 0. Fix highlighted fields before saving.');
-      return;
-    }
-
-    // Clear any previous errors and persist
-    setAssessmentErrors({});
+    // Clear any previous errors for targetId (or all if targetId omitted) and persist
+    setAssessmentErrors((prev) => {
+      if (targetId) {
+        const copy = { ...prev };
+        delete copy[targetId];
+        return copy;
+      }
+      return {};
+    });
     setAssessments(normalized);
     if (selectedSubject) localStorage.setItem(assessmentsKey(lecturerId, selectedSubject), JSON.stringify(normalized));
-    // Also persist to backend so weights are canonical
-    (async () => {
-      try {
-        const token = localStorage.getItem('zenti_session_token');
-        const resp = await fetch('/api/lecturer/assessment-config', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-          body: JSON.stringify({ subjectCode: selectedSubject, assessments: normalized.map((a) => ({ assessmentKind: a.kind, assessmentName: a.name, maxMarks: a.maxMarks, weight: a.weight })) }),
-        });
-        if (!resp.ok) {
-          const body = await resp.json().catch(() => ({}));
-          showWarning('Save failed', body.error || 'Unable to persist assessment configuration.');
+
+    // Also persist configured assessments to backend so weights/limits are canonical.
+    // Untouched drafts with maxMarks = 0 remain local drafts and are not rejected by backend validation.
+    const validToPersist = normalized.filter(
+      (a) => a.kind && a.name && Number.isFinite(a.maxMarks) && a.maxMarks > 0 && Number.isFinite(a.weight) && a.weight >= 0
+    );
+
+    if (validToPersist.length > 0 && selectedSubject) {
+      (async () => {
+        try {
+          const token = localStorage.getItem('zenti_session_token');
+          const resp = await fetch('/api/lecturer/assessment-config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+            body: JSON.stringify({
+              subjectCode: selectedSubject,
+              assessments: validToPersist.map((a) => ({
+                assessmentKind: a.kind,
+                assessmentName: a.name,
+                maxMarks: a.maxMarks,
+                weight: a.weight,
+              })),
+            }),
+          });
+          if (!resp.ok) {
+            const body = await resp.json().catch(() => ({}));
+            showWarning('Save failed', body.error || 'Unable to persist assessment configuration.');
+          }
+        } catch (err: any) {
+          // ignore
         }
-      } catch (err: any) {
-        // ignore
-      }
-    })();
+      })();
+    }
   };
 
   const persistBreakdowns = (next: Record<string, MarkBreakdown>) => {
@@ -440,13 +472,14 @@ export default function LecturerAssessmentWorkspace({
     }
     const maxMarks = trimmedMax;
     const weight = trimmedWeight;
-    const next = [...assessments, { id: `${newKind.toLowerCase()}-${Date.now()}`, kind: newKind, name, maxMarks, weight, published: false }];
+    const newId = `${newKind.toLowerCase()}-${Date.now()}`;
+    const next = [...assessments, { id: newId, kind: newKind, name, maxMarks, weight, published: false }];
     const weightWarning = validateAssessmentWeights(next);
     if (weightWarning) {
       showWarning('Weights invalid', weightWarning);
       return;
     }
-    persistAssessments(next);
+    persistAssessments(next, newId);
     setNewName('');
     setNewMax(0);
     setNewWeight(10);
@@ -463,12 +496,12 @@ export default function LecturerAssessmentWorkspace({
   })();
 
   const deleteAssessment = (id: string) => {
-    persistAssessments(assessments.filter((item) => item.id !== id));
+    persistAssessments(assessments.filter((item) => item.id !== id), null);
     showToast('Assessment removed.', 'success');
   };
 
   const publishAssessment = (id: string) => {
-    persistAssessments(assessments.map((item) => (item.id === id ? { ...item, published: true } : item)));
+    persistAssessments(assessments.map((item) => (item.id === id ? { ...item, published: true } : item)), id);
     showToast('Results marked as published for this assessment.', 'success');
   };
 
@@ -734,7 +767,7 @@ export default function LecturerAssessmentWorkspace({
                           value={assessment.name}
                           onChange={(event) => {
                             setAssessmentErrors((prev) => { const copy = { ...prev }; delete copy[assessment.id]; return copy; });
-                            persistAssessments(assessments.map((item) => item.id === assessment.id ? { ...item, name: event.target.value } : item));
+                            persistAssessments(assessments.map((item) => item.id === assessment.id ? { ...item, name: event.target.value } : item), assessment.id);
                           }}
                           className={`w-full rounded px-2 py-1 ${assessmentErrors[assessment.id]?.name ? 'border-rose-400 bg-rose-50' : 'border-slate-200'}`}
                         />
@@ -751,7 +784,7 @@ export default function LecturerAssessmentWorkspace({
                             value={assessment.maxMarks}
                             onChange={(event) => {
                               setAssessmentErrors((prev) => { const copy = { ...prev }; delete copy[assessment.id]; return copy; });
-                              persistAssessments(assessments.map((item) => item.id === assessment.id ? { ...item, maxMarks: Number(event.target.value) || 1 } : item));
+                              persistAssessments(assessments.map((item) => item.id === assessment.id ? { ...item, maxMarks: Number(event.target.value) || 1 } : item), assessment.id);
                             }}
                             className={`w-20 rounded px-2 py-1 ${assessmentErrors[assessment.id]?.maxMarks ? 'border-rose-400 bg-rose-50' : 'border-slate-200'}`}
                         />

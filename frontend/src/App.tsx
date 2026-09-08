@@ -330,13 +330,13 @@ export default function App() {
       });
   }, [currentUserRole]);
 
-  // Synchronize local session configuration back to localStorage
+  // Synchronize local session configuration back to localStorage.
+  // Note: zenti_session_token is managed by auth login/logout lifecycle and clearAuthSession().
   useEffect(() => {
     if (currentUserRole) {
       localStorage.setItem("zenti_current_user_role", currentUserRole);
     } else {
       localStorage.removeItem("zenti_current_user_role");
-      localStorage.removeItem("zenti_session_token");
     }
   }, [currentUserRole]);
 
@@ -345,7 +345,6 @@ export default function App() {
       localStorage.setItem("zenti_current_user_id", currentUserId);
     } else {
       localStorage.removeItem("zenti_current_user_id");
-      localStorage.removeItem("zenti_session_token");
     }
   }, [currentUserId]);
 
@@ -353,17 +352,19 @@ export default function App() {
     localStorage.setItem('zenti_mock_emails', JSON.stringify(mockEmails));
   }, [mockEmails]);
 
-  // Debounce and synchronize state modifications back to our full-stack server
+  // Debounce and synchronize state modifications back to our full-stack server.
+  // Gated on active authenticated session: unauthenticated guests must never write to /api/data.
   useEffect(() => {
-    if (isBooting) return;
+    if (isBooting || !currentUserRole) return;
+    const syncToken = localStorage.getItem('zenti_session_token');
+    if (!syncToken) return;
 
     const syncTimer = setTimeout(() => {
-      const syncToken = localStorage.getItem('zenti_session_token');
       fetch("/api/data", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(syncToken ? { Authorization: `Bearer ${syncToken}` } : {}),
+          Authorization: `Bearer ${syncToken}`,
         },
         body: JSON.stringify({
           courses,
