@@ -188,6 +188,7 @@ export default function StudentDashboard({
   // Server-authoritative published subjects for student view
   const [publishedSubjectsDetailed, setPublishedSubjectsDetailed] = useState<any[] | null>(null);
   const [publishedSubjects, setPublishedSubjects] = useState<any[] | null>(null);
+  const [resultsUnavailable, setResultsUnavailable] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailSubjectCode, setDetailSubjectCode] = useState<string | null>(null);
   const [detailData, setDetailData] = useState<any | null>(null);
@@ -202,6 +203,7 @@ export default function StudentDashboard({
         if (!mounted) return;
         setPublishedSubjects(body.publishedSubjects || null);
         setPublishedSubjectsDetailed(body.publishedSubjectsDetailed || null);
+        setResultsUnavailable(Boolean(body.resultsUnavailable));
       } catch (err) {
         // ignore - keep existing UI fallback
       }
@@ -1293,6 +1295,16 @@ export default function StudentDashboard({
                 </div>
               )}
             </div>
+
+            {resultsUnavailable && (
+              <div className="flex items-start gap-2.5 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-xs">
+                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <div>
+                  <p className="font-semibold">Results are temporarily unavailable.</p>
+                  <p className="text-amber-700 mt-0.5">We couldn't reach the results service just now. This isn't a reflection of your actual grades — please check back shortly.</p>
+                </div>
+              </div>
+            )}
 
             {student.enrolledUnits.length === 0 ? (
               <div className="text-center py-12 bg-slate-50 rounded-xl border border-dashed border-slate-200">

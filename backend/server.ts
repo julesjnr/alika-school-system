@@ -2721,7 +2721,19 @@ app.get("/api/data", async (req, res) => {
     res.json(sanitizeStateForClient(dbState));
   } catch (error) {
     console.warn("Notice: Database query timed out, returning cached database state.");
-    res.json(sanitizeStateForClient(getDatabase()));
+    const fallbackState = sanitizeStateForClient(getDatabase());
+    // db_store.json's per-student grades are no longer kept fresh (the
+    // lecturer grade-entry route now writes only to Postgres), so this
+    // snapshot's grades would just be frozen at whatever they were before
+    // that change shipped. Serving them as if current risks showing wrong
+    // marks with no indication anything's off. `{}` (not a removed key)
+    // keeps every frontend component that indexes `student.grades[code]`
+    // without an undefined guard from crashing; `gradesUnavailable: true`
+    // is the honest signal that these are not being served.
+    if (Array.isArray(fallbackState.students)) {
+      fallbackState.students = fallbackState.students.map((s: any) => ({ ...s, grades: {} }));
+    }
+    res.json({ ...fallbackState, gradesUnavailable: true });
   }
 });
 
@@ -4433,21 +4445,11 @@ app.post(
           });
       }
 
-      const dbVal = getDatabase();
-      if (Array.isArray(dbVal.students)) {
-        dbVal.students = dbVal.students.map((student: any) => {
-          if (student.id !== studentId) return student;
-          const examValue = Number(componentMarks.exam ?? 0);
-          return {
-            ...student,
-            grades: {
-              ...(student.grades || {}),
-              [String(subjectCode).trim()]: { cat: finalWeightedResult, exam: Number.isFinite(examValue) ? examValue : 0 },
-            },
-          };
-        });
-        saveDatabase(dbVal);
-      }
+      // Note: grades are no longer mirrored into the legacy db_store.json
+      // snapshot here. Postgres (studentAssessmentMarks / grades tables) is
+      // now the single write target; see /api/student/dashboard-summary and
+      // GET /api/data for how each surfaces an honest "unavailable" signal
+      // instead of stale frozen data if Postgres is unreachable.
 
       await writeAdminAudit(req, "grade.submit", "student_assessment_marks", `${studentId}:${subjectCode}`, {
         actorId,
@@ -6722,7 +6724,7 @@ app.get("/api/student/dashboard", async (req: any, res: any) => {
   const modulesPromise = Promise.all([
     loadModule("enrolled-units", (snapshotStudent?.enrolledUnits || []).map((courseCode: string) => ({ courseCode })), () => db.select().from(studentEnrollments).where(eq(studentEnrollments.studentId, userId))),
     loadModule("attendance", Object.entries(snapshotStudent?.attendance || {}).map(([subjectCode, attendanceRate]) => ({ subjectCode, attendanceRate })), () => db.select().from(studentAttendance).where(eq(studentAttendance.studentId, userId))),
-    loadModule("results", Object.entries(snapshotStudent?.grades || {}).map(([subjectCode, grade]: [string, any]) => ({ subjectCode, rawMark: grade?.cat, maxMarks: 100, weight: 100 })), () =>
+    loadModule("results", null, () =>
       db.select({
         subjectCode: studentAssessmentMarks.subjectCode,
         rawMark: studentAssessmentMarks.rawMark,
@@ -6759,13 +6761,21 @@ app.get("/api/student/dashboard", async (req: any, res: any) => {
 
   const [enrollmentRows, attendanceRows, gradeRows, invoiceRows, paymentRows, courseRows, examPaperRows, state] = await modulesPromise;
 
+  // `gradeRows` is `null` only when the results module's live query failed and
+  // there is no fallback data to serve — see the "results" loadModule call
+  // above. Treat that as "no rows" for the computation below, but track it
+  // separately so the response can say so honestly instead of looking
+  // identical to "this student has no recorded assessments yet".
+  const resultsUnavailable = gradeRows === null;
+  const gradeRowsSafe = gradeRows || [];
+
   const enrolledUnits = enrollmentRows.map((row: any) => row?.courseCode).filter((code: unknown): code is string => typeof code === "string");
   const attendance: Record<string, number> = {};
   attendanceRows.forEach((row: any) => {
     if (typeof row?.subjectCode === "string") attendance[row.subjectCode] = Number(row.attendanceRate) || 0;
   });
   const rawAssessmentGroups = new Map<string, { rawMark: number; maxMarks: number; weight: number }[]>();
-  gradeRows.forEach((row: any) => {
+  gradeRowsSafe.forEach((row: any) => {
     if (typeof row?.subjectCode !== "string") return;
     const subjectCode = row.subjectCode;
     const entry = { rawMark: Number(row.rawMark ?? 0) || 0, maxMarks: Number(row.maxMarks ?? 0) || 0, weight: Number(row.weight ?? 0) || 0 };
@@ -6835,6 +6845,7 @@ app.get("/api/student/dashboard", async (req: any, res: any) => {
     requestId,
     partial: failures.length > 0,
     failedModules: failures,
+    resultsUnavailable,
     student: dashboardStudent,
     courses: courseRows.map((row: any) => ({ ...row, fees: Number(row.fees) || 0, description: row.description || "", thumbnail: row.thumbnail || "" })),
     attendance,
